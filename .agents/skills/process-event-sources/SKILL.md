@@ -2,12 +2,7 @@
 name: process-event-sources
 description: >-
   Agent-only procedure for registered process-to-event sources and their wakes.
-  Use before arming a long-polling source firstmate owns, and on any
-  `procevent <adapter> <source-id> <sequence>` check wake.
-  Owns the arming commands, the durable result read, which wakes must be
-  routed to their adapter instead of acknowledged generically, the handled
-  acknowledgement contract, the one-owner rule, the precise durability
-  boundary, and the Lavish adapter's loss limitation.
+  Use before arming a long-polling source firstmate owns, and on any `procevent <adapter> <source-id> <sequence>` check wake.
 user-invocable: false
 metadata:
   internal: true
