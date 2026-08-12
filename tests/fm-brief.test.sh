@@ -217,6 +217,49 @@ test_ship_modes_generate_clean_briefs() {
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
 }
 
+# The verification standard must be structural, not something a brief author has to
+# remember: every ship mode carries it, it sits inside the definition of done right
+# after the machine-readable contract line, and the scout contract is untouched.
+test_ship_dod_carries_standing_verification_clause() {
+  local home id mode brief dod
+  home="$TMP_ROOT/verify-clause-home"
+  write_registry "$home"
+
+  for id_mode in "brief-verify-b1:no-mistakes" "brief-verify-b2:direct-PR" "brief-verify-b3:local-only"; do
+    id=${id_mode%%:*}
+    mode=${id_mode##*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1 \
+      || fail "$id: --mode $mode should scaffold"
+    brief="$home/data/$id/brief.md"
+    assert_grep "exercise the change in the real running application" "$brief" \
+      "$id: ship brief lost the real-application verification standard"
+    assert_grep "A passing unit or integration suite is not evidence" "$brief" \
+      "$id: ship brief lost the tests-are-not-sufficient statement"
+    assert_grep "under realistic latency" "$brief" \
+      "$id: ship brief lost the realistic-latency standard"
+    assert_grep "reproduce it before the fix and prove it gone after" "$brief" \
+      "$id: ship brief lost the before/after reproduction standard"
+    assert_grep "a realistic desktop width and a narrow one" "$brief" \
+      "$id: ship brief lost the UI width standard"
+
+    # The clause belongs to the definition of done, and the contract line must stay
+    # the first line under that heading so fm-spawn.sh's check is unaffected.
+    dod=$(awk '/^# Definition of done$/{f=1} f' "$brief")
+    [ "$(printf '%s\n' "$dod" | sed -n 2p)" = "Delivery contract: mode=$mode" ] \
+      || fail "$id: the delivery contract line no longer leads the definition of done"
+    printf '%s\n' "$dod" | grep -q "exercise the change in the real running application" \
+      || fail "$id: the verification standard landed outside the definition of done"
+  done
+
+  # Scouts produce knowledge, not a shipped change, and keep their own contract.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-verify-b4 some-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold should exit 0"
+  assert_no_grep "exercise the change in the real running application" \
+    "$home/data/brief-verify-b4/brief.md" \
+    "scout brief must not inherit the ship verification standard"
+  pass "fm-brief.sh: every ship mode carries the standing verification clause"
+}
+
 # A ship task's delivery mode is firstmate's per-task decision, so a missing or
 # unusable value must stop the scaffold instead of silently defaulting. The
 # no-mistakes-prod-only row is the conditional registry policy: it is never a task
@@ -712,6 +755,7 @@ test_scout_and_secondmate_scaffold() {
 
 test_script_parses
 test_no_heredoc_in_command_substitution
+test_ship_dod_carries_standing_verification_clause
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set

@@ -41,6 +41,12 @@
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
+# Every ship definition of done also carries a standing verification clause, in the
+# same words for all three modes: exercise the change in the real running
+# application, under realistic latency where timing could plausibly matter, with a
+# before/after reproduction for a defect fix and both widths for UI work.
+# It is a standard rather than a hard gate, so it is deliberately pitched softer
+# than the isolation assertion and is never per-task text a brief author must remember.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
@@ -408,6 +414,28 @@ esac
 # $(...) command substitution used to strip. Drop that one newline so generated
 # briefs stay byte-identical to the historical Bash 5 output.
 DOD=${DOD%$'\n'}
+
+# Standing verification clause, identical for every ship mode: a passing suite is
+# not evidence the behavior is right. It is spliced in directly after the fixed
+# "Delivery contract: mode=<mode>" line so the principle is stated before the
+# mode-specific mechanics, and so fm-spawn.sh still reads that line unchanged.
+IFS= read -r -d '' VERIFY <<'EOF' || true
+Before calling this done, exercise the change in the real running application, not only in tests, and say what you exercised.
+A passing unit or integration suite is not evidence the behavior is right.
+Where the change could plausibly be timing-sensitive, exercise it under realistic latency rather than only on a fast local machine, and say what you used; this is a prompt to think about timing, not a hard gate on every trivial change.
+Where you are fixing a defect, reproduce it before the fix and prove it gone after, stating the method.
+For UI work, check a realistic desktop width and a narrow one, and be picky about alignment and fit.
+EOF
+VERIFY=${VERIFY%$'\n'}
+DOD_HEADING=${DOD%%$'\n'*}
+DOD_AFTER_HEADING=${DOD#*$'\n'}
+DOD_CONTRACT=${DOD_AFTER_HEADING%%$'\n'*}
+DOD_BODY=${DOD_AFTER_HEADING#*$'\n'}
+DOD="$DOD_HEADING
+$DOD_CONTRACT
+$VERIFY
+
+$DOD_BODY"
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
