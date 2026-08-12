@@ -419,8 +419,12 @@ DOD=${DOD%$'\n'}
 # not evidence the behavior is right. It is spliced in directly after the fixed
 # "Delivery contract: mode=<mode>" line so the principle is stated before the
 # mode-specific mechanics, and so fm-spawn.sh still reads that line unchanged.
+# Every obligation here is applicability-scoped ("Where ..."), including the
+# real-application one: a tooling, documentation, or configuration change with no
+# user-facing surface has no running application to exercise, and an unconditional
+# demand would make the clause a completion gate that lies for that whole category.
 IFS= read -r -d '' VERIFY <<'EOF' || true
-Before calling this done, exercise the change in the real running application, not only in tests, and say what you exercised.
+Where the change has a user-facing surface, exercise it in the real running application before calling this done, not only in tests, and say what you exercised.
 A passing unit or integration suite is not evidence the behavior is right.
 Where the change could plausibly be timing-sensitive, exercise it under realistic latency rather than only on a fast local machine, and say what you used; this is a prompt to think about timing, not a hard gate on every trivial change.
 Where you are fixing a defect, reproduce it before the fix and prove it gone after, stating the method.
