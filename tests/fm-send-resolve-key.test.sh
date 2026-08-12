@@ -132,6 +132,66 @@ test_answer_send_closes_open_decision() {
   pass "fm-send --resolve-key: the answer send itself closes the open decision"
 }
 
+# Workers write the key token where they remember it, and a token following the
+# state prefix (needs-decision: [key=slug] ...) used to fold under "default": the
+# OPEN DECISIONS listing advertised a slug that --resolve-key then refused, so
+# every keyed answer had to be guessed. Both positions must reach the same key,
+# through the same real drain-then-answer path the other tests use.
+test_note_position_key_folds_under_its_slug() {
+  local dir fb log home rc out err
+  dir="$TMP_ROOT/note-position"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/err.log"
+  home=$(setup_home note-position)
+  fm_write_meta "$home/state/t9.meta" "window=sess:fm-t9" "kind=ship"
+  # Two open records written in the note position, one of them already closed
+  # the same way, plus a canonical-position record alongside them.
+  {
+    printf 'needs-decision: [key=palette-review-gate] review parked with 2 findings\n'
+    printf 'blocked: [key=creds-missing] no npm token\n'
+    printf 'needs-decision [key=canonical]: the documented position still works\n'
+    printf 'needs-decision: [key=already-answered] which icon set\n'
+    printf 'resolved: [key=already-answered] captain picked lucide\n'
+  } > "$home/state/t9.status"
+
+  out=$(drain_out "$home")
+  local k
+  for k in palette-review-gate creds-missing canonical; do
+    printf '%s' "$out" | grep -F "[key=$k]" >/dev/null \
+      || fail "the open listing should carry [key=$k]:"$'\n'"$out"
+  done
+  printf '%s' "$out" | grep -F '[key=default]' >/dev/null \
+    && fail "a note-position key was folded as default:"$'\n'"$out"
+  printf '%s' "$out" | grep -F '[key=already-answered]' >/dev/null \
+    && fail "a note-position resolved line failed to close its own decision:"$'\n'"$out"
+  # The listed note is the summary itself, with the token consumed as a key.
+  assert_contains "$out" "review parked with 2 findings" \
+    "the listed note should read as the worker's summary"
+  printf '%s' "$out" | grep -F 'palette-review-gate] review' >/dev/null \
+    && fail "the key token was left duplicated inside the note:"$'\n'"$out"
+
+  # The advertised slug is the slug --resolve-key accepts.
+  run_send "$fb" "$home" "$log" t9 --resolve-key palette-review-gate "Fix both findings"; rc=$?
+  expect_code 0 "$rc" "--resolve-key should accept the slug the listing advertised"
+  assert_contains "$(cat "$log")" "Fix both findings" "the answer text should reach the worker"
+
+  # The historical wrong guess is now itself refused, before anything is sent.
+  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" t9 --resolve-key default "guessing" >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "--resolve-key default should refuse once no default record exists"
+  assert_contains "$(cat "$err")" "no open decision or blocker with that key" \
+    "the wrong-guess refusal should be explicit"
+
+  # The remaining records are untouched by the one answer.
+  out=$(drain_out "$home")
+  printf '%s' "$out" | grep -F '[key=palette-review-gate]' >/dev/null \
+    && fail "the answered decision still lists as open:"$'\n'"$out"
+  for k in creds-missing canonical; do
+    printf '%s' "$out" | grep -F "[key=$k]" >/dev/null \
+      || fail "answering one key disturbed [key=$k]:"$'\n'"$out"
+  done
+  pass "fm-send --resolve-key: a key written after the state prefix folds under its own slug"
+}
+
 test_answer_starts_work_never_orphans() {
   local dir fb log home rc out
   dir="$TMP_ROOT/starts-work"; mkdir -p "$dir"
@@ -396,6 +456,7 @@ test_flag_misuse_refuses() {
 }
 
 test_answer_send_closes_open_decision
+test_note_position_key_folds_under_its_slug
 test_answer_starts_work_never_orphans
 test_routine_steer_never_closes
 test_not_open_key_refuses_before_send
