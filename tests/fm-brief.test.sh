@@ -217,6 +217,73 @@ test_ship_modes_generate_clean_briefs() {
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
 }
 
+# The verification standard must be structural, not something a brief author has to
+# remember: every ship mode carries it, it sits inside the definition of done right
+# after the machine-readable contract line, and the scout contract is untouched.
+#
+# Placement and softness are the two properties the clause exists for, so this
+# asserts the WHOLE ORDERED BLOCK sitting immediately below the contract line
+# rather than five phrases found anywhere in the brief. Scattered-phrase checks
+# would stay green if a future edit moved the clause below the mode-specific
+# completion mechanics, split the obligations apart, or duplicated one phrase
+# elsewhere - each of which breaks "state it early". Every line is pinned whole so
+# a rewording that drops an applicability qualifier ("Where ...") or the explicit
+# not-a-hard-gate wording fails here instead of silently reversing the standard
+# into a completion gate.
+test_ship_dod_carries_standing_verification_clause() {
+  local home id mode brief dod expected actual
+  home="$TMP_ROOT/verify-clause-home"
+  write_registry "$home"
+
+  # The exact clause, in order, as a worker must receive it. Read with the same
+  # `read -r -d ''` idiom bin/fm-brief.sh uses: a heredoc inside a command
+  # substitution does not parse on stock macOS Bash 3.2, which CI checks.
+  IFS= read -r -d '' expected <<'CLAUSE' || true
+Where the change has a user-facing surface, exercise it in the real running application before calling this done, not only in tests, and say what you exercised.
+A passing unit or integration suite is not evidence the behavior is right.
+Where the change could plausibly be timing-sensitive, exercise it under realistic latency rather than only on a fast local machine, and say what you used; this is a prompt to think about timing, not a hard gate on every trivial change.
+Where you are fixing a defect, reproduce it before the fix and prove it gone after, stating the method.
+For UI work, check a realistic desktop width and a narrow one, and be picky about alignment and fit.
+CLAUSE
+  expected=${expected%$'\n'}
+
+  for id_mode in "brief-verify-b1:no-mistakes" "brief-verify-b2:direct-PR" "brief-verify-b3:local-only"; do
+    id=${id_mode%%:*}
+    mode=${id_mode##*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1 \
+      || fail "$id: --mode $mode should scaffold"
+    brief="$home/data/$id/brief.md"
+
+    # The contract line must stay the first line under the heading so fm-spawn.sh's
+    # check is unaffected, and the clause must be what immediately follows it.
+    dod=$(awk '/^# Definition of done$/{f=1} f' "$brief")
+    [ "$(printf '%s\n' "$dod" | sed -n 2p)" = "Delivery contract: mode=$mode" ] \
+      || fail "$id: the delivery contract line no longer leads the definition of done"
+    actual=$(printf '%s\n' "$dod" | sed -n '3,7p')
+    [ "$actual" = "$expected" ] || fail "$id: the verification clause is not the ordered block directly below the delivery contract line.
+--- expected ---
+$expected
+--- actual ---
+$actual"
+
+    # Stating it early is the point: nothing mode-specific may precede it.
+    [ "$(printf '%s\n' "$dod" | sed -n 8p)" = "" ] \
+      || fail "$id: the clause must be separated from the mode-specific mechanics that follow it"
+  done
+
+  # Scouts produce knowledge, not a shipped change, and keep their own contract.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-verify-b4 some-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold should exit 0"
+  # Grep a substring the ship clause really contains, so this stays a live negative
+  # check rather than passing vacuously against wording that no longer exists.
+  assert_grep "in the real running application" "$home/data/brief-verify-b1/brief.md" \
+    "the scout negative check must match wording the ship clause actually uses"
+  assert_no_grep "in the real running application" \
+    "$home/data/brief-verify-b4/brief.md" \
+    "scout brief must not inherit the ship verification standard"
+  pass "fm-brief.sh: every ship mode carries the standing verification clause"
+}
+
 # A ship task's delivery mode is firstmate's per-task decision, so a missing or
 # unusable value must stop the scaffold instead of silently defaulting. The
 # no-mistakes-prod-only row is the conditional registry policy: it is never a task
@@ -712,6 +779,7 @@ test_scout_and_secondmate_scaffold() {
 
 test_script_parses
 test_no_heredoc_in_command_substitution
+test_ship_dod_carries_standing_verification_clause
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set
