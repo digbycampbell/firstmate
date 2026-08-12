@@ -160,11 +160,23 @@ status_is_paused_or_captain_held() {  # <status-line>
 # rule 6), so closure never depends on a busy worker's discipline.
 #
 # Decision key grammar (backward-compatible with the existing "<verb>: <note>"
-# format): an OPTIONAL "[key=<slug>]" token sits between the verb and the colon,
+# format): an OPTIONAL "[key=<slug>]" token names the decision. It may sit either
+# between the verb and the colon, which is the canonical form this library and
+# bin/fm-brief.sh both document, or as the first token of the note:
 #   needs-decision [key=api-shape]: <summary>
+#   needs-decision: [key=api-shape] <summary>
 #   resolved       [key=api-shape]: <how it was decided>
+# Both positions fold under the same key, because the writer is a busy worker
+# recalling a format under load and the cost of misreading its key is a decision
+# nothing can resolve: the answering firstmate's --resolve-key is rejected while
+# the OPEN DECISIONS listing still advertises the slug the worker wrote.
 # A line with no token uses the key "default", preserving the historical
 # one-open-decision-per-task behavior (a bare "resolved:" closes "default").
+# The note parser strips a leading note-position token so every consumer sees the
+# same note text regardless of which position the writer used.
+# A malformed token before the colon is a failed attempt at a key and voids the
+# line; after the colon the same bytes are indistinguishable from ordinary prose,
+# so they are left in the note and the line keeps the "default" key.
 # The three parsers are pure reads of a single line; the verb parser strips any
 # key token before the colon so the leading word is recovered cleanly.
 status_line_verb() {  # <status-line> -> leading verb word
@@ -174,25 +186,44 @@ status_line_verb() {  # <status-line> -> leading verb word
   v=${v%"${v##*[![:space:]]}"}
   printf '%s' "$v"
 }
-status_line_note() {  # <status-line> -> text after the first colon, trimmed
+# Slug of a "[key=<slug>]" token opening <text>, or nonzero when <text> does not
+# start with a well-formed one. The single owner of what a valid slug looks like.
+_fm_decision_key_leading() {  # <text> -> slug of a leading key token
+  local k
   case "$1" in
-    *:*) local n=${1#*:}; printf '%s' "${n#"${n%%[![:space:]]*}"}" ;;
-    *) printf '%s' "$1" ;;
+    \[key=*\]*) k=${1#\[key=}; k=${k%%\]*} ;;
+    *) return 1 ;;
+  esac
+  case "$k" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    *) printf '%s' "$k" ;;
   esac
 }
-_fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
-  local prefix=${1%%:*} k
-  case "$prefix" in
-    *\[key=*\]*)
-      k=${prefix#*\[key=}
-      k=${k%%\]*}
-      case "$k" in
-        ''|*[!A-Za-z0-9._-]*) return 1 ;;
-        *) printf '%s' "$k" ;;
-      esac
-      ;;
-    *) printf 'default' ;;
+status_line_note() {  # <status-line> -> text after the first colon, trimmed
+  local n=$1
+  case "$1" in
+    *:*) n=${1#*:} ;;
+    *) printf '%s' "$1"; return 0 ;;
   esac
+  n=${n#"${n%%[![:space:]]*}"}
+  if _fm_decision_key_leading "$n" >/dev/null; then
+    n=${n#*\]}
+    n=${n#"${n%%[![:space:]]*}"}
+  fi
+  printf '%s' "$n"
+}
+_fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
+  local prefix=${1%%:*} rest
+  case "$prefix" in
+    # Re-anchor the token so the one slug validator judges both positions.
+    *\[key=*\]*) _fm_decision_key_leading "[key=${prefix#*\[key=}" || return 1; return 0 ;;
+  esac
+  case "$1" in
+    *:*) rest=${1#*:} ;;
+    *) printf 'default'; return 0 ;;
+  esac
+  rest=${rest#"${rest%%[![:space:]]*}"}
+  _fm_decision_key_leading "$rest" || printf 'default'
 }
 # Drop the record for <key> from a newline-terminated "<key>\t<verb>\t<note>" set.
 # Portable (no associative arrays) so the fold runs on bash 3.2 as well as 4+.
@@ -384,7 +415,7 @@ _fm_open_decisions_cursor_path() {  # <status-file>
   printf '%s/.%s.open-decisions-cursor' "$dir" "${base%.status}"
 }
 
-FM_OPEN_DECISIONS_FOLD_VERSION=2
+FM_OPEN_DECISIONS_FOLD_VERSION=3
 
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> "dev:inode", empty on I/O failure
