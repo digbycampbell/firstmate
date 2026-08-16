@@ -43,10 +43,15 @@ FAKEBIN=$(fm_fakebin "$TMP_ROOT")
 cat > "$FAKEBIN/curl" <<'SH'
 #!/usr/bin/env bash
 # Stand-in for the Slack call. Records argv and the stdin config, then serves
-# FAKE_SLACK_RESPONSE into whatever -o names.
+# FAKE_SLACK_RESPONSE into whatever -o names. When FAKE_SLACK_RESPONSE.<n>
+# exists for the nth call it is served instead, which is how a paginated
+# window is faked.
 set -u
 printf '%s\n' "$*" >> "$FAKE_CURL_ARGV"
 cat >> "$FAKE_CURL_STDIN"
+n=$(cat "$FAKE_CURL_COUNT" 2>/dev/null || printf 0)
+n=$((n + 1))
+printf '%s\n' "$n" > "$FAKE_CURL_COUNT"
 out=
 prev=
 for arg in "$@"; do
@@ -54,7 +59,9 @@ for arg in "$@"; do
   prev=$arg
 done
 [ -n "$out" ] || exit 1
-cat "$FAKE_SLACK_RESPONSE" > "$out"
+body="$FAKE_SLACK_RESPONSE"
+[ ! -f "$FAKE_SLACK_RESPONSE.$n" ] || body="$FAKE_SLACK_RESPONSE.$n"
+cat "$body" > "$out"
 exit "${FAKE_CURL_EXIT:-0}"
 SH
 chmod +x "$FAKEBIN/curl"
@@ -62,6 +69,7 @@ export PATH="$FAKEBIN:$PATH"
 export FAKE_CURL_ARGV="$TMP_ROOT/curl.argv"
 export FAKE_CURL_STDIN="$TMP_ROOT/curl.stdin"
 export FAKE_SLACK_RESPONSE="$TMP_ROOT/slack.json"
+export FAKE_CURL_COUNT="$TMP_ROOT/curl.count"
 : > "$FAKE_CURL_ARGV"
 : > "$FAKE_CURL_STDIN"
 
@@ -187,6 +195,32 @@ sed -i.bak '/^allowed_user=/d' "$home/config/slack-captain"
 assert_grep 'untrusted=2' "$TMP_ROOT/noallow.out" "trust is granted only by configuration"
 pass "no configured captain means no trusted author"
 
+# --- a window larger than one page is fetched to exhaustion ------------------
+
+home=$(new_home pagination)
+printf 0 > "$FAKE_CURL_COUNT"
+cat > "$FAKE_SLACK_RESPONSE.1" <<JSON
+{"ok":true,"has_more":true,"messages":[
+  {"type":"message","user":"$CAPTAIN","ts":"602.000602","text":"third"},
+  {"type":"message","user":"$CAPTAIN","ts":"601.000601","text":"second"}
+]}
+JSON
+cat > "$FAKE_SLACK_RESPONSE.2" <<JSON
+{"ok":true,"has_more":false,"messages":[
+  {"type":"message","user":"$CAPTAIN","ts":"600.000600","text":"first"}
+]}
+JSON
+"$ADAPTER" poll "$home" "$CHANNEL" > "$TMP_ROOT/paged.out" 2>/dev/null \
+  || fail "a poll over a paginated window should succeed"
+assert_grep 'count=3' "$TMP_ROOT/paged.out" "every message in the window is captured before a result is emitted"
+assert_grep 'to_ts=602.000602' "$TMP_ROOT/paged.out" "the committed end position is the newest captured message"
+assert_grep '"text":"first"' "$TMP_ROOT/paged.out" "the older page's message is in the payload, so to_ts skips nothing"
+[ "$(tail -n 3 "$TMP_ROOT/paged.out" | head -n 1 | jq -r .ts)" = 600.000600 ] \
+  || fail "a paginated payload must stay ordered oldest first"
+assert_grep 'latest=601.000601' "$FAKE_CURL_ARGV" "the next page walks back from the oldest fetched timestamp"
+rm -f "$FAKE_SLACK_RESPONSE.1" "$FAKE_SLACK_RESPONSE.2"
+pass "a burst past the page limit is paginated, never silently truncated"
+
 # --- a broken read position is loud, never silently rebased ------------------
 
 home=$(new_home cursorbreak)
@@ -231,6 +265,18 @@ rc=0
 "$ADAPTER" poll "$home" "$CHANNEL" >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "a transient Slack error must not become a result"
 pass "a fatal Slack error is surfaced and a transient one is retried"
+
+# handle acknowledges an api-error result without moving the read position.
+# The acknowledgement is recorded against the runner's inbox copy, so the
+# captured result is staged there the way the runner captures it.
+mkdir -p "$home/state/procevent-inbox"
+cp "$TMP_ROOT/apierror.out" "$home/state/procevent-inbox/$SID.7.result"
+printf '%s\n' "$ADAPTER" > "$home/state/procevent-inbox/$SID.7.adapter"
+FM_HOME="$home" "$ADAPTER" handle "$SID" 7 "$home/state/procevent-inbox/$SID.7.result" >/dev/null 2>&1 \
+  || fail "handling an api-error result must record the acknowledgement"
+assert_present "$home/state/procevent-inbox/$SID.7.handled" "acknowledging an api-error is recorded"
+assert_absent "$(cursor_file "$home")" "acknowledging an api-error must not move the read position"
+pass "an api-error result is acknowledgeable through handle"
 
 # --- classify is defensive about anything else ------------------------------
 

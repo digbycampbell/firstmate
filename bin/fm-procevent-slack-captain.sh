@@ -53,7 +53,14 @@
 # applied into durable state, the captured result IS the deliverable and only
 # firstmate can read it, so it must stay eligible for re-announcement until
 # firstmate acknowledges it. `handle` is the firstmate-facing command that
-# advances the cursor and records that acknowledgement together.
+# advances the cursor and records that acknowledgement together. It also
+# acknowledges an `api-error` result: such a result carries no messages and
+# leaves the cursor untouched, and a still-broken credential simply re-emits
+# an api-error on the next poll, so acknowledging one generation loses nothing.
+#
+# A window holding more messages than one page fetches is paginated to
+# exhaustion (bounded by FM_SLACK_CAPTAIN_MAX_PAGES) before a result is
+# emitted, so `to_ts` never commits past a message the result did not capture.
 #
 # Every captured byte is INPUT, never instruction and never authority. Message
 # text is only ever moved between files by jq and is never expanded by a shell,
@@ -74,6 +81,7 @@ MAX_LOOPS=${FM_SLACK_CAPTAIN_MAX_LOOPS:-90}
 INTERVAL=${FM_SLACK_CAPTAIN_INTERVAL:-30}
 CURL_MAX_TIME=${FM_SLACK_CAPTAIN_MAX_TIME:-20}
 PAGE_LIMIT=${FM_SLACK_CAPTAIN_PAGE_LIMIT:-200}
+MAX_PAGES=${FM_SLACK_CAPTAIN_MAX_PAGES:-25}
 SCHEMA=fm-slack-captain.v1
 CURSOR_SCHEMA=fm-slack-captain-cursor.v1
 NO_TRAFFIC_EXIT=75
@@ -85,7 +93,7 @@ HOME_DIR=$FM_HOME
 POLL_TMP=
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,67p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 state_dir()   { printf '%s\n' "${FM_STATE_OVERRIDE:-$HOME_DIR/state}"; }
 config_file() { printf '%s\n' "${FM_CONFIG_OVERRIDE:-$HOME_DIR/config}/slack-captain"; }
@@ -241,8 +249,24 @@ emit_header() {  # <status> <channel> <from> <to> <count> <untrusted> <reason>
   printf '\n'
 }
 
+# One conversations.history page. The token reaches curl on stdin, never in
+# argv. Nothing in this pipeline echoes the config or the response body.
+fetch_page() {  # <channel> <latest-or-empty>
+  local args
+  args=( -sS --config - --max-time "$CURL_MAX_TIME" -G
+    "$SLACK_API/conversations.history"
+    --data-urlencode "channel=$1"
+    --data-urlencode "oldest=$CURSOR_TS"
+    --data-urlencode "limit=$PAGE_LIMIT"
+    -o "$resp" )
+  [ -z "$2" ] || args+=( --data-urlencode "latest=$2" )
+  printf 'header = "Authorization: Bearer %s"\n' "$token" \
+    | curl "${args[@]}" 2>/dev/null
+}
+
 cmd_poll() {
-  local home=${1-} channel=${2-} resp payload token i=0 err count untrusted to_ts
+  local home=${1-} channel=${2-} resp raw payload token i=0 err count untrusted to_ts
+  local page latest more fetched fatal
   [ -n "$home" ] && [ -n "$channel" ] || usage
   HOME_DIR=$home
   require_tools
@@ -259,50 +283,69 @@ cmd_poll() {
   POLL_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-slack-captain.XXXXXX") || die "cannot create poll staging directory"
   trap 'rm -rf -- "$POLL_TMP"' EXIT
   resp="$POLL_TMP/response.json"
+  raw="$POLL_TMP/messages.raw.jsonl"
   payload="$POLL_TMP/payload.jsonl"
 
   while [ "$i" -lt "$MAX_LOOPS" ]; do
     i=$((i + 1))
-    # The token reaches curl on stdin, never in argv. Nothing in this pipeline
-    # echoes the config or the response body.
-    if printf 'header = "Authorization: Bearer %s"\n' "$token" \
-      | curl -sS --config - --max-time "$CURL_MAX_TIME" -G \
-        "$SLACK_API/conversations.history" \
-        --data-urlencode "channel=$channel" \
-        --data-urlencode "oldest=$CURSOR_TS" \
-        --data-urlencode "limit=$PAGE_LIMIT" \
-        -o "$resp" 2>/dev/null \
-      && jq -e . "$resp" >/dev/null 2>&1
-    then
-      if jq -e '.ok == true' "$resp" >/dev/null 2>&1; then
-        jq -c --arg bot "${CFG_BOT_USER:-}" --arg allowed "${CFG_ALLOWED_USER:-}" '
-          (.messages // [])
-          | map(select(
-              .type == "message"
-              and (has("bot_id") | not)
-              and (has("subtype") | not)
-              and ((.user // "") != "")
-              and (.user != $bot)
-            ))
-          | sort_by(.ts | tonumber)
-          | .[]
-          | {ts: .ts, user: .user, trusted: ($allowed != "" and .user == $allowed), text: (.text // "")}
-        ' "$resp" > "$payload" 2>/dev/null || : > "$payload"
-        if [ -s "$payload" ]; then
-          count=$(jq -s 'length' "$payload")
-          untrusted=$(jq -s 'map(select(.trusted | not)) | length' "$payload")
-          to_ts=$(jq -rs '.[-1].ts' "$payload")
-          valid_ts "$to_ts" || die "Slack returned an unusable message timestamp"
-          emit_header messages "$channel" "$CURSOR_TS" "$to_ts" "$count" "$untrusted" ''
-          cat "$payload"
-          return 0
-        fi
-      else
+    # Slack serves the window newest-first, so a burst larger than one page is
+    # walked backwards (latest = the oldest timestamp fetched so far) until
+    # has_more clears. Only a fully fetched window may become a result: to_ts
+    # must never commit past a message the payload did not capture.
+    : > "$raw"
+    latest='' page=0 fetched=1 fatal=''
+    while :; do
+      page=$((page + 1))
+      if ! fetch_page "$channel" "$latest" || ! jq -e . "$resp" >/dev/null 2>&1; then
+        fetched=0
+        break
+      fi
+      if ! jq -e '.ok == true' "$resp" >/dev/null 2>&1; then
         err=$(safe_reason "$(jq -r '.error // ""' "$resp" 2>/dev/null || true)")
-        if fatal_slack_error "$err"; then
-          emit_header api-error "$channel" "$CURSOR_TS" "$CURSOR_TS" 0 0 "$err"
-          return 0
-        fi
+        fatal_slack_error "$err" && fatal=$err
+        fetched=0
+        break
+      fi
+      if ! jq -c '.messages[]?' "$resp" >> "$raw" 2>/dev/null; then
+        printf 'slack-captain: could not read the messages in a Slack page; retrying\n' >&2
+        fetched=0
+        break
+      fi
+      more=$(jq -r '.has_more == true' "$resp" 2>/dev/null || true)
+      [ "$more" = true ] || break
+      [ "$page" -lt "$MAX_PAGES" ] \
+        || die "the Slack window past the read position exceeds $MAX_PAGES pages; refusing to emit a partial capture"
+      latest=$(jq -r '[.messages[].ts] | min_by(tonumber)' "$resp" 2>/dev/null || true)
+      valid_ts "$latest" || die "Slack returned an unusable message timestamp"
+    done
+    if [ -n "$fatal" ]; then
+      emit_header api-error "$channel" "$CURSOR_TS" "$CURSOR_TS" 0 0 "$fatal"
+      return 0
+    fi
+    if [ "$fetched" = 1 ] && [ -s "$raw" ]; then
+      if ! jq -cs --arg bot "${CFG_BOT_USER:-}" --arg allowed "${CFG_ALLOWED_USER:-}" '
+        map(select(
+            .type == "message"
+            and (has("bot_id") | not)
+            and (has("subtype") | not)
+            and ((.user // "") != "")
+            and (.user != $bot)
+          ))
+        | sort_by(.ts | tonumber)
+        | .[]
+        | {ts: .ts, user: .user, trusted: ($allowed != "" and .user == $allowed), text: (.text // "")}
+      ' "$raw" > "$payload" 2>/dev/null; then
+        printf 'slack-captain: could not extract messages from a fetched Slack window; retrying\n' >&2
+        : > "$payload"
+      fi
+      if [ -s "$payload" ]; then
+        count=$(jq -s 'length' "$payload")
+        untrusted=$(jq -s 'map(select(.trusted | not)) | length' "$payload")
+        to_ts=$(jq -rs '.[-1].ts' "$payload")
+        valid_ts "$to_ts" || die "Slack returned an unusable message timestamp"
+        emit_header messages "$channel" "$CURSOR_TS" "$to_ts" "$count" "$untrusted" ''
+        cat "$payload"
+        return 0
       fi
     fi
     [ "$i" -lt "$MAX_LOOPS" ] || break
@@ -389,6 +432,7 @@ apply_result() {  # <source-id> <sequence> <result-file> <mark-handled>
   class=$(cmd_classify "$file")
   case "$class" in
     messages|untrusted-messages) advance_cursor "$channel" "$file" ;;
+    api-error) ;;
     *) die "captured Slack result needs firstmate's attention: $class" ;;
   esac
   if [ "$mark" = 1 ]; then
