@@ -437,6 +437,7 @@ See [verification/public-followup.md](verification/public-followup.md) for the c
 
 A long-polling external process is registered as a *source* through its adapter, whose header and `--help` own the commands and flags.
 `bin/fm-procevent.sh` owns the generic contract; `bin/fm-procevent-lavish.sh` is the first adapter and wraps only the currently published `lavish-axi poll` interface.
+`bin/fm-procevent-slack-captain.sh` is the Slack captain-channel adapter; its configuration keys are below and its header owns everything else.
 
 This section is the single owner of the runner's operating contract.
 Registration writes one private record under `state/procevent/`, and a completed result plus its immutable adapter identity are captured under `state/procevent-inbox/` before it is published.
@@ -488,6 +489,20 @@ The runner proves nothing about the source side, and the handled acknowledgement
 The published `lavish-axi poll` clears feedback destructively before returning it, so a result lost between that clearing and the runner reading process output is unrecoverable.
 Never describe this path as at-least-once, no-loss, or lossless.
 `docs/verification/process-event-sources.md` holds the measurements and `.agents/skills/process-event-sources/SKILL.md` owns the handling procedure.
+
+## Slack captain channel (config/slack-captain)
+
+The Slack captain-channel process-event source reads its channel and identities from the local, gitignored `config/slack-captain` under the effective Firstmate home, or under `FM_CONFIG_OVERRIDE` when that test and specialized-setup override is present.
+The file is one `key=value` per line, and every id is validated as uppercase alphanumerics:
+
+- `channel=<channel id>` is required and names the channel to watch; it also derives the canonical source id, so one home watches one channel per registration.
+- `bot_user=<user id>` is optional and names Firstmate's own Slack bot user, whose posts are never captured; other bots are already excluded by their `bot_id`.
+- `allowed_user=<user id>` is optional and names the captain's Slack user; every other author is marked untrusted in the captured result, and an absent key marks every author untrusted because trust is granted only by configuration.
+
+An absent or invalid file is a refusal at arming time, not a default.
+The bot token is separate configuration and never lives here: it is `SLACK_BOT_TOKEN` in the home's gitignored `.env`, read inside the poll child and passed to curl on stdin so it never reaches argv, a registration record, a captured result, or a diagnostic.
+This configuration is local to each Firstmate home and is not part of secondmate inherited configuration.
+`bin/fm-procevent-slack-captain.sh` and its `--help` own the commands, the read-position rules, and the tuning variables `FM_SLACK_CAPTAIN_MAX_LOOPS`, `FM_SLACK_CAPTAIN_INTERVAL`, `FM_SLACK_CAPTAIN_MAX_TIME`, `FM_SLACK_CAPTAIN_PAGE_LIMIT`, and `FM_SLACK_CAPTAIN_MAX_PAGES`.
 
 ## Environment variables
 
