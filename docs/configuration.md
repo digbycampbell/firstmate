@@ -502,7 +502,7 @@ The file is one `key=value` per line, and every id is validated as uppercase alp
 An absent or invalid file is a refusal at arming time, not a default.
 The bot token is separate configuration and never lives here: it is `SLACK_BOT_TOKEN` in the home's gitignored `.env`, read inside the poll child and passed to curl on stdin so it never reaches argv, a registration record, a captured result, or a diagnostic.
 This configuration is local to each Firstmate home and is not part of secondmate inherited configuration.
-`bin/fm-procevent-slack-captain.sh` and its `--help` own the commands, the read-position rules, and the tuning variables `FM_SLACK_CAPTAIN_MAX_LOOPS`, `FM_SLACK_CAPTAIN_INTERVAL`, `FM_SLACK_CAPTAIN_MAX_TIME`, and `FM_SLACK_CAPTAIN_PAGE_LIMIT`.
+`bin/fm-procevent-slack-captain.sh` and its `--help` own the commands, the read-position rules, and the tuning variables `FM_SLACK_CAPTAIN_MAX_LOOPS`, `FM_SLACK_CAPTAIN_INTERVAL`, `FM_SLACK_CAPTAIN_MAX_TIME`, `FM_SLACK_CAPTAIN_PAGE_LIMIT`, and `FM_SLACK_CAPTAIN_MAX_PAGES`.
 
 ## Environment variables
 
