@@ -64,12 +64,14 @@ data/                durable private fleet records: backlog.md, captain.md, capt
 state/               volatile runtime signals: <id>.status wake-event lines ("<state>: <note>", appended
                      by crewmates); <id>.meta task metadata from fm-spawn, extended by the PR and Relay
                      helpers; <id>.check.sh and its <id>.check-trust binding, which the watcher refuses
-                     to execute unregistered; .wake-queue durable wakes (epoch/seq/kind/key/payload);
-                     the .afk away-mode flag; <id>.herdr-presentation, a Herdr projection journal that is never
-                     task or endpoint authority; procevent/ and procevent-inbox/, whose registered sources
-                     alone keep supervision required (section 13); pending-replies/; generated Relay
-                     artifacts (section 14); PR merge-poll and check-migration records; and dot-prefixed
-                     watcher, startup, guard, and sub-supervisor internals - never touch those
+                     to execute unregistered; .wake-queue durable wakes (epoch/seq/kind/key/payload),
+                     retained until section 8's post-handling acknowledgement; the .afk away-mode flag;
+                     <id>.herdr-presentation, a Herdr projection journal that is never task or endpoint
+                     authority; procevent/, procevent-inbox/, and when/ condition->action watch specs,
+                     whose registered sources alone keep supervision required (section 13);
+                     pending-replies/; generated Relay artifacts (section 14); PR merge-poll and
+                     check-migration records; and dot-prefixed watcher, startup, guard,
+                     presentation-cursor, and sub-supervisor internals - never touch those
 projects/            cloned repos, read-only except under hard rule 1's approved-operation exception
 .no-mistakes/        local validation state and evidence
 ```
@@ -97,7 +99,8 @@ Every network check a session start owes - GitHub auth, dead-secondmate relaunch
 That section names exactly what is still unconfirmed; treat none of those as passed until the result lands, from `bin/fm-startup-network.sh report` or as a `check: startup-network` wake.
 
 Act on the digest in the order it prints.
-The drained wake records are this turn's first work queue, and a `signal` record's own event lines outrank any historical status annotation printed beside it; reconcile every `OPEN DECISIONS` entry before continuing, including when the queue itself was empty.
+The presented wake records are this turn's first work queue, and a `signal` record's own event lines outrank any historical status annotation printed beside it; reconcile every `OPEN DECISIONS` and `UNREAD STATUS` entry before continuing, including when the queue itself was empty.
+Those records stay durable until the acknowledgement section 8 owns, so an interrupted turn re-presents them rather than losing them.
 Then follow the emitted supervision block for the detected primary harness, which owns the exact wait or wake mechanism because the script never starts supervision itself.
 The fleet-state digest's per-task liveness line is a presence check only; read `bin/fm-crew-state.sh <id>` when a task's actual current state matters.
 
@@ -110,7 +113,7 @@ A silent bootstrap section needs no action, and `BOOTSTRAP_INFO:` lines are comp
 ## 4. Harness and runtime dispatch
 
 Load `harness-adapters` before every spawn or recovery and before trust handling, skill invocation, interrupt, exit, resume, or adapter verification.
-The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, and `kimi`, plus `muse` for crewmates and scouts only; never dispatch on an unverified adapter.
+The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, `kimi`, and `cursor`, plus `muse` for crewmates and scouts only; never dispatch on an unverified adapter.
 If static `config/crew-harness` or `config/secondmate-harness` names an unverified adapter, report it and fall back only to a verified adapter rather than launching it.
 
 `docs/configuration.md` owns dispatch-profile and runtime-backend schemas, `bin/fm-harness.sh` owns static resolution, and `bin/fm-spawn.sh` owns launch flags and fail-closed validation.
@@ -207,6 +210,7 @@ A persistent secondmate is recorded in the secondmate registry and runtime state
 
 Steer a worker with short single-line messages through fail-closed `fm-send`, putting long instructions in a file.
 When a steer answers an open keyed decision or blocker, pass `fm-send`'s `--resolve-key` so the answer itself closes that record at answer time, identically for local and remote workers (`bin/fm-send.sh` header).
+`fm-send` is the data plane only: interrupt, exit, and relaunch go through `bin/fm-control.sh <task-id>`, because lifecycle text sent as a message becomes chat the worker reasons about instead of executing ([`docs/agent-control.md`](docs/agent-control.md)).
 A secondmate's routed reply returns through status or a document pointer, never by peeking into its chat; `bin/fm-pending-reply-lib.sh` owns parent-side correlation, recovery, and escalation for marked secondmate requests.
 Supervise all live work under section 8.
 
@@ -282,8 +286,10 @@ Never broadly kill watchers, especially never `pkill -f bin/fm-watch.sh`, becaus
 No turn ends blind while work is under way, including turns described as holding or waiting.
 
 At the start of every wake-handling turn, drain the durable wake queue before peeking, reading beyond the reason line, steering, or starting work.
-Session start is the only exception, because its one-shot digest already drained while locked or deliberately left the queue untouched in lock-refused read-only mode.
+Session start is the only exception, because its one-shot digest already presented the queue while locked or deliberately left it untouched in lock-refused read-only mode.
 Treat any `OPEN DECISIONS` section from the drain as actionable reconciliation input even when no wake record was queued.
+Treat any `UNREAD STATUS` section as newly surfaced status that must be read this turn; those lines are not re-printed after this presentation.
+After handling all emitted wakes and reconciling the OPEN DECISIONS and UNREAD STATUS sections, run the exact generation-bound `--ack-through` command printed as `WAKE_ACK_REQUIRED`; interruption before that acknowledgement deliberately leaves the work durable for idempotent re-handling.
 A status line is a wake event, not current state; use `bin/fm-crew-state.sh` when current state matters, especially before re-escalating an old decision, blocker, or pause.
 A declared `paused:` event means a bounded external wait expected to clear on its own, while `blocked:` means firstmate action is needed.
 
@@ -300,7 +306,7 @@ When Relay-linked work reaches a milestone or terminal state, load `fmx-respond`
 A secondmate's idle endpoint is healthy, so parent supervision relies on its routed status rather than treating a quiet pane as stale.
 Waiting on a healthy supervision cycle is silent; empty polls, elapsed time, and no-change updates are not captain-facing progress.
 
-Guard warnings never replace the contract: still drain queued wakes before other action, still repair stale liveness through the emitted protocol, resolve the worktree-tangle warning without touching unlanded work, and treat harness-aware turn-end guards as structural backstops rather than permission to omit the live cycle.
+Guard warnings never replace the contract: still handle presented wakes before other action and acknowledge them only after handling, still repair stale liveness through the emitted protocol, resolve the worktree-tangle warning without touching unlanded work, and treat harness-aware turn-end guards as structural backstops rather than permission to omit the live cycle.
 The spawn assertion and generated ship brief must both enforce that project work starts in an isolated disposable worktree, never the primary checkout.
 
 ### Away-mode stub
@@ -409,7 +415,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `stuck-crewmate-recovery` - when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
 - `secondmate-provisioning` - before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
 - `decision-hold-lifecycle` - before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
-- `process-event-sources` - before arming a long-polling source, and on any `procevent <adapter> <source-id> <sequence>` check wake; never run a registered source's blocking command yourself in a conversational turn.
+- `process-event-sources` - before arming a long-polling source, before registering a deterministic condition->action watch (do X as soon as Y is true), and on any `procevent <adapter> <source-id> <sequence>` check wake; never run a registered source's blocking command yourself in a conversational turn.
 - `fmx-respond` - on an `x-mention <request_id>` `check:` wake to handle the mention, on an `x-mode-error ...` `check:` wake to report the Relay configuration blocker, on a `public-followup ...` `check:` wake or a startup-surfaced public commitment, and on any milestone or terminal wake for a Relay-linked task before posting its completion follow-up; relevant only when Relay is on.
 - `firstmate-codexapp` - before coordinating a visible Codex Desktop thread, evaluating a Codex App backend request, or reconciling Codex Desktop host-tool smoke evidence for Firstmate work.
 - `firstmate-coding-guidelines` - before changing firstmate's shared, tracked material, as defined by section 1's list, whether editing directly or briefing a crewmate for a firstmate-repo task.
