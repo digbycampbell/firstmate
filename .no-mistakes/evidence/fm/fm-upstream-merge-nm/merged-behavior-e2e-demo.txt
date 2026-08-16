@@ -1,0 +1,23 @@
+$ bin/fm-wake-drain.sh   (scratch FM_HOME: colon-first key folds under its own slug; buried note: surfaces under UNREAD STATUS)
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+demo-task note: buried status note that should surface
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+demo-task [key=colon-first] needs-decision: choose the rollout order
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+$ bin/fm-send.sh demo-task --resolve-key default "answer"
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+error: --resolve-key 'default': no open decision or blocker with that key in /tmp/fm-merge-demo.viTq1d/home/state/demo-task.status (already closed, mistyped, or transferred). Re-check the OPEN DECISIONS listing, then resend without that key or with the right one; nothing was sent.
+exit=1
+
+$ bin/fm-send.sh demo-task --resolve-key colon-first "go with A"
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+error: text not sent to sess:fm-demo-task (tmux send failed; tried meta=/tmp/fm-merge-demo.viTq1d/home/state/demo-task.meta; backend=from-meta)
+exit=1
