@@ -453,9 +453,9 @@ $HERDR_SECTION
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
 
-**Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
-The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
-If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
+**Verify isolation before anything else, by structure, not by any directory label a harness banner prints - that label names where the harness started, not which checkout this is.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, sitting at a detached HEAD. Firstmate's own permanent clone is different in kind: it lives under a firstmate home's \`projects/\` directory, checked out to its default branch (an attached HEAD), never detached.
+The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside firstmate's permanent clone.
+If the top-level path sits under a \`projects/\` clone on its default branch, or is not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in firstmate's permanent clone, not an isolated worktree\` to the status file and stop.
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
 

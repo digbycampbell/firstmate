@@ -757,6 +757,38 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+# A crewmate on the claude harness sees that harness's own "Primary working
+# directory" banner labelling wherever it started. The isolation instruction
+# must not collide with that label: it must still tell a genuinely
+# mis-launched worker to stop (safety intact), but must not contain the bare
+# colliding phrase, in any casing, that a worker could mistake for a reference
+# to the harness's own banner.
+test_ship_isolation_instruction_avoids_harness_banner_collision() {
+  local home id brief
+  home="$TMP_ROOT/isolation-wording-home"
+  mkdir -p "$home/data"
+  id="brief-isolation-e1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "$id: ship scaffold should exit 0"
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "$id: brief was not scaffolded"
+  assert_grep "Verify isolation" "$brief" \
+    "$id: brief lost the isolation-verification instruction"
+  assert_grep "blocked: launched in" "$brief" \
+    "$id: brief lost the blocked-status safety instruction for a genuine mis-launch"
+  # The test must be structural, not nominal: firstmate's permanent clone is
+  # distinguished by living under a home's projects/ directory on its default
+  # branch (attached HEAD), unlike a task worktree's detached HEAD.
+  assert_grep "projects/" "$brief" \
+    "$id: isolation instruction must give a structural test (a firstmate home's projects/ clone), not just a name"
+  assert_grep "detached HEAD" "$brief" \
+    "$id: isolation instruction must contrast the task worktree's detached HEAD against firstmate's attached-branch clone"
+  if grep -qi "primary working directory" "$brief"; then
+    fail "$id: isolation instruction still contains the colliding harness-banner phrase \"primary working directory\""
+  fi
+  pass "fm-brief.sh: isolation instruction avoids the harness banner's colliding phrase"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -797,4 +829,5 @@ test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
+test_ship_isolation_instruction_avoids_harness_banner_collision
 test_scout_and_secondmate_scaffold
