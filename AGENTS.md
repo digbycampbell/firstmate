@@ -109,7 +109,7 @@ The fleet-state digest's per-task liveness line is a presence check only; read `
 
 Bootstrap detects first, asks for consent, and installs only after the captain approves in the current session.
 Do not dispatch until the required tools are present and GitHub authentication is good.
-Use `gh-axi` for GitHub, `chrome-devtools-axi` for browser work, and `lavish-axi` for structured decisions or reports; consult current help rather than memorizing flags.
+Use `gh-axi` for all GitHub operations, `chrome-devtools-axi` for all browser operations, and `lavish-axi` for structured decisions or reports; consult current help rather than memorizing flags.
 A silent bootstrap section needs no action, and `BOOTSTRAP_INFO:` lines are completed no-action facts; load `bootstrap-diagnostics` for any printed actionable diagnostic line.
 `secondmate-provisioning` owns startup secondmate sync, liveness, and inherited local-material convergence.
 
