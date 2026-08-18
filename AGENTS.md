@@ -47,7 +47,7 @@ Each secondmate has a persistent isolated `FM_HOME`, including its own state, ba
 `bin/fm-send.sh` fails closed unless `FM_HOME` is explicit, so a steer cannot silently resolve against another home.
 
 ```
-AGENTS.md            this file (CLAUDE.md is a symlink to it)
+AGENTS.md            this file (CLAUDE.md is a real @AGENTS.md pointer to it)
 README.md CONTRIBUTING.md .github/workflows/ .tasks.toml bin/   committed shared surfaces;
                      .tasks.toml configures the default backlog backend (section 10), and each bin/
                      script's header is authoritative - read it before first use
@@ -69,6 +69,9 @@ state/               volatile runtime signals: <id>.status wake-event lines ("<s
                      <id>.herdr-presentation, a Herdr projection journal that is never task or endpoint
                      authority; procevent/, procevent-inbox/, and when/ condition->action watch specs,
                      whose registered sources alone keep supervision required (section 13);
+                     decision-bindings/, written only by bin/fm-decision-hold.sh bind and dropped by
+                     unbind or source retirement, binding a captured-answer source id to the
+                     captain-hold origin its keyed answers close (docs/decision-hold-lifecycle.md);
                      pending-replies/; generated Relay artifacts (section 14); PR merge-poll and
                      check-migration records; and dot-prefixed watcher, startup, guard,
                      presentation-cursor, and sub-supervisor internals - never touch those
@@ -167,7 +170,7 @@ Route durable knowledge to its most specific owner:
 Firstmate never writes a project's `AGENTS.md` directly.
 A crewmate creates or updates it lazily through the project's selected delivery path, using `bin/fm-ensure-agents-md.sh` and preferring pointers to authoritative sources over copied detail.
 Keep fleet delivery posture and captain-private strategy out of project memory.
-When the captain invokes `/stow`, load the `stow` skill for the complete knowledge-routing and unfinished-work sweep.
+When the captain invokes `/stow`, load the `stow` skill for its memory curation, knowledge routing, and persistence of the open work records this session is holding; it files and corrects only the open work that session is holding, and never reconciles the backlog against repository or PR reality.
 
 ## 7. Task lifecycle
 

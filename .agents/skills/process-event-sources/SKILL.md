@@ -26,6 +26,16 @@ bin/fm-procevent-lavish.sh arm <artifact.html>
 
 A configured Slack captain channel is armed and handled through `bin/fm-procevent-slack-captain.sh`, whose header owns its configuration, token handling, and read-position rules; its `handle <source-id> <sequence> <result-file>` is the required handling command, because only it advances the channel read position along with the acknowledgement.
 
+When a source carries captain answers to decisions that already have durable holds, bind it to their origin BEFORE arming it, so it can never produce an answer that has nowhere to go:
+
+```sh
+bin/fm-decision-hold.sh bind <source-id> <origin-id>
+```
+
+The runner then passes each captured result to that source's own adapter `answers` command and pipes the keyed answers it prints into the one keyed-answer intake, which owns every rule about what they mean.
+This is generic: any adapter with an `answers` command works, and the runner still wakes you to act on the result.
+`decision-hold-lifecycle` owns when a binding is required and what the keys must be.
+
 A configured remote secondmate reply source is armed and handled through `bin/fm-procevent-remote-reply.sh`.
 Its header owns exact commands, while the adapter owns cursor continuity, validated deduplicated status ingest, path-confined document fetch, acknowledgement, and re-arming after a good delta.
 A continuity break is escalated once and stays unarmed until an operator deliberately rebases it.
