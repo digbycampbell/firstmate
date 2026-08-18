@@ -1,0 +1,59 @@
+# Upstream sync merge - verification transcript
+
+merge-base=f1a4af426d7199c1781bc91ccd143b8e1f732d10  ours(origin/main)=6ed30063d20753bfb2f0072a704452d904037978  upstream=64d61aed84373e02b1a28c4e6b262908ed8128d5  merged=caa142503d26dd6ad01fb44096ef4092b0e0a49b
+
+## Rule 1 - our functional work preserved byte-identical to origin/main
+IDENTICAL  bin/fm-procevent-slack-captain.sh  (cfecb00c42fab04a678137b9d1f9a3aad4d66f65)
+IDENTICAL  tests/fm-procevent-slack-captain.test.sh  (3598f8143d5bf5c8ff4beb5a1ba8e602f7f90143)
+IDENTICAL  bin/fm-brief.sh  (2e8fafb47808fbdc2198b1cb18c252270365ad2d)
+IDENTICAL  bin/fm-classify-lib.sh  (30f0fd027c30f66963d4dd85515997a69a3b4760)
+
+## Rule 4 - line-count arithmetic: merged == ours + (upstream - base)
+FILE                                                   base   ours  upstr   merged   expect verdict
+.agents/skills/decision-hold-lifecycle/SKILL.md          42     42     49       49       49 OK
+.agents/skills/firstmate-coding-guidelines/SKILL.md     126    125    127      126      126 OK
+.agents/skills/fmx-respond/SKILL.md                     256    252    269      265      265 OK
+.agents/skills/process-event-sources/SKILL.md           107    103    117      113      113 OK
+.agents/skills/secondmate-provisioning/SKILL.md         249    248    252      251      251 OK
+.agents/skills/stow/SKILL.md                            269    271    283      285      285 OK
+.agents/skills/stuck-crewmate-recovery/SKILL.md          51     50     54       53       53 OK
+.agents/skills/updatefirstmate/SKILL.md                  64     63     64       63       63 OK
+.github/workflows/ci.yml                                389    389    417      417      417 OK
+.no-mistakes.yaml                                        42     42     44       44       44 OK
+.pi/extensions/fm-calm.ts                               468    468    495      495      495 OK
+AGENTS.md                                               568    448    569      451      449 DELTA 2 (documented: AGENTS.md column layout needs 3 lines for upstream's 1-line entry)
+CLAUDE.md                                                 0      0      2        2        2 OK
+CONTRIBUTING.md                                         105    105    111      111      111 OK
+README.md                                               228    228    228      228      228 OK
+bin/fm-backlog-handoff.sh                               578    578    606      606      606 OK
+bin/fm-decision-hold.sh                                 662    662    850      850      850 OK
+bin/fm-ensure-agents-md.sh                              198    198    253      253      253 OK
+bin/fm-ff-lib.sh                                        420    420    420      420      420 OK
+bin/fm-install-actionlint.sh                              0      0     84       84       84 OK
+bin/fm-install-shellcheck.sh                             36     36     84       84       84 OK
+bin/fm-lint-workflows.sh                                  0      0    137      137      137 OK
+bin/fm-lint.sh                                          541    541    561      561      561 OK
+bin/fm-procevent-lavish.sh                              156    156    241      241      241 OK
+bin/fm-procevent.sh                                     811    811    856      856      856 OK
+bin/fm-send.sh                                          552    552    609      609      609 OK
+bin/fm-test-run.sh                                     1717   1717   1719     1719     1719 OK
+bin/fm-x-link.sh                                        178    178    234      234      234 OK
+docs/architecture.md                                    339    339    342      342      342 OK
+docs/calm-mode-feasibility.md                           439    439    502      502      502 OK
+docs/configuration.md                                   637    652    646      661      661 OK
+docs/decision-hold-lifecycle.md                         112    112    159      159      159 OK
+docs/scripts.md                                         121    121    121      121      121 OK
+docs/verification/process-event-sources.md              153    153    155      155      155 OK
+tests/fm-backlog-handoff.test.sh                        554    554    649      649      649 OK
+tests/fm-calm-pi-extension.test.sh                     3934   3934   3967     3967     3967 OK
+tests/fm-decision-hold-lifecycle.test.sh                785    785   1133     1133     1133 OK
+tests/fm-ensure-agents-md.test.sh                       211    211    371      371      371 OK
+tests/fm-lint-workflows.test.sh                           0      0    530      530      530 OK
+tests/fm-lint.test.sh                                   639    639    881      881      881 OK
+tests/fm-procevent.test.sh                             1144   1144   1153     1153     1153 OK
+tests/fm-x-mode.test.sh                                2899   2899   2971     2971     2971 OK
+
+## Rule 3 - AGENTS.md safety-boundary census, origin/main vs merged
+6ed3006: 'never'=60 'always'=3 ' must '=20 sections=16 layout-entries=10
+caa1425: 'never'=61 'always'=3 ' must '=20 sections=16 layout-entries=10
+(no boundary lost; 'never' count rises by 1 from upstream's /stow sentence)

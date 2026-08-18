@@ -1,0 +1,70 @@
+# Upstream-line completeness sweep + conflict resolutions
+
+## Every line upstream added since the merge base, present in the merge result
+REFLOWED (not verbatim) in .agents/skills/stow/SKILL.md:
+  description: Sweep the current session for uncaptured durable knowledge, file it to disk, persist the open work records this session knows are unfiled or now wrong, and curate the home's tiered, decaying startup memory before a context reset. Use when the captain invokes /stow (e.g. "/stow", "stow what you've learned"), before a session reset or context compaction, or periodically to keep operational memory current.
+REFLOWED (not verbatim) in AGENTS.md:
+    decision-bindings/ private bindings from a captured-answer source id to the captain-hold origin its keyed answers close; written only by bin/fm-decision-hold.sh bind, dropped by unbind and by source retirement (section 13; docs/decision-hold-lifecycle.md)
+upstream-touched files: 42 ; non-verbatim lines: 2 (both are the two documented reflow resolutions)
+
+## Resolution (a) stow SKILL.md description - YAML-parsed comparison of the real consumer contract
+upstream : Sweep the current session for uncaptured durable knowledge, file it to disk, persist the open work records this session knows are unfiled or now wrong, and curate the home's tiered, decaying startup memory before a context reset. Use when the captain invokes /stow (e.g. "/stow", "stow what you've learned"), before a session reset or context compaction, or periodically to keep operational memory current.
+merged   : Sweep the current session for uncaptured durable knowledge, file it to disk, persist the open work records this session knows are unfiled or now wrong, and curate the home's tiered, decaying startup memory before a context reset. Use when the captain invokes /stow (e.g. "/stow", "stow what you've learned"), before a session reset or context compaction, or periodically to keep operational memory current.
+VERDICT  : IDENTICAL after YAML parse - only line wrapping differs (repo one-sentence-per-line style)
+
+## Resolution (b) process-event-sources SKILL.md - both paragraphs kept
+diff --git a/.agents/skills/process-event-sources/SKILL.md b/.agents/skills/process-event-sources/SKILL.md
+index 3602c77..e5d6410 100644
+--- a/.agents/skills/process-event-sources/SKILL.md
++++ b/.agents/skills/process-event-sources/SKILL.md
+@@ -26,6 +26,16 @@ bin/fm-procevent-lavish.sh arm <artifact.html>
+ 
+ A configured Slack captain channel is armed and handled through `bin/fm-procevent-slack-captain.sh`, whose header owns its configuration, token handling, and read-position rules; its `handle <source-id> <sequence> <result-file>` is the required handling command, because only it advances the channel read position along with the acknowledgement.
+ 
++When a source carries captain answers to decisions that already have durable holds, bind it to their origin BEFORE arming it, so it can never produce an answer that has nowhere to go:
++
++```sh
++bin/fm-decision-hold.sh bind <source-id> <origin-id>
++```
++
++The runner then passes each captured result to that source's own adapter `answers` command and pipes the keyed answers it prints into the one keyed-answer intake, which owns every rule about what they mean.
++This is generic: any adapter with an `answers` command works, and the runner still wakes you to act on the result.
++`decision-hold-lifecycle` owns when a binding is required and what the keys must be.
++
+ A configured remote secondmate reply source is armed and handled through `bin/fm-procevent-remote-reply.sh`.
+ Its header owns exact commands, while the adapter owns cursor continuity, validated deduplicated status ingest, path-confined document fetch, acknowledgement, and re-arming after a good delta.
+ A continuity break is escalated once and stays unarmed until an operator deliberately rebases it.
+
+## Resolution (c) AGENTS.md section 2 - upstream's two facts applied into our restructured block
+diff --git a/AGENTS.md b/AGENTS.md
+index 7da1bdd..2e33d3d 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -47,7 +47,7 @@ Each secondmate has a persistent isolated `FM_HOME`, including its own state, ba
+ `bin/fm-send.sh` fails closed unless `FM_HOME` is explicit, so a steer cannot silently resolve against another home.
+ 
+ ```
+-AGENTS.md            this file (CLAUDE.md is a symlink to it)
++AGENTS.md            this file (CLAUDE.md is a real @AGENTS.md pointer to it)
+ README.md CONTRIBUTING.md .github/workflows/ .tasks.toml bin/   committed shared surfaces;
+                      .tasks.toml configures the default backlog backend (section 10), and each bin/
+                      script's header is authoritative - read it before first use
+@@ -69,6 +69,9 @@ state/               volatile runtime signals: <id>.status wake-event lines ("<s
+                      <id>.herdr-presentation, a Herdr projection journal that is never task or endpoint
+                      authority; procevent/, procevent-inbox/, and when/ condition->action watch specs,
+                      whose registered sources alone keep supervision required (section 13);
++                     decision-bindings/, written only by bin/fm-decision-hold.sh bind and dropped by
++                     unbind or source retirement, binding a captured-answer source id to the
++                     captain-hold origin its keyed answers close (docs/decision-hold-lifecycle.md);
+                      pending-replies/; generated Relay artifacts (section 14); PR merge-poll and
+                      check-migration records; and dot-prefixed watcher, startup, guard,
+                      presentation-cursor, and sub-supervisor internals - never touch those
+@@ -167,7 +170,7 @@ Route durable knowledge to its most specific owner:
+ Firstmate never writes a project's `AGENTS.md` directly.
+ A crewmate creates or updates it lazily through the project's selected delivery path, using `bin/fm-ensure-agents-md.sh` and preferring pointers to authoritative sources over copied detail.
+ Keep fleet delivery posture and captain-private strategy out of project memory.
+-When the captain invokes `/stow`, load the `stow` skill for the complete knowledge-routing and unfinished-work sweep.
++When the captain invokes `/stow`, load the `stow` skill for its memory curation, knowledge routing, and persistence of the open work records this session is holding; it files and corrects only the open work that session is holding, and never reconciles the backlog against repository or PR reality.
+ 
+ ## 7. Task lifecycle
+ 
