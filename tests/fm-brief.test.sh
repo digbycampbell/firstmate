@@ -757,6 +757,46 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+# A crewmate on the claude harness sees that harness's own "Primary working
+# directory" banner labelling wherever it started. The isolation instruction
+# must not collide with that label: it must still tell a genuinely
+# mis-launched worker to stop (safety intact), but must not contain the bare
+# colliding phrase, in any casing, that a worker could mistake for a reference
+# to the harness's own banner.
+test_ship_isolation_instruction_avoids_harness_banner_collision() {
+  local home id brief
+  home="$TMP_ROOT/isolation-wording-home"
+  mkdir -p "$home/data"
+  id="brief-isolation-e1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "$id: ship scaffold should exit 0"
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "$id: brief was not scaffolded"
+  assert_grep "not by any directory label a harness banner prints" "$brief" \
+    "$id: isolation instruction must tell the worker to verify by structure, not by a harness banner's directory label"
+  assert_grep "blocked: launched in firstmate's permanent clone" "$brief" \
+    "$id: brief lost the blocked-status safety instruction for a genuine mis-launch"
+  # The test must be structural, not nominal, and must cover both home shapes:
+  # firstmate's permanent clone is either a home's projects/<repo> clone or,
+  # in a project-less self-repo domain, the home's own checkout - in both cases
+  # on its default branch at an attached HEAD, unlike a task worktree.
+  assert_grep "projects/<repo>" "$brief" \
+    "$id: isolation instruction must give the common-case structural cue (a firstmate home's projects/<repo> clone)"
+  assert_grep "project-less self-repo domain" "$brief" \
+    "$id: isolation instruction must also cover the self-repo shape, where the home is itself firstmate's permanent checkout"
+  assert_grep "or is a firstmate home's own checkout on its default branch" "$brief" \
+    "$id: the STOP condition must name the self-repo checkout as a positive structural test, not rely on a residual catch-all"
+  assert_grep "attached HEAD" "$brief" \
+    "$id: isolation instruction must contrast the task worktree's detached HEAD against firstmate's attached-HEAD default-branch clone"
+  # Red against the old wording, which identified firstmate's clone by the bare
+  # label "the primary checkout firstmate operates from" - the phrasing that
+  # collided with the harness's own "Primary working directory" banner.
+  if grep -qiE "primary (working directory|checkout)" "$brief"; then
+    fail "$id: isolation instruction still identifies firstmate's clone by a bare primary-directory label that collides with the harness banner"
+  fi
+  pass "fm-brief.sh: isolation instruction avoids the harness banner's colliding phrase"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -797,4 +837,5 @@ test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
+test_ship_isolation_instruction_avoids_harness_banner_collision
 test_scout_and_secondmate_scaffold
