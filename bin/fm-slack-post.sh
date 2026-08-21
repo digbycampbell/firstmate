@@ -37,11 +37,14 @@
 # so a caller can thread onto it. A Slack error is a loud nonzero refusal naming
 # the Slack error code.
 #
-# THREAD REGISTRATION. When the target channel is the configured captain channel,
-# the thread this post belongs to - the replied-to thread, or the new message
-# itself - is registered with bin/fm-procevent-slack-captain.sh `track-thread`,
-# which is what makes a captain reply written inside that thread reach firstmate.
-# A home with no captain-channel configuration simply skips that step.
+# THREAD REGISTRATION. When the target channel is the configured captain channel
+# and this post is itself a reply (`--thread <ts>` was given), the replied-to
+# thread is registered with bin/fm-procevent-slack-captain.sh `track-thread`,
+# which is what makes a captain reply written inside that thread reach
+# firstmate. A top-level post is not yet a thread and is not registered here: if
+# it later grows replies, the adapter's own channel-window scan tracks it the
+# first time a reply naming it is captured. A home with no captain-channel
+# configuration simply skips this step.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -196,14 +199,16 @@ fi
 ts=$(jq -r '.ts // ""' "$resp")
 valid_ts "$ts" || die "Slack accepted the message but returned no usable timestamp"
 
-# Register the thread this post belongs to, so a captain reply inside it is
-# captured. A home that watches no captain channel needs nothing here, and a
-# registration failure never invalidates a message Slack already accepted.
+# Register the thread this post replies into, so a captain reply inside it is
+# captured. A top-level post is not yet a thread, so it is not registered: doing
+# so would consume a tracked-thread slot and an extra poll request for a thread
+# that may never exist. A home that watches no captain channel needs nothing
+# here, and a registration failure never invalidates a message Slack already
+# accepted.
 watched=$(captain_channel)
-if [ -n "$watched" ] && [ "$watched" = "$channel" ]; then
-  root=${THREAD:-$ts}
-  "$SCRIPT_DIR/fm-procevent-slack-captain.sh" track-thread "$channel" "$root" >/dev/null 2>&1 \
-    || printf 'fm-slack-post: could not register thread %s for capture\n' "$root" >&2
+if [ -n "$watched" ] && [ "$watched" = "$channel" ] && [ -n "$THREAD" ]; then
+  "$SCRIPT_DIR/fm-procevent-slack-captain.sh" track-thread "$channel" "$THREAD" >/dev/null 2>&1 \
+    || printf 'fm-slack-post: could not register thread %s for capture\n' "$THREAD" >&2
 fi
 
 printf '%s\n' "$ts"

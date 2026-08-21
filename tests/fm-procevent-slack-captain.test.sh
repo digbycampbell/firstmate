@@ -194,6 +194,22 @@ rc=0
 [ ! -s "$TMP_ROOT/bot.out" ] || fail "bot and subtyped posts must not be captured"
 pass "the bot's own posts and subtyped events never become results"
 
+# --- a message with a file attachment is still captured ---------------------
+
+home=$(new_home filesubtype)
+slack_response "$(ok_body '[
+  {"type":"message","user":"'"$CAPTAIN"'","subtype":"file_share","ts":"310.000310","text":"see attached"},
+  {"type":"message","user":"'"$CAPTAIN"'","subtype":"channel_join","ts":"311.000311","text":"joined"}
+]')"
+"$ADAPTER" poll "$home" "$CHANNEL" > "$TMP_ROOT/filesubtype.out" 2>/dev/null \
+  || fail "a file_share message from the captain should be captured"
+assert_grep 'count=1' "$TMP_ROOT/filesubtype.out" "only the file_share message is captured"
+assert_grep '"text":"see attached"' "$TMP_ROOT/filesubtype.out" \
+  "a message with a file attachment is not silently dropped"
+assert_grep 'to_ts=311.000311' "$TMP_ROOT/filesubtype.out" \
+  "the read position advances past the trailing subtyped message too"
+pass "a captain message posted with a file attachment is captured"
+
 # --- an author other than the configured captain is marked untrusted --------
 
 home=$(new_home untrusted)
@@ -235,6 +251,28 @@ JSON
   || fail "a poll over a paginated window should succeed"
 assert_grep 'count=3' "$TMP_ROOT/paged.out" "every message in the window is captured before a result is emitted"
 assert_grep 'to_ts=602.000602' "$TMP_ROOT/paged.out" "the committed end position is the newest captured message"
+
+# --- the read position advances past trailing bot-only traffic --------------
+# A channel where firstmate posts often and the captain rarely does must not
+# re-walk the same bot-only tail forever: the position commits to the newest
+# ts FETCHED, not merely the newest ts that survived the captain-only filter.
+
+home=$(new_home botheavy)
+slack_response "$(ok_body '[
+  {"type":"message","user":"'"$CAPTAIN"'","ts":"700.000700","text":"one word"},
+  {"type":"message","user":"'"$BOT"'","ts":"701.000701","text":"done"},
+  {"type":"message","user":"'"$BOT"'","ts":"702.000702","text":"done again"}
+]')"
+"$ADAPTER" poll "$home" "$CHANNEL" > "$TMP_ROOT/botheavy.out" 2>/dev/null \
+  || fail "a window with trailing bot-only traffic should still succeed"
+assert_grep 'to_ts=702.000702' "$TMP_ROOT/botheavy.out" \
+  "the position advances past bot traffic fetched after the last captured message"
+FM_HOME="$home" "$ADAPTER" autohandle "$SID" 1 "$TMP_ROOT/botheavy.out" >/dev/null 2>&1 || true
+slack_response "$(ok_body '[]')"
+"$ADAPTER" poll "$home" "$CHANNEL" >/dev/null 2>&1 || true
+assert_grep 'oldest=702.000702' "$FAKE_CURL_ARGV" \
+  "the next poll does not re-walk the bot-only tail already fetched"
+pass "the channel read position advances to the newest fetched timestamp, not just the newest captured one"
 assert_grep '"text":"first"' "$TMP_ROOT/paged.out" "the older page's message is in the payload, so to_ts skips nothing"
 [ "$(tail -n 3 "$TMP_ROOT/paged.out" | head -n 1 | jq -r .ts)" = 600.000600 ] \
   || fail "a paginated payload must stay ordered oldest first"
@@ -541,3 +579,28 @@ FM_SLACK_CAPTAIN_THREAD_MAX_AGE=60 "$ADAPTER" poll "$home" "$CHANNEL" >/dev/null
 assert_no_grep 'conversations.replies' "$FAKE_CURL_ARGV" \
   "an aged-out thread must cost no request"
 pass "a tracked thread past the age bound stops being polled"
+
+# --- retention is keyed on last activity, not the thread's root age ---------
+
+home=$(new_home threadactivity)
+: > "$FAKE_REPLIES_COUNT"
+: > "$FAKE_CURL_ARGV"
+FM_HOME="$home" "$ADAPTER" track-thread "$CHANNEL" 800.000800 >/dev/null
+recent="$(date +%s).000001"
+{
+  printf 'schema=fm-slack-captain.v1\nstatus=messages\nchannel=%s\n' "$CHANNEL"
+  printf 'from_ts=0\nto_ts=0\ncount=1\nuntrusted=0\nreason=\n'
+  printf 'thread=800.000800 800.000800 %s 1\n\n' "$recent"
+  printf '{"ts":"%s","user":"%s","trusted":true,"text":"still going","thread_ts":"800.000800"}\n' \
+    "$recent" "$CAPTAIN"
+} > "$TMP_ROOT/activethread.result"
+FM_HOME="$home" "$ADAPTER" autohandle "$SID" 4 "$TMP_ROOT/activethread.result" >/dev/null 2>&1
+[ -e "$(thread_cursor "$home" 800.000800)" ] \
+  || fail "applying a fresh reply to an old-rooted thread should advance its position"
+slack_response "$(ok_body '[]')"
+printf '%s\n' '{"ok":true,"messages":[]}' > "$FAKE_SLACK_REPLIES"
+rc=0
+FM_SLACK_CAPTAIN_THREAD_MAX_AGE=60 "$ADAPTER" poll "$home" "$CHANNEL" >/dev/null 2>&1 || rc=$?
+assert_grep 'conversations.replies' "$FAKE_CURL_ARGV" \
+  "a thread rooted long ago but replied to just now must still be polled"
+pass "thread retention is keyed on last activity, not the root's age"

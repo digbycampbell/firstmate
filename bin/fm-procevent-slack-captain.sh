@@ -61,9 +61,14 @@
 # committed span in a repeated `thread=` header line. Every captured thread
 # reply carries `thread_ts` in its payload object, so a reply can be bound back
 # to the topic it answers. Trust classification is identical: only the
-# configured captain is trusted. Tracked threads older than
-# FM_SLACK_CAPTAIN_THREAD_MAX_AGE are no longer polled, and their records are
-# pruned when a later result is handled.
+# configured captain is trusted. Retention and the polling cutoff are keyed on
+# each thread's LAST ACTIVITY - its stored read position, which starts at the
+# root and advances as replies are captured - never on the root's age alone, so
+# a thread rooted long ago that is still being replied to keeps being polled.
+# Tracked threads whose last activity is older than FM_SLACK_CAPTAIN_THREAD_MAX_AGE
+# are no longer polled, and where more than FM_SLACK_CAPTAIN_MAX_THREADS remain
+# active the most recently active ones are kept. Their records are pruned,
+# relative to that same last-activity clock, when a later result is handled.
 #
 # DEBOUNCE. A captain writing several messages in a row is one thought, not
 # several wakes. The poll listens on a short interval, and when it first sees
@@ -293,11 +298,13 @@ cmd_track_thread() {  # <channel> <thread-ts>
   printf 'tracked: %s %s\n' "$channel" "$ts"
 }
 
-# The tracked threads worth polling now: the most recent MAX_THREADS whose root
-# is younger than THREAD_MAX_AGE. An old thread stops being polled rather than
-# growing the per-poll request count without bound.
+# The tracked threads worth polling now: the most recently ACTIVE MAX_THREADS,
+# where activity is each thread's stored read position (root at registration,
+# advancing as replies are captured), not its root's age. A thread that keeps
+# receiving replies keeps being polled no matter how old its root is; only a
+# thread that has gone quiet past THREAD_MAX_AGE stops.
 active_threads() {  # <channel>
-  local dir now cutoff name ts
+  local dir now cutoff name ts activity
   dir=$(thread_dir "$1")
   [ -d "$dir" ] || return 0
   now=$(date +%s)
@@ -307,15 +314,22 @@ active_threads() {  # <channel>
     ts=${name##*/}
     ts=${ts%.cursor}
     valid_ts "$ts" || continue
-    [ "${ts%%.*}" -ge "$cutoff" ] || continue
-    printf '%s\n' "$ts"
-  done | sort -n | tail -n "$MAX_THREADS"
+    read_thread_cursor "$1" "$ts" || continue
+    activity=$THREAD_TS_READ
+    valid_ts "$activity" || continue
+    [ "${activity%%.*}" -ge "$cutoff" ] || continue
+    printf '%s %s\n' "$activity" "$ts"
+  done | sort -n | tail -n "$MAX_THREADS" | while IFS=' ' read -r _activity thread; do
+    printf '%s\n' "$thread"
+  done
 }
 
-# Drop tracked-thread records far past the age at which they stopped being
-# polled. Called only from the acknowledgement path, never from the poll child.
+# Drop tracked-thread records whose last activity is far past the age at which
+# they stopped being polled, so a record with an uncaptured tail is never
+# dropped merely because its root is old. Called only from the acknowledgement
+# path, never from the poll child.
 prune_threads() {  # <channel>
-  local dir now cutoff name ts
+  local dir now cutoff name ts activity
   dir=$(thread_dir "$1")
   [ -d "$dir" ] || return 0
   now=$(date +%s)
@@ -325,7 +339,10 @@ prune_threads() {  # <channel>
     ts=${name##*/}
     ts=${ts%.cursor}
     valid_ts "$ts" || continue
-    [ "${ts%%.*}" -lt "$cutoff" ] && rm -f -- "$name"
+    read_thread_cursor "$1" "$ts" || continue
+    activity=$THREAD_TS_READ
+    valid_ts "$activity" || continue
+    [ "${activity%%.*}" -lt "$cutoff" ] && rm -f -- "$name"
   done
   return 0
 }
@@ -471,14 +488,17 @@ fetch_thread() {  # <channel> <thread-ts> <oldest>
 }
 
 # The one filter that decides what is a capturable captain message, applied
-# identically to channel history and to thread replies.
+# identically to channel history and to thread replies. A plain message and a
+# message posted with a file attachment (subtype file_share) are both
+# capturable; every other subtype (joins, leaves, edits, deletions, and the
+# rest) is not.
 select_messages() {  # <input-jsonl> <output-jsonl> <thread-ts-or-empty>
   jq -cs --arg bot "${CFG_BOT_USER:-}" --arg allowed "${CFG_ALLOWED_USER:-}" \
      --arg thread "$3" '
     map(select(
         .type == "message"
         and (has("bot_id") | not)
-        and (has("subtype") | not)
+        and ((has("subtype") | not) or .subtype == "file_share")
         and ((.user // "") != "")
         and (.user != $bot)
       ))
@@ -513,10 +533,13 @@ collect_window() {  # <channel>
       printf 'slack-captain: could not extract messages from a fetched Slack window; retrying\n' >&2
       : > "$payload"
     fi
-    if [ -s "$payload" ]; then
-      CHANNEL_TO_TS=$(jq -rs '.[-1].ts' "$payload")
-      valid_ts "$CHANNEL_TO_TS" || die "Slack returned an unusable message timestamp"
-    fi
+    # The read position advances to the newest ts FETCHED, not merely the
+    # newest ts that survived filtering: the whole window up to it was fully
+    # paginated and every capturable message in it is already in the payload,
+    # so a channel where filtered-out traffic dominates never re-walks history
+    # without bound.
+    CHANNEL_TO_TS=$(jq -rs 'max_by(.ts | tonumber) | .ts' "$raw")
+    valid_ts "$CHANNEL_TO_TS" || die "Slack returned an unusable message timestamp"
   fi
   tpayload="$POLL_TMP/thread.payload.jsonl"
   while IFS= read -r ts; do
@@ -542,7 +565,7 @@ collect_window() {  # <channel>
 
 cmd_poll() {
   local home=${1-} channel=${2-} resp raw traw payload threadlines token i=0
-  local count untrusted held prev
+  local count untrusted held prev held_to_ts
   [ -n "$home" ] && [ -n "$channel" ] || usage
   HOME_DIR=$home
   require_tools
@@ -582,14 +605,15 @@ cmd_poll() {
         sleep "$QUIET_WINDOW"
         cp "$payload" "$POLL_TMP/held.payload.jsonl"
         cp "$threadlines" "$POLL_TMP/held.threads.header"
+        held_to_ts=$CHANNEL_TO_TS
         collect_window "$channel"
         if [ "$FETCHED" != 1 ] || [ ! -s "$payload" ]; then
           # A failed or degraded recollection never shrinks a burst already
-          # collected: keep it and stop holding.
+          # collected, or rewinds a read position already fully fetched: keep
+          # both and stop holding.
           cp "$POLL_TMP/held.payload.jsonl" "$payload"
           cp "$POLL_TMP/held.threads.header" "$threadlines"
-          CHANNEL_TO_TS=$(jq -rs 'map(select(has("thread_ts") | not)) | if length == 0 then "" else .[-1].ts end' "$payload")
-          [ -n "$CHANNEL_TO_TS" ] || CHANNEL_TO_TS=$CURSOR_TS
+          CHANNEL_TO_TS=$held_to_ts
           break
         fi
         count=$(jq -s 'length' "$payload")

@@ -98,8 +98,8 @@ pass "the token is confined to curl's stdin"
 
 # --- the post registers its thread for inbound capture ----------------------
 
-assert_present "$(thread_cursor "$home" "$CHANNEL" 500.000500)" \
-  "a post into the captain channel registers its own thread for capture"
+assert_absent "$(thread_cursor "$home" "$CHANNEL" 500.000500)" \
+  "a top-level post must not register a tracked thread of its own"
 printf '{"ok":true,"ts":"501.000501"}\n' > "$FAKE_SLACK_RESPONSE"
 FM_HOME="$home" "$POST" general --thread 400.000400 'in thread' >/dev/null \
   || fail "a threaded post should succeed"
