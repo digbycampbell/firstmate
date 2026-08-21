@@ -449,6 +449,7 @@ See [verification/public-followup.md](verification/public-followup.md) for the c
 A long-polling external process is registered as a *source* through its adapter, whose header and `--help` own the commands and flags.
 `bin/fm-procevent.sh` owns the generic contract; `bin/fm-procevent-lavish.sh` is the first adapter and wraps only the currently published `lavish-axi poll` interface.
 `bin/fm-procevent-slack-captain.sh` is the Slack captain-channel adapter; its configuration keys are below and its header owns everything else.
+`bin/fm-procevent-quota-topic.sh` is the live quota channel-topic adapter; its configuration keys are below and its header owns the topic format, the quota sources, and everything else.
 
 The `when` adapter (`bin/fm-procevent-when.sh`) turns this channel into a condition->action primitive: it registers a deterministic condition and a deterministic action once, its blocking child polls the condition without waking firstmate, and a stable true fires the action at most once before one terminal outcome is durably captured and published as a wake that remains eligible for re-announcement until handled.
 The (condition, action) spec is stored privately under `state/when/` and hash-bound by a trust record the same way `bin/fm-check-register.sh` binds a custom check, while the spec separately binds the resolved action executable's bytes; a mutated or unregistered spec or a changed action executable is refused before the action runs.
@@ -524,11 +525,37 @@ The file is one `key=value` per line, and every id is validated as uppercase alp
 - `channel=<channel id>` is required and names the channel to watch; it also derives the canonical source id, so one home watches one channel per registration.
 - `bot_user=<user id>` is optional and names Firstmate's own Slack bot user, whose posts are never captured; other bots are already excluded by their `bot_id`.
 - `allowed_user=<user id>` is optional and names the captain's Slack user; every other author is marked untrusted in the captured result, and an absent key marks every author untrusted because trust is granted only by configuration.
+- `quiet_window=<seconds>` is optional and sets the debounce hold, default 90: new traffic is held open until a quiet window adds nothing, so a burst of captain messages becomes one capture rather than one wake each.
 
 An absent or invalid file is a refusal at arming time, not a default.
 The bot token is separate configuration and never lives here: it is `SLACK_BOT_TOKEN` in the home's gitignored `.env`, read inside the poll child and passed to curl on stdin so it never reaches argv, a registration record, a captured result, or a diagnostic.
 This configuration is local to each Firstmate home and is not part of secondmate inherited configuration.
-`bin/fm-procevent-slack-captain.sh` and its `--help` own the commands, the read-position rules, and the tuning variables `FM_SLACK_CAPTAIN_MAX_LOOPS`, `FM_SLACK_CAPTAIN_INTERVAL`, `FM_SLACK_CAPTAIN_MAX_TIME`, `FM_SLACK_CAPTAIN_PAGE_LIMIT`, and `FM_SLACK_CAPTAIN_MAX_PAGES`.
+Channel history alone cannot see a reply written inside a thread, so the adapter also reads `conversations.replies` for the threads it tracks, keeping a per-thread read position under `state/slack-captain/threads/` that advances by the same capture-first rule as the channel position.
+`bin/fm-procevent-slack-captain.sh` and its `--help` own the commands, the thread-tracking and read-position rules, the debounce shape, and the tuning variables `FM_SLACK_CAPTAIN_MAX_LOOPS`, `FM_SLACK_CAPTAIN_INTERVAL`, `FM_SLACK_CAPTAIN_MAX_TIME`, `FM_SLACK_CAPTAIN_PAGE_LIMIT`, `FM_SLACK_CAPTAIN_MAX_PAGES`, `FM_SLACK_CAPTAIN_QUIET_WINDOW`, `FM_SLACK_CAPTAIN_MAX_QUIET_WINDOWS`, `FM_SLACK_CAPTAIN_MAX_THREADS`, and `FM_SLACK_CAPTAIN_THREAD_MAX_AGE`.
+
+## Slack channel names (config/slack-channels)
+
+Outbound Slack posts name a channel rather than an id.
+`config/slack-channels` is the local, gitignored map that resolves them, one `name=<channel id>` per line, with the same id validation as above.
+A name with no entry is a refusal, never a guess, so a typo cannot post into the wrong channel; a raw channel id passes through unresolved.
+
+`bin/fm-slack-post.sh` is the one supported way to post as Firstmate's bot: it resolves the channel through this map, reads `SLACK_BOT_TOKEN` from the home's `.env` exactly as the captain adapter does, posts message text or a `--file`, optionally into a thread with `--thread <ts>`, prints the posted timestamp, and registers the resulting thread so a captain reply inside it is still captured.
+A completion post should carry `--worker-details "<model> <effort>"`, which is the single owner of Firstmate's standing completion convention and appends the model and effort that produced the work.
+
+## Slack quota topic (config/slack-quota-topic)
+
+The live quota channel-topic process-event source keeps a Slack channel's topic showing how much provider quota is left, on the same registered-source machinery and with no daemon of its own.
+It reads the local, gitignored `config/slack-quota-topic`, one `key=value` per line:
+
+- `channel=<channel id or name>` is required; a name is resolved through `config/slack-channels`.
+- `interval=<seconds>` is optional, default 1200.
+
+The topic is one line, `Claude: session xx% week yy% // Codex: week yy% // Kimi: session xx% week yy%`, using remaining-percentage figures, and is written only when that rendered line changed.
+Codex publishes no session window at all, so it is rendered weekly-only rather than with an invented figure, and a provider that is absent, unauthenticated, or erroring renders its reason instead of a blank.
+Claude and Codex come from `quota-axi --json`; Kimi is read directly from the managed usage endpoint the Kimi CLI itself calls, because quota-axi's Kimi source reads only that CLI's OAuth store and goes dark when it expires.
+That read uses `KIMI_API_QUOTA` from the home's gitignored `.env`, handled exactly like `SLACK_BOT_TOKEN`.
+A healthy run produces no wake at all; only a fatal Slack error becomes a captured result.
+Threshold-crossing quota alerts remain ordinary messages and are unaffected by this source.
 
 ## Environment variables
 

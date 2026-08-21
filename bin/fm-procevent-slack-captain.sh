@@ -8,6 +8,7 @@
 #   fm-procevent-slack-captain.sh autohandle <source-id> <sequence> <result-file>
 #   fm-procevent-slack-captain.sh classify <result-file>
 #   fm-procevent-slack-captain.sh terminal <result-file>
+#   fm-procevent-slack-captain.sh track-thread <channel> <thread-ts>
 #   fm-procevent-slack-captain.sh source-id
 #   fm-procevent-slack-captain.sh retire
 #
@@ -31,6 +32,7 @@
 #                               never captured
 #   allowed_user=<user id>      optional, the captain's Slack user; every OTHER
 #                               author is marked untrusted in the result
+#   quiet_window=<seconds>      optional, the debounce hold below (default 90)
 # Ids are validated as uppercase alphanumerics. An absent `allowed_user` marks
 # every message untrusted, because trust is granted only by configuration.
 #
@@ -39,24 +41,47 @@
 # appears in argv, in a registration record, in a captured result, or in any
 # diagnostic this adapter prints. Nothing here echoes a response body.
 #
-# READ-POSITION CONTINUITY. The poll child never advances the stored cursor,
+# READ-POSITION CONTINUITY. The poll child never advances a stored cursor,
 # because doing so before the runner has captured its output would lose messages
-# on a crash. It reports `from_ts` and `to_ts` instead, and the cursor advances
+# on a crash. It reports `from_ts` and `to_ts` instead, and cursors advance
 # only in `handle`/`autohandle`, strictly after the result is durably captured.
 # A result that does not continue the stored cursor is refused loudly and the
 # cursor is never silently rebased; the same refusal covers an unreadable or
 # incompatible cursor file. Slack's own retention still bounds what any cursor
 # can recover, so this is continuity within retention, never a no-loss claim.
 #
-# `autohandle` is the runner's entry into that advance. It deliberately reports
-# failure so the runner leaves the result unacknowledged: unlike a delta that is
-# applied into durable state, the captured result IS the deliverable and only
-# firstmate can read it, so it must stay eligible for re-announcement until
-# firstmate acknowledges it. `handle` is the firstmate-facing command that
-# advances the cursor and records that acknowledgement together. It also
-# acknowledges an `api-error` result: such a result carries no messages and
-# leaves the cursor untouched, and a still-broken credential simply re-emits
-# an api-error on the next poll, so acknowledging one generation loses nothing.
+# THREAD REPLIES. Channel history alone cannot see a reply the captain writes
+# inside a thread, so this adapter also reads conversations.replies for every
+# TRACKED thread. A thread becomes tracked when a message in a captured window
+# carries a `thread_ts`, and when `track-thread` is called - which is how
+# bin/fm-slack-post.sh registers the threads firstmate's own posts create or
+# reply into. Each tracked thread keeps its own cursor under
+# state/slack-captain/threads/<channel>/, advanced by exactly the same
+# capture-first rule as the channel cursor, and the result names each thread's
+# committed span in a repeated `thread=` header line. Every captured thread
+# reply carries `thread_ts` in its payload object, so a reply can be bound back
+# to the topic it answers. Trust classification is identical: only the
+# configured captain is trusted. Retention and the polling cutoff are keyed on
+# each thread's LAST ACTIVITY - its stored read position, which starts at the
+# root and advances as replies are captured - never on the root's age alone, so
+# a thread rooted long ago that is still being replied to keeps being polled.
+# Tracked threads whose last activity is older than FM_SLACK_CAPTAIN_THREAD_MAX_AGE
+# are no longer polled, and where more than FM_SLACK_CAPTAIN_MAX_THREADS remain
+# active the most recently active ones are kept. Their records are pruned,
+# relative to that same last-activity clock, when a later result is handled.
+#
+# DEBOUNCE. A captain writing several messages in a row is one thought, not
+# several wakes. The poll listens on a short interval, and when it first sees
+# new traffic it does NOT capture: it holds a quiet window (`quiet_window`,
+# default 90 seconds), recollects the whole span from the unmoved cursor, and
+# repeats until a window adds nothing new or FM_SLACK_CAPTAIN_MAX_QUIET_WINDOWS
+# holds have elapsed, so a continuous stream still flushes. That bound set to 0
+# disables the hold and captures the first window immediately. Because every
+# recollection reads from the same unmoved cursor, the hold cannot lose a
+# message and a crash mid-hold loses only an uncaptured, unacknowledged window.
+# A transient fetch failure or a fatal Slack error DURING a hold ends the hold
+# and emits the burst already collected rather than discarding it; the fatal
+# error is reported by the next poll, which re-hits it.
 #
 # A window holding more messages than one page fetches is paginated to
 # exhaustion (bounded by FM_SLACK_CAPTAIN_MAX_PAGES) before a result is
@@ -78,12 +103,17 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
 SLACK_API="${FM_SLACK_CAPTAIN_API:-https://slack.com/api}"
 MAX_LOOPS=${FM_SLACK_CAPTAIN_MAX_LOOPS:-90}
-INTERVAL=${FM_SLACK_CAPTAIN_INTERVAL:-30}
+INTERVAL=${FM_SLACK_CAPTAIN_INTERVAL:-20}
 CURL_MAX_TIME=${FM_SLACK_CAPTAIN_MAX_TIME:-20}
 PAGE_LIMIT=${FM_SLACK_CAPTAIN_PAGE_LIMIT:-200}
 MAX_PAGES=${FM_SLACK_CAPTAIN_MAX_PAGES:-25}
+MAX_QUIET_WINDOWS=${FM_SLACK_CAPTAIN_MAX_QUIET_WINDOWS:-3}
+MAX_THREADS=${FM_SLACK_CAPTAIN_MAX_THREADS:-20}
+THREAD_MAX_AGE=${FM_SLACK_CAPTAIN_THREAD_MAX_AGE:-604800}
+DEFAULT_QUIET_WINDOW=90
 SCHEMA=fm-slack-captain.v1
 CURSOR_SCHEMA=fm-slack-captain-cursor.v1
+THREAD_SCHEMA=fm-slack-captain-thread-cursor.v1
 NO_TRAFFIC_EXIT=75
 
 # The home the poll child works against. `poll` is executed by the runner, which
@@ -93,13 +123,15 @@ HOME_DIR=$FM_HOME
 POLL_TMP=
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,67p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,86p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 state_dir()   { printf '%s\n' "${FM_STATE_OVERRIDE:-$HOME_DIR/state}"; }
 config_file() { printf '%s\n' "${FM_CONFIG_OVERRIDE:-$HOME_DIR/config}/slack-captain"; }
 env_file()    { printf '%s\n' "$HOME_DIR/.env"; }
 cursor_dir()  { printf '%s\n' "$(state_dir)/slack-captain"; }
 cursor_path() { printf '%s/%s.cursor\n' "$(cursor_dir)" "$1"; }
+thread_dir()  { printf '%s/threads/%s\n' "$(cursor_dir)" "$1"; }
+thread_path() { printf '%s/%s.cursor\n' "$(thread_dir "$1")" "$2"; }
 
 require_tools() {
   command -v curl >/dev/null 2>&1 || die "curl is not installed"
@@ -123,7 +155,7 @@ config_get() {  # <key>
   sed -n "s/^[[:space:]]*$1=//p" "$file" | tail -n1 | tr -d '[:space:]'
 }
 
-# Sets CFG_CHANNEL, CFG_BOT_USER, CFG_ALLOWED_USER.
+# Sets CFG_CHANNEL, CFG_BOT_USER, CFG_ALLOWED_USER, QUIET_WINDOW.
 load_config() {
   CFG_CHANNEL=$(config_get channel)
   CFG_BOT_USER=$(config_get bot_user)
@@ -134,6 +166,16 @@ load_config() {
     || die "config/slack-captain has an invalid bot_user id"
   [ -z "$CFG_ALLOWED_USER" ] || valid_slack_id "$CFG_ALLOWED_USER" \
     || die "config/slack-captain has an invalid allowed_user id"
+  # The environment override exists for tests and specialized setups; the
+  # configured value is the captain-facing knob and the default is the floor.
+  QUIET_WINDOW=${FM_SLACK_CAPTAIN_QUIET_WINDOW-}
+  if [ -z "$QUIET_WINDOW" ]; then
+    QUIET_WINDOW=$(config_get quiet_window)
+    [ -n "$QUIET_WINDOW" ] || QUIET_WINDOW=$DEFAULT_QUIET_WINDOW
+  fi
+  case "$QUIET_WINDOW" in
+    ''|*[!0-9]*) die "config/slack-captain has an invalid quiet_window" ;;
+  esac
 }
 
 # The bot token, refused rather than defaulted when absent. Printed to stdout for
@@ -177,6 +219,13 @@ cmd_retire() {
 
 # --- cursor -----------------------------------------------------------------
 
+valid_ts() {
+  case "${1-}" in
+    ''|*[!0-9.]*|*.*.*) return 1 ;;
+  esac
+  return 0
+}
+
 # Sets CURSOR_TS. An absent cursor starts at 0, which Slack treats as the whole
 # retained history; anything present but unreadable is a loud refusal.
 read_cursor() {  # <channel>
@@ -192,26 +241,110 @@ read_cursor() {  # <channel>
   CURSOR_TS=$ts
 }
 
-valid_ts() {
-  case "${1-}" in
-    ''|*[!0-9.]*|*.*.*) return 1 ;;
-  esac
-  return 0
+# One private cursor record, written atomically. Used for the channel cursor and
+# for every tracked thread cursor, which differ only in their schema and path.
+write_cursor_file() {  # <path> <schema> <ts>
+  local dir tmp
+  dir=$(dirname "$1")
+  (umask 077; mkdir -p "$dir") || return 1
+  [ ! -L "$1" ] || return 1
+  tmp=$(umask 077; mktemp "$dir/.cursor.XXXXXX") || return 1
+  {
+    printf 'schema=%s\n' "$2"
+    printf 'ts=%s\n' "$3"
+  } > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  chmod 600 "$tmp" || { rm -f -- "$tmp"; return 1; }
+  mv -f -- "$tmp" "$1"
 }
 
 write_cursor() {  # <channel> <ts>
-  local dir path tmp
-  dir=$(cursor_dir)
-  (umask 077; mkdir -p "$dir") || return 1
-  path=$(cursor_path "$1")
-  [ ! -L "$path" ] || return 1
-  tmp=$(umask 077; mktemp "$dir/.cursor.XXXXXX") || return 1
-  {
-    printf 'schema=%s\n' "$CURSOR_SCHEMA"
-    printf 'ts=%s\n' "$2"
-  } > "$tmp" || { rm -f -- "$tmp"; return 1; }
-  chmod 600 "$tmp" || { rm -f -- "$tmp"; return 1; }
-  mv -f -- "$tmp" "$path"
+  write_cursor_file "$(cursor_path "$1")" "$CURSOR_SCHEMA" "$2"
+}
+
+# --- tracked threads --------------------------------------------------------
+
+# Sets THREAD_TS_READ for one tracked thread. An absent record is not tracked.
+read_thread_cursor() {  # <channel> <thread-ts>
+  local path ts schema
+  path=$(thread_path "$1" "$2")
+  THREAD_TS_READ=
+  [ -e "$path" ] || return 1
+  [ -f "$path" ] && [ ! -L "$path" ] || die "slack captain thread cursor is unsafe: $path"
+  schema=$(sed -n 's/^schema=//p' "$path" | head -n1)
+  ts=$(sed -n 's/^ts=//p' "$path" | head -n1)
+  [ "$schema" = "$THREAD_SCHEMA" ] \
+    || die "slack captain thread cursor has an incompatible schema: $path"
+  valid_ts "$ts" || die "slack captain thread cursor has an invalid read position: $path"
+  THREAD_TS_READ=$ts
+}
+
+# Start tracking a thread. Creating the record is registration, not a read
+# position: it starts AT the thread root, so every reply after the root is still
+# captured before anything is ever marked read. Idempotent, and never moves an
+# existing read position.
+track_thread() {  # <channel> <thread-ts>
+  local path
+  valid_ts "$2" || return 1
+  path=$(thread_path "$1" "$2")
+  [ ! -e "$path" ] || return 0
+  write_cursor_file "$path" "$THREAD_SCHEMA" "$2"
+}
+
+cmd_track_thread() {  # <channel> <thread-ts>
+  local channel=${1-} ts=${2-}
+  valid_slack_id "$channel" || die "invalid channel id"
+  valid_ts "$ts" || die "invalid thread timestamp"
+  track_thread "$channel" "$ts" || die "cannot record the tracked thread"
+  printf 'tracked: %s %s\n' "$channel" "$ts"
+}
+
+# The tracked threads worth polling now: the most recently ACTIVE MAX_THREADS,
+# where activity is each thread's stored read position (root at registration,
+# advancing as replies are captured), not its root's age. A thread that keeps
+# receiving replies keeps being polled no matter how old its root is; only a
+# thread that has gone quiet past THREAD_MAX_AGE stops.
+active_threads() {  # <channel>
+  local dir now cutoff name ts activity
+  dir=$(thread_dir "$1")
+  [ -d "$dir" ] || return 0
+  now=$(date +%s)
+  cutoff=$((now - THREAD_MAX_AGE))
+  for name in "$dir"/*.cursor; do
+    [ -f "$name" ] || continue
+    ts=${name##*/}
+    ts=${ts%.cursor}
+    valid_ts "$ts" || continue
+    read_thread_cursor "$1" "$ts" || continue
+    activity=$THREAD_TS_READ
+    valid_ts "$activity" || continue
+    [ "${activity%%.*}" -ge "$cutoff" ] || continue
+    printf '%s %s\n' "$activity" "$ts"
+  done | sort -n | tail -n "$MAX_THREADS" | while IFS=' ' read -r _activity thread; do
+    printf '%s\n' "$thread"
+  done
+}
+
+# Drop tracked-thread records whose last activity is far past the age at which
+# they stopped being polled, so a record with an uncaptured tail is never
+# dropped merely because its root is old. Called only from the acknowledgement
+# path, never from the poll child.
+prune_threads() {  # <channel>
+  local dir now cutoff name ts activity
+  dir=$(thread_dir "$1")
+  [ -d "$dir" ] || return 0
+  now=$(date +%s)
+  cutoff=$((now - THREAD_MAX_AGE * 4))
+  for name in "$dir"/*.cursor; do
+    [ -f "$name" ] || continue
+    ts=${name##*/}
+    ts=${ts%.cursor}
+    valid_ts "$ts" || continue
+    read_thread_cursor "$1" "$ts" || continue
+    activity=$THREAD_TS_READ
+    valid_ts "$activity" || continue
+    [ "${activity%%.*}" -lt "$cutoff" ] && rm -f -- "$name"
+  done
+  return 0
 }
 
 # --- poll child -------------------------------------------------------------
@@ -237,7 +370,7 @@ safe_reason() {
   esac
 }
 
-emit_header() {  # <status> <channel> <from> <to> <count> <untrusted> <reason>
+emit_header() {  # <status> <channel> <from> <to> <count> <untrusted> <reason> [thread-lines-file]
   printf 'schema=%s\n' "$SCHEMA"
   printf 'status=%s\n' "$1"
   printf 'channel=%s\n' "$2"
@@ -246,6 +379,7 @@ emit_header() {  # <status> <channel> <from> <to> <count> <untrusted> <reason>
   printf 'count=%s\n' "$5"
   printf 'untrusted=%s\n' "$6"
   printf 'reason=%s\n' "$7"
+  [ -z "${8-}" ] || [ ! -s "$8" ] || cat "$8"
   printf '\n'
 }
 
@@ -264,9 +398,174 @@ fetch_page() {  # <channel> <latest-or-empty>
     | curl "${args[@]}" 2>/dev/null
 }
 
+# One conversations.replies page, from a thread's own read position. The first
+# page is bounded by `oldest`; later pages follow Slack's own cursor, and the
+# payload is filtered by timestamp regardless, so a cursor page can never
+# reintroduce something already read.
+fetch_replies_page() {  # <channel> <thread-ts> <oldest> <next-cursor-or-empty>
+  local args
+  args=( -sS --config - --max-time "$CURL_MAX_TIME" -G
+    "$SLACK_API/conversations.replies"
+    --data-urlencode "channel=$1"
+    --data-urlencode "ts=$2"
+    --data-urlencode "limit=$PAGE_LIMIT"
+    -o "$resp" )
+  if [ -n "$4" ]; then
+    args+=( --data-urlencode "cursor=$4" )
+  else
+    args+=( --data-urlencode "oldest=$3" )
+  fi
+  printf 'header = "Authorization: Bearer %s"\n' "$token" \
+    | curl "${args[@]}" 2>/dev/null
+}
+
+# Fetch the whole channel window past the cursor into $raw.
+# Sets FETCHED (1 ok) and FATAL (a fatal Slack error code, or empty).
+fetch_window() {  # <channel>
+  local page=0 latest='' more err
+  : > "$raw"
+  FETCHED=1
+  FATAL=
+  while :; do
+    page=$((page + 1))
+    if ! fetch_page "$1" "$latest" || ! jq -e . "$resp" >/dev/null 2>&1; then
+      FETCHED=0
+      return 0
+    fi
+    if ! jq -e '.ok == true' "$resp" >/dev/null 2>&1; then
+      err=$(safe_reason "$(jq -r '.error // ""' "$resp" 2>/dev/null || true)")
+      fatal_slack_error "$err" && FATAL=$err
+      FETCHED=0
+      return 0
+    fi
+    if ! jq -c '.messages[]?' "$resp" >> "$raw" 2>/dev/null; then
+      printf 'slack-captain: could not read the messages in a Slack page; retrying\n' >&2
+      FETCHED=0
+      return 0
+    fi
+    more=$(jq -r '.has_more == true' "$resp" 2>/dev/null || true)
+    [ "$more" = true ] || return 0
+    [ "$page" -lt "$MAX_PAGES" ] \
+      || die "the Slack window past the read position exceeds $MAX_PAGES pages; refusing to emit a partial capture"
+    latest=$(jq -r '[.messages[].ts] | min_by(tonumber)' "$resp" 2>/dev/null || true)
+    valid_ts "$latest" || die "Slack returned an unusable message timestamp"
+  done
+}
+
+# Fetch every new reply in one tracked thread into $traw.
+# Sets FETCHED (1 ok) and FATAL, exactly like fetch_window.
+fetch_thread() {  # <channel> <thread-ts> <oldest>
+  local page=0 next='' more err
+  : > "$traw"
+  FETCHED=1
+  FATAL=
+  while :; do
+    page=$((page + 1))
+    if ! fetch_replies_page "$1" "$2" "$3" "$next" || ! jq -e . "$resp" >/dev/null 2>&1; then
+      FETCHED=0
+      return 0
+    fi
+    if ! jq -e '.ok == true' "$resp" >/dev/null 2>&1; then
+      err=$(safe_reason "$(jq -r '.error // ""' "$resp" 2>/dev/null || true)")
+      fatal_slack_error "$err" && FATAL=$err
+      FETCHED=0
+      return 0
+    fi
+    if ! jq -c --arg oldest "$3" --arg root "$2" '
+        .messages[]? | select((.ts | tonumber) > ($oldest | tonumber)) | select(.ts != $root)
+      ' "$resp" >> "$traw" 2>/dev/null; then
+      printf 'slack-captain: could not read the replies in a Slack thread page; retrying\n' >&2
+      FETCHED=0
+      return 0
+    fi
+    more=$(jq -r '.has_more == true' "$resp" 2>/dev/null || true)
+    [ "$more" = true ] || return 0
+    [ "$page" -lt "$MAX_PAGES" ] \
+      || die "a Slack thread past its read position exceeds $MAX_PAGES pages; refusing to emit a partial capture"
+    next=$(jq -r '.response_metadata.next_cursor // ""' "$resp" 2>/dev/null || true)
+    [ -n "$next" ] || return 0
+  done
+}
+
+# The one filter that decides what is a capturable captain message, applied
+# identically to channel history and to thread replies. A plain message and a
+# message posted with a file attachment (subtype file_share) are both
+# capturable; every other subtype (joins, leaves, edits, deletions, and the
+# rest) is not.
+select_messages() {  # <input-jsonl> <output-jsonl> <thread-ts-or-empty>
+  jq -cs --arg bot "${CFG_BOT_USER:-}" --arg allowed "${CFG_ALLOWED_USER:-}" \
+     --arg thread "$3" '
+    map(select(
+        .type == "message"
+        and (has("bot_id") | not)
+        and ((has("subtype") | not) or .subtype == "file_share")
+        and ((.user // "") != "")
+        and (.user != $bot)
+      ))
+    | sort_by(.ts | tonumber)
+    | .[]
+    | {ts: .ts, user: .user, trusted: ($allowed != "" and .user == $allowed), text: (.text // "")}
+      + (if $thread == "" then {} else {thread_ts: $thread} end)
+  ' "$1" > "$2" 2>/dev/null
+}
+
+# Collect one whole capture candidate from the UNMOVED cursor: the channel
+# window plus every tracked thread's new replies. Writes the combined payload to
+# $payload and the per-thread header lines to $threadlines, and sets
+# CHANNEL_TO_TS. Sets FETCHED/FATAL from whichever call failed first.
+collect_window() {  # <channel>
+  local ts oldest tpayload
+  CHANNEL_TO_TS=$CURSOR_TS
+  : > "$payload"
+  : > "$threadlines"
+  fetch_window "$1"
+  if [ "$FETCHED" != 1 ]; then
+    return 0
+  fi
+  if [ -s "$raw" ]; then
+    # Every thread seen in the window becomes tracked, including one rooted at a
+    # message this adapter itself never captures, such as firstmate's own post.
+    while IFS= read -r ts; do
+      valid_ts "$ts" || continue
+      track_thread "$1" "$ts" || true
+    done < <(jq -r 'select((.thread_ts // "") != "") | .thread_ts' "$raw" 2>/dev/null | sort -u)
+    if ! select_messages "$raw" "$payload" ''; then
+      printf 'slack-captain: could not extract messages from a fetched Slack window; retrying\n' >&2
+      : > "$payload"
+    fi
+    # The read position advances to the newest ts FETCHED, not merely the
+    # newest ts that survived filtering: the whole window up to it was fully
+    # paginated and every capturable message in it is already in the payload,
+    # so a channel where filtered-out traffic dominates never re-walks history
+    # without bound.
+    CHANNEL_TO_TS=$(jq -rs 'max_by(.ts | tonumber) | .ts' "$raw")
+    valid_ts "$CHANNEL_TO_TS" || die "Slack returned an unusable message timestamp"
+  fi
+  tpayload="$POLL_TMP/thread.payload.jsonl"
+  while IFS= read -r ts; do
+    [ -n "$ts" ] || continue
+    read_thread_cursor "$1" "$ts" || continue
+    oldest=$THREAD_TS_READ
+    fetch_thread "$1" "$ts" "$oldest"
+    if [ "$FETCHED" != 1 ]; then
+      return 0
+    fi
+    [ -s "$traw" ] || continue
+    if ! select_messages "$traw" "$tpayload" "$ts"; then
+      printf 'slack-captain: could not extract replies from a fetched Slack thread; retrying\n' >&2
+      continue
+    fi
+    [ -s "$tpayload" ] || continue
+    cat "$tpayload" >> "$payload"
+    printf 'thread=%s %s %s %s\n' "$ts" "$oldest" \
+      "$(jq -rs '.[-1].ts' "$tpayload")" "$(jq -s 'length' "$tpayload")" >> "$threadlines"
+  done < <(active_threads "$1")
+  return 0
+}
+
 cmd_poll() {
-  local home=${1-} channel=${2-} resp raw payload token i=0 err count untrusted to_ts
-  local page latest more fetched fatal
+  local home=${1-} channel=${2-} resp raw traw payload threadlines token i=0
+  local count untrusted held prev held_to_ts
   [ -n "$home" ] && [ -n "$channel" ] || usage
   HOME_DIR=$home
   require_tools
@@ -284,69 +583,52 @@ cmd_poll() {
   trap 'rm -rf -- "$POLL_TMP"' EXIT
   resp="$POLL_TMP/response.json"
   raw="$POLL_TMP/messages.raw.jsonl"
+  traw="$POLL_TMP/replies.raw.jsonl"
   payload="$POLL_TMP/payload.jsonl"
+  threadlines="$POLL_TMP/threads.header"
 
   while [ "$i" -lt "$MAX_LOOPS" ]; do
     i=$((i + 1))
-    # Slack serves the window newest-first, so a burst larger than one page is
-    # walked backwards (latest = the oldest timestamp fetched so far) until
-    # has_more clears. Only a fully fetched window may become a result: to_ts
-    # must never commit past a message the payload did not capture.
-    : > "$raw"
-    latest='' page=0 fetched=1 fatal=''
-    while :; do
-      page=$((page + 1))
-      if ! fetch_page "$channel" "$latest" || ! jq -e . "$resp" >/dev/null 2>&1; then
-        fetched=0
-        break
-      fi
-      if ! jq -e '.ok == true' "$resp" >/dev/null 2>&1; then
-        err=$(safe_reason "$(jq -r '.error // ""' "$resp" 2>/dev/null || true)")
-        fatal_slack_error "$err" && fatal=$err
-        fetched=0
-        break
-      fi
-      if ! jq -c '.messages[]?' "$resp" >> "$raw" 2>/dev/null; then
-        printf 'slack-captain: could not read the messages in a Slack page; retrying\n' >&2
-        fetched=0
-        break
-      fi
-      more=$(jq -r '.has_more == true' "$resp" 2>/dev/null || true)
-      [ "$more" = true ] || break
-      [ "$page" -lt "$MAX_PAGES" ] \
-        || die "the Slack window past the read position exceeds $MAX_PAGES pages; refusing to emit a partial capture"
-      latest=$(jq -r '[.messages[].ts] | min_by(tonumber)' "$resp" 2>/dev/null || true)
-      valid_ts "$latest" || die "Slack returned an unusable message timestamp"
-    done
-    if [ -n "$fatal" ]; then
-      emit_header api-error "$channel" "$CURSOR_TS" "$CURSOR_TS" 0 0 "$fatal"
+    collect_window "$channel"
+    if [ -n "$FATAL" ]; then
+      emit_header api-error "$channel" "$CURSOR_TS" "$CURSOR_TS" 0 0 "$FATAL"
       return 0
     fi
-    if [ "$fetched" = 1 ] && [ -s "$raw" ]; then
-      if ! jq -cs --arg bot "${CFG_BOT_USER:-}" --arg allowed "${CFG_ALLOWED_USER:-}" '
-        map(select(
-            .type == "message"
-            and (has("bot_id") | not)
-            and (has("subtype") | not)
-            and ((.user // "") != "")
-            and (.user != $bot)
-          ))
-        | sort_by(.ts | tonumber)
-        | .[]
-        | {ts: .ts, user: .user, trusted: ($allowed != "" and .user == $allowed), text: (.text // "")}
-      ' "$raw" > "$payload" 2>/dev/null; then
-        printf 'slack-captain: could not extract messages from a fetched Slack window; retrying\n' >&2
-        : > "$payload"
-      fi
-      if [ -s "$payload" ]; then
+    if [ -s "$payload" ]; then
+      # Debounce: hold the burst open until a quiet window adds nothing, or the
+      # bounded number of holds is spent. Every recollection reads from the same
+      # unmoved cursor, so the held span is a superset, never a replacement.
+      prev=$(jq -s 'length' "$payload")
+      held=0
+      while [ "$held" -lt "$MAX_QUIET_WINDOWS" ]; do
+        held=$((held + 1))
+        sleep "$QUIET_WINDOW"
+        cp "$payload" "$POLL_TMP/held.payload.jsonl"
+        cp "$threadlines" "$POLL_TMP/held.threads.header"
+        held_to_ts=$CHANNEL_TO_TS
+        collect_window "$channel"
+        if [ "$FETCHED" != 1 ] || [ ! -s "$payload" ]; then
+          # A failed or degraded recollection never shrinks a burst already
+          # collected, or rewinds a read position already fully fetched: keep
+          # both and stop holding.
+          cp "$POLL_TMP/held.payload.jsonl" "$payload"
+          cp "$POLL_TMP/held.threads.header" "$threadlines"
+          CHANNEL_TO_TS=$held_to_ts
+          break
+        fi
         count=$(jq -s 'length' "$payload")
-        untrusted=$(jq -s 'map(select(.trusted | not)) | length' "$payload")
-        to_ts=$(jq -rs '.[-1].ts' "$payload")
-        valid_ts "$to_ts" || die "Slack returned an unusable message timestamp"
-        emit_header messages "$channel" "$CURSOR_TS" "$to_ts" "$count" "$untrusted" ''
-        cat "$payload"
-        return 0
-      fi
+        [ "$count" -gt "$prev" ] || break
+        prev=$count
+      done
+      # The payload is assembled per source, so order it once at the end.
+      jq -cs 'sort_by(.ts | tonumber) | .[]' "$payload" > "$POLL_TMP/sorted.jsonl" 2>/dev/null \
+        && mv -f "$POLL_TMP/sorted.jsonl" "$payload"
+      count=$(jq -s 'length' "$payload")
+      untrusted=$(jq -s 'map(select(.trusted | not)) | length' "$payload")
+      emit_header messages "$channel" "$CURSOR_TS" "$CHANNEL_TO_TS" \
+        "$count" "$untrusted" '' "$threadlines"
+      cat "$payload"
+      return 0
     fi
     [ "$i" -lt "$MAX_LOOPS" ] || break
     sleep "$INTERVAL"
@@ -366,6 +648,15 @@ result_field() {  # <result-file> <field>
     $0 == "" { exit }
     index($0, prefix) == 1 { count++; value = substr($0, length(prefix) + 1) }
     END { if (count != 1) exit 1; print value }
+  ' "$1"
+}
+
+# Read every repeated `thread=` header line. Same boundary rule as
+# result_field, so payload text can never forge a thread span.
+result_threads() {  # <result-file>
+  LC_ALL=C awk '
+    $0 == "" { exit }
+    index($0, "thread=") == 1 { print substr($0, 8) }
   ' "$1"
 }
 
@@ -421,7 +712,26 @@ advance_cursor() {  # <channel> <result-file>
   write_cursor "$channel" "$to" || die "cannot commit the slack captain read position"
 }
 
-# Apply what carries no judgement - the read position - and leave the result
+# The same rule, per tracked thread: a thread span is applied only when it
+# continues that thread's stored position, and is a no-op when already applied.
+advance_thread_cursors() {  # <channel> <result-file>
+  local channel=$1 file=$2 thread from to
+  while IFS=' ' read -r thread from to _count; do
+    [ -n "$thread" ] || continue
+    valid_ts "$thread" || die "result carries an invalid thread reference"
+    valid_ts "$from" || die "result carries an invalid thread start read position"
+    valid_ts "$to" || die "result carries an invalid thread end read position"
+    read_thread_cursor "$channel" "$thread" \
+      || die "captured Slack thread replies name a thread this home does not track: $thread"
+    [ "$THREAD_TS_READ" = "$to" ] && continue
+    [ "$THREAD_TS_READ" = "$from" ] \
+      || die "captured Slack thread replies do not continue the stored read position for thread $thread"
+    write_cursor_file "$(thread_path "$channel" "$thread")" "$THREAD_SCHEMA" "$to" \
+      || die "cannot commit the slack captain read position for thread $thread"
+  done < <(result_threads "$file")
+}
+
+# Apply what carries no judgement - the read positions - and leave the result
 # itself for firstmate. `<mark-handled>` is 1 only on the firstmate-facing
 # `handle` path; see the header for why the runner's own call never acknowledges.
 apply_result() {  # <source-id> <sequence> <result-file> <mark-handled>
@@ -431,7 +741,11 @@ apply_result() {  # <source-id> <sequence> <result-file> <mark-handled>
   channel=$(channel_from_source_id "$sid") || exit 1
   class=$(cmd_classify "$file")
   case "$class" in
-    messages|untrusted-messages) advance_cursor "$channel" "$file" ;;
+    messages|untrusted-messages)
+      advance_thread_cursors "$channel" "$file"
+      advance_cursor "$channel" "$file"
+      prune_threads "$channel"
+      ;;
     api-error) ;;
     *) die "captured Slack result needs firstmate's attention: $class" ;;
   esac
@@ -459,6 +773,7 @@ case "${1-}" in
   handle)     shift; [ "$#" -eq 3 ] || usage; cmd_handle "$@" ;;
   autohandle) shift; [ "$#" -eq 3 ] || usage; cmd_autohandle "$@" ;;
   classify)   shift; [ "$#" -eq 1 ] || usage; cmd_classify "$@" ;;
+  track-thread) shift; [ "$#" -eq 2 ] || usage; cmd_track_thread "$@" ;;
   # This source never ends: the captain can always post again, so the runner
   # must keep it armed no matter what a result contained.
   terminal)   shift; [ "$#" -eq 1 ] || usage; exit 1 ;;
