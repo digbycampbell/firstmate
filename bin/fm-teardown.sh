@@ -4,6 +4,11 @@
 # clear volatile state, refresh/prune the project's clone for PR-based ship
 # tasks, then print a backlog-refresh reminder for ship and scout teardowns
 # (a secondmate teardown prints none, since secondmates are not backlog items).
+# REFUSES, before any cleanup step, if another live task in this home records the
+# same worktree: cleanup resets and returns the worktree and kills its processes,
+# so proceeding would destroy that task's work even when this task's own copy
+# looks safely landed. A collision is a bug to investigate rather than work to
+# discard, so --force does not bypass it (bin/fm-worktree-claim-lib.sh).
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so
@@ -168,6 +173,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-worktree-claim-lib.sh
+. "$SCRIPT_DIR/fm-worktree-claim-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -435,6 +442,17 @@ BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
 WT=$(fm_meta_get "$META" worktree)
 PROJ=$(fm_meta_get "$META" project)
+# Second cleanup authorization check, still metadata-only: another live task in
+# this home must not have this same path recorded as ITS worktree. Cleanup resets
+# and returns the worktree and kills its processes, so proceeding would destroy a
+# live task's work even when this task's own copy looks safely landed. The
+# collision is a bug to investigate, not work to discard, so --force does not
+# bypass it (bin/fm-worktree-claim-lib.sh).
+if [ -n "$WT" ] && TEARDOWN_CLAIM_OWNERS=$(fm_worktree_claim_owner "$STATE" "$WT" "$ID"); then
+  fm_worktree_claim_conflict_message "clean up $ID by resetting" "$WT" "$TEARDOWN_CLAIM_OWNERS" >&2
+  echo "REFUSED: teardown of $ID aborted before any cleanup step." >&2
+  exit 1
+fi
 T_ORCA=
 [ "$BACKEND" != orca ] || T_ORCA=$T
 if [ "${FM_TEARDOWN_GUARD_DONE:-0}" != 1 ]; then
