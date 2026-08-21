@@ -531,6 +531,11 @@ An absent or invalid file is a refusal at arming time, not a default.
 The bot token is separate configuration and never lives here: it is `SLACK_BOT_TOKEN` in the home's gitignored `.env`, read inside the poll child and passed to curl on stdin so it never reaches argv, a registration record, a captured result, or a diagnostic.
 This configuration is local to each Firstmate home and is not part of secondmate inherited configuration.
 Channel history alone cannot see a reply written inside a thread, so the adapter also reads `conversations.replies` for the threads it tracks, keeping a per-thread read position under `state/slack-captain/threads/` that advances by the same capture-first rule as the channel position.
+Firstmate's own final captain-facing message of each turn is mirrored into the same channel automatically, so Slack carries the whole conversation rather than the subset firstmate remembered to post by hand.
+`bin/fm-slack-mirror.sh` owns that mirror and its header owns the whole contract: the Claude-only turn-end scope, the substantive-content and repeat suppression rules, how a deliberate post suppresses the mirror for that turn, how a reply is routed back into the thread the captain wrote in, and its own state under `state/slack-captain/`.
+It adds the optional keys `mirror`, `mirror_ack_max_chars`, `mirror_thread_window`, `mirror_turn_window`, `mirror_max_chars`, and `mirror_worker_details` to this same file, each with an `FM_SLACK_MIRROR_*` environment override, and mirrors nothing at all in a home with no `channel=` above.
+Every path through it exits 0 and stays silent, so Slack can never block, delay, or fail a turn in the terminal.
+
 `bin/fm-procevent-slack-captain.sh` and its `--help` own the commands, the thread-tracking and read-position rules, the debounce shape, and the tuning variables `FM_SLACK_CAPTAIN_MAX_LOOPS`, `FM_SLACK_CAPTAIN_INTERVAL`, `FM_SLACK_CAPTAIN_MAX_TIME`, `FM_SLACK_CAPTAIN_PAGE_LIMIT`, `FM_SLACK_CAPTAIN_MAX_PAGES`, `FM_SLACK_CAPTAIN_QUIET_WINDOW`, `FM_SLACK_CAPTAIN_MAX_QUIET_WINDOWS`, `FM_SLACK_CAPTAIN_MAX_THREADS`, and `FM_SLACK_CAPTAIN_THREAD_MAX_AGE`.
 
 ## Slack channel names (config/slack-channels)
@@ -541,6 +546,7 @@ A name with no entry is a refusal, never a guess, so a typo cannot post into the
 
 `bin/fm-slack-post.sh` is the one supported way to post as Firstmate's bot: it resolves the channel through this map, reads `SLACK_BOT_TOKEN` from the home's `.env` exactly as the captain adapter does, posts message text or a `--file`, optionally into a thread with `--thread <ts>`, prints the posted timestamp, and registers the resulting thread so a captain reply inside it is still captured.
 A completion post should carry `--worker-details "<model> <effort>"`, which is the single owner of Firstmate's standing completion convention and appends the model and effort that produced the work.
+`--origin mirror` marks the terminal mirror's own delivery so it is not recorded as a hand-written post; every other post defaults to `manual` and suppresses that turn's mirror.
 
 ## Slack quota topic (config/slack-quota-topic)
 

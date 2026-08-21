@@ -7,6 +7,7 @@
 #   fm-slack-post.sh <channel> --file <path>
 #   fm-slack-post.sh <channel> ... --thread <ts>
 #   fm-slack-post.sh <channel> ... --worker-details "<model> <effort>"
+#   fm-slack-post.sh <channel> ... --origin manual|mirror
 #
 # <channel> is either a raw Slack channel id (uppercase alphanumerics) or a name
 # defined in $FM_HOME/config/slack-channels, one `name=<channel id>` per line; a
@@ -37,6 +38,13 @@
 # so a caller can thread onto it. A Slack error is a loud nonzero refusal naming
 # the Slack error code.
 #
+# ORIGIN. A successful post to the configured captain channel is recorded with
+# bin/fm-slack-mirror.sh `note-post`, which is how the terminal mirror knows
+# firstmate already spoke in this turn and must not mirror it a second time.
+# `--origin mirror` marks the mirror's own delivery and skips that record, so
+# the mirror cannot suppress itself on the following turn. The default is
+# `manual`, so every ordinary hand-written post counts.
+#
 # THREAD REGISTRATION. When the target channel is the configured captain channel
 # and this post is itself a reply (`--thread <ts>` was given), the replied-to
 # thread is registered with bin/fm-procevent-slack-captain.sh `track-thread`,
@@ -59,7 +67,7 @@ CURL_MAX_TIME=${FM_SLACK_POST_MAX_TIME:-20}
 MAX_BODY_BYTES=${FM_SLACK_POST_MAX_BYTES:-40000}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 config_dir()  { printf '%s\n' "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"; }
 env_file()    { printf '%s\n' "$FM_HOME/.env"; }
@@ -124,6 +132,7 @@ CHANNEL=
 THREAD=
 FILE=
 DETAILS=
+ORIGIN=manual
 TEXT_ARGS=()
 
 [ "$#" -gt 0 ] || usage
@@ -140,6 +149,13 @@ while [ "$#" -gt 0 ]; do
     --worker-details)
       [ "$#" -ge 2 ] || die "--worker-details needs a \"<model> <effort>\" value"
       DETAILS=$2; shift 2 ;;
+    --origin)
+      [ "$#" -ge 2 ] || die "--origin needs a value"
+      case "$2" in
+        manual|mirror) ORIGIN=$2 ;;
+        *) die "--origin accepts only manual or mirror" ;;
+      esac
+      shift 2 ;;
     -h|--help) usage ;;
     --*) die "unknown option: $1" ;;
     *) TEXT_ARGS+=("$1"); shift ;;
@@ -206,6 +222,11 @@ valid_ts "$ts" || die "Slack accepted the message but returned no usable timesta
 # here, and a registration failure never invalidates a message Slack already
 # accepted.
 watched=$(captain_channel)
+# The terminal mirror's duplicate test; a failure here never invalidates a
+# message Slack already accepted.
+if [ -n "$watched" ] && [ "$watched" = "$channel" ] && [ "$ORIGIN" = manual ]; then
+  "$SCRIPT_DIR/fm-slack-mirror.sh" note-post "$channel" >/dev/null 2>&1 || true
+fi
 if [ -n "$watched" ] && [ "$watched" = "$channel" ] && [ -n "$THREAD" ]; then
   "$SCRIPT_DIR/fm-procevent-slack-captain.sh" track-thread "$channel" "$THREAD" >/dev/null 2>&1 \
     || printf 'fm-slack-post: could not register thread %s for capture\n' "$THREAD" >&2
