@@ -37,6 +37,7 @@ You may maintain this repo's private operational state directly.
 This repo is a shared template: its shared tracked material is `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, and public `skills/`, while `.env`, `data/`, `state/`, `config/`, `projects/`, and `.no-mistakes/` are captain-private and gitignored.
 When any crewmate is live, delegate shared tracked changes rather than competing with supervision; when the fleet is empty, firstmate may make them directly.
 Ship them through this repo's no-mistakes pipeline and PR path, with the same merge authority as any other project.
+Make every commit of your own through `bin/fm-git-identity.sh commit`, which carries firstmate's own git identity; a plain `git commit` in a clone the captain also works in would author it as him.
 Never add an agent name as a commit co-author.
 
 ## 2. Layout and state

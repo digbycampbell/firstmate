@@ -2294,6 +2294,21 @@ mkdir -p "$TASK_TMP/gotmp"
 mkdir -p "$STATE"
 STATE_REAL=$(cd "$STATE" && pwd -P)
 TURNEND="$STATE_REAL/$ID.turn-ended"
+
+# Git identity for this task's commits, armed before the agent can make one.
+# The failure this closes was a commit created hours before anyone pushed it: a
+# worktree with no identity of its own let git synthesize the captain's private
+# address, and GitHub only rejected it at push time, after a validation run had
+# already been spent. So the identity and its commit-time guard are a launch
+# precondition, not a convention - a worktree that cannot be armed does not get
+# an agent. bin/fm-git-identity.sh owns the mechanism and the refusal text.
+if [ "$KIND" != secondmate ]; then
+  if ! "$SCRIPT_DIR/fm-git-identity.sh" apply-worktree "$WT" \
+      --hooks-dir "$STATE_REAL/$ID.githooks"; then
+    echo "error: could not arm the firstmate git identity and commit guard on '$WT'; refusing to launch $ID rather than let it commit under an unverified identity" >&2
+    exit 1
+  fi
+fi
 exclude_path() {
   local rel=$1 EXCL
   EXCL=$(git -C "$WT" rev-parse --git-path info/exclude 2>/dev/null || true)

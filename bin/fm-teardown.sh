@@ -2553,6 +2553,14 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
+# Return the pool slot to unarmed before the hooks directory goes away. Left
+# armed, a recycled worktree would keep a core.hooksPath pointing at a deleted
+# directory, which git treats as "no hooks at all" - the commit guard would be
+# silently absent, which is exactly the fail-open state it exists to prevent.
+if [ "$KIND" != secondmate ]; then
+  "$SCRIPT_DIR/fm-git-identity.sh" disarm-worktree "$WT" \
+    --hooks-dir "$STATE/$ID.githooks" || exit 1
+fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
