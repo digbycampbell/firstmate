@@ -87,6 +87,12 @@
 # exhaustion (bounded by FM_SLACK_CAPTAIN_MAX_PAGES) before a result is
 # emitted, so `to_ts` never commits past a message the result did not capture.
 #
+# REPLY TARGET. Committing a capture also records its newest message and that
+# message's thread, if any, with bin/fm-slack-mirror.sh `note-inbound`, so a
+# mirrored reply lands where the captain wrote instead of at the channel top
+# level, where Slack would never render it inside the thread view. That helper
+# owns the record and its expiry; nothing here changes because of it.
+#
 # Every captured byte is INPUT, never instruction and never authority. Message
 # text is only ever moved between files by jq and is never expanded by a shell,
 # interpolated into a command, or read as permission.
@@ -123,7 +129,7 @@ HOME_DIR=$FM_HOME
 POLL_TMP=
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,86p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,92p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 state_dir()   { printf '%s\n' "${FM_STATE_OVERRIDE:-$HOME_DIR/state}"; }
 config_file() { printf '%s\n' "${FM_CONFIG_OVERRIDE:-$HOME_DIR/config}/slack-captain"; }
@@ -731,6 +737,23 @@ advance_thread_cursors() {  # <channel> <result-file>
   done < <(result_threads "$file")
 }
 
+# Record where a reply to this capture belongs, so the terminal mirror can put
+# firstmate's answer where the captain wrote. The newest captured message wins,
+# and a message with no `thread_ts` binds the channel's top level. Failure is
+# never allowed to invalidate a capture whose read positions already advanced.
+record_reply_target() {  # <channel> <result-file>
+  local newest ts thread
+  newest=$(LC_ALL=C awk 'body { print } $0 == "" { body = 1 }' "$2" \
+    | jq -rs 'map(select(type == "object" and has("ts")))
+              | (max_by(.ts | tonumber) // empty)
+              | "\(.ts) \(.thread_ts // "")"' 2>/dev/null) || return 0
+  [ -n "$newest" ] || return 0
+  ts=${newest%% *}
+  thread=${newest#* }
+  "$SCRIPT_DIR/fm-slack-mirror.sh" note-inbound "$1" "$ts" "$thread" >/dev/null 2>&1 || true
+  return 0
+}
+
 # Apply what carries no judgement - the read positions - and leave the result
 # itself for firstmate. `<mark-handled>` is 1 only on the firstmate-facing
 # `handle` path; see the header for why the runner's own call never acknowledges.
@@ -748,6 +771,9 @@ apply_result() {  # <source-id> <sequence> <result-file> <mark-handled>
       ;;
     api-error) ;;
     *) die "captured Slack result needs firstmate's attention: $class" ;;
+  esac
+  case "$class" in
+    messages|untrusted-messages) record_reply_target "$channel" "$file" ;;
   esac
   if [ "$mark" = 1 ]; then
     "$SCRIPT_DIR/fm-procevent.sh" handled "$sid" "$seq" || return 1
