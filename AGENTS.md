@@ -70,8 +70,8 @@ state/               volatile runtime signals: <id>.status wake-event lines ("<s
                      authority; procevent/, procevent-inbox/, and when/ condition->action watch specs,
                      whose registered sources alone keep supervision required (section 13);
                      decision-bindings/, written only by bin/fm-decision-hold.sh bind and dropped by
-                     unbind or source retirement, binding a captured-answer source id to the
-                     captain-hold origin its keyed answers close (docs/decision-hold-lifecycle.md);
+                     unbind or source retirement, binding a captured-answer source id to one
+                     captain-hold origin or the cross-origin marker (docs/decision-hold-lifecycle.md);
                      pending-replies/; generated Relay artifacts (section 14); PR merge-poll and
                      check-migration records; and dot-prefixed watcher, startup, guard,
                      presentation-cursor, and sub-supervisor internals - never touch those
@@ -123,8 +123,8 @@ If static `config/crew-harness` or `config/secondmate-harness` names an unverifi
 When dispatch profiles exist, consult them at every crewmate or scout intake and pass the resolved concrete profile `fm-spawn` requires.
 Routing precedence is an explicit per-task captain override, then the best-fit configured rule, then the configured default, then the static crewmate harness.
 
-Firstmate alone resolves a matched profile array: run `quota-axi --json` at that intake and load `quota-array-dispatch`, which owns the completion-aware selection procedure.
-Account for every candidate with its catalog evidence, provider relationship, applicable quota and authentication facts, remaining uncertainty, fit and reasoning class, and the headroom, runway, and later pace or reserve evidence used; never omit a candidate, guess, fall back silently, or call the result quota-informed without them.
+Firstmate alone resolves a matched profile array: read `quota-axi`'s default TOON at that intake and load `quota-array-dispatch`, which owns the TOON-first spendPriority selection procedure.
+Account for every candidate with its catalog evidence, provider relationship, applicable quota and authentication facts, remaining uncertainty, fit and reasoning class, and the spendPriority and runway evidence used; never omit a candidate, guess, fall back silently, or call the result quota-informed without them.
 Preserve malformed profile configuration as an actionable error rather than selecting around it.
 When every candidate is tight, preserve the captain's strongest-reasoning class rather than silently downgrading it to conserve quota, and stop and report the tight choice if that class cannot proceed.
 Break genuine evidence ties without array-order or harness bias.
@@ -275,6 +275,7 @@ Retire a secondmate only on an explicit captain or main-firstmate decision, afte
 A completed scout must leave a self-contained report before its scratch worktree can be discarded; read and relay its findings, record the report as the Done artifact, and re-evaluate the queue.
 A report may recommend implementation but does not authorize it.
 Before treating any investigation or visual review as complete, load `decision-hold-lifecycle`; teardown enforces that shared completion gate.
+When a scout's deliverable is a visual artifact the captain will iterate on, prefer keeping that scout alive to host its own Lavish loop rather than tearing it down and mediating from firstmate, so the scout keeps its investigation context and the captain iterates in one continuous session.
 When implementation is separately authorized, promote the existing scout through `bin/fm-promote.sh` rather than creating a duplicate task.
 The promoted worker must inventory scratch state, return to a clean default-branch base, carry over only intended fix changes, create the ship branch, and follow the selected delivery path, leaving scratch commits and debug edits behind and turning a reproduced bug into the regression test.
 
@@ -411,7 +412,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `bootstrap-diagnostics` - on any actionable diagnostic line from the session-start digest's bootstrap or network-checks section (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `NETWORK_CHECKS:`, `PR_CHECK_MIGRATION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
 - `diagnostic-reasoning` - before scoping a reported bug and before acting on a diagnostic report.
 - `ask-user-authority` - before deciding any ask-user finding, whatever the project's `yolo` posture.
-- `quota-array-dispatch` - before choosing among a matched crew-dispatch profile array from current quota-axi output.
+- `quota-array-dispatch` - before choosing among a matched crew-dispatch profile array from current quota-axi default TOON.
 - `harness-adapters` - before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting, exiting, or resuming an agent, or verifying a new harness adapter.
 - `firstmate-orca` - before switching to Orca, spawning or supervising Orca-backed work, smoke-testing Orca backend behavior, debugging Orca task state, or reconciling Orca-backed task metadata.
 - `project-management` - before adding, creating, removing, or initializing a project; cloning or registering one is add intake and uses the same trigger.
