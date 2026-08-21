@@ -81,6 +81,9 @@ make_fake_root() {
   # fm-worktree-claim-lib.sh: teardown sources it for the double-allocation
   # refusal it runs before any cleanup step.
   ln -s "$ROOT/bin/fm-worktree-claim-lib.sh" "$fake/bin/fm-worktree-claim-lib.sh"
+  # fm-git-identity.sh: teardown calls disarm-worktree on it unconditionally
+  # for non-secondmate kinds; symlink the real script so the call succeeds.
+  ln -s "$ROOT/bin/fm-git-identity.sh" "$fake/bin/fm-git-identity.sh"
   # fm-guard.sh: stub (teardown calls it with `|| true`).
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
@@ -162,6 +165,9 @@ test_teardown_skips_gracefully_without_tasktmp() {
   # fm-worktree-claim-lib.sh: teardown sources it for the double-allocation
   # refusal it runs before any cleanup step.
   ln -s "$ROOT/bin/fm-worktree-claim-lib.sh" "$fake/bin/fm-worktree-claim-lib.sh"
+  # fm-git-identity.sh: teardown calls disarm-worktree on it unconditionally
+  # for non-secondmate kinds; symlink the real script so the call succeeds.
+  ln -s "$ROOT/bin/fm-git-identity.sh" "$fake/bin/fm-git-identity.sh"
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 exit 0
