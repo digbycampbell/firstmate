@@ -32,14 +32,17 @@
 # OFF BY DEFAULT. A home with no `channel=` in config/slack-captain mirrors
 # nothing, exactly like the rest of the Slack surface.
 #
-# WHAT IS MIRRORED. The final assistant text of the finished turn, taken from
-# the transcript the payload names: not tool output, not thinking, not the
-# intermediate narration of earlier assistant entries. Sidechain (subagent)
-# entries are excluded, and the text must be newer than the turn's own opening
-# captain message, so a turn that produced no reply of its own never re-posts an
-# older one. The text is carried verbatim into the Slack request body by
-# bin/fm-slack-post.sh, so URLs and markdown survive; only a body longer than
-# `mirror_max_chars` is truncated, with a visible marker.
+# WHAT IS MIRRORED. The final assistant text of the finished turn: not tool
+# output, not thinking, not the intermediate narration of earlier assistant
+# entries. The payload's own `last_assistant_message` is preferred because it
+# describes the turn that just ended and cannot race the transcript write, which
+# is not guaranteed to have flushed the final entry by the time Stop fires. When
+# a payload omits it, the transcript named by the payload is read instead:
+# sidechain (subagent) entries are excluded, and the text must be newer than the
+# turn's own opening captain message, so a turn that produced no reply of its
+# own never re-posts an older one. The text is carried verbatim into the Slack
+# request body by bin/fm-slack-post.sh, so URLs and markdown survive; only a
+# body longer than `mirror_max_chars` is truncated, with a visible marker.
 #
 # SUPPRESSION. Supervising a fleet produces many pure-acknowledgement turns, and
 # mirroring those verbatim would bury the captain. A reply is mirrored only when
@@ -70,6 +73,8 @@
 #   mirror=on|off                 default on once `channel=` is set
 #   mirror_ack_max_chars=<n>      default 120, the single-line acknowledgement bound
 #   mirror_thread_window=<s>      default 900, how long an inbound thread binds replies
+#   mirror_turn_window=<s>        default 900, the assumed turn length when the
+#                                 transcript cannot date this turn's start
 #   mirror_max_chars=<n>          default 3500, the length above which a body is truncated
 #   mirror_worker_details=on|off  default off; see below
 # Each has an `FM_SLACK_MIRROR_*` environment override for tests and specialized
@@ -297,7 +302,7 @@ EOF
 }
 
 cmd_stop() {
-  local payload transcript reversed tmpdir channel enabled
+  local payload payload_text transcript reversed tmpdir channel enabled
   local ack_max window max_chars details_flag
   local body turn_epoch post_epoch digest last_digest thread details
 
@@ -312,28 +317,37 @@ cmd_stop() {
   enabled=$(setting_flag "${FM_SLACK_MIRROR-}" mirror on)
   [ "$enabled" = on ] || return 0
 
+  FINAL_TEXT=; FINAL_TS=; FINAL_MODEL=; FINAL_EFFORT=; TURN_TS=
   transcript=$(printf '%s' "$payload" | jq -r '.transcript_path // ""' 2>/dev/null) || return 0
-  [ -n "$transcript" ] && [ -f "$transcript" ] && [ ! -L "$transcript" ] || return 0
-
-  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/fm-slack-mirror.XXXXXX" 2>/dev/null) || return 0
-  reversed="$tmpdir/reversed.jsonl"
-  # Newest first, so each read stops at the first match instead of walking the
-  # whole session.
-  if ! tail -n "${FM_SLACK_MIRROR_SCAN_LINES:-400}" "$transcript" 2>/dev/null \
-      | tac > "$reversed" 2>/dev/null; then
+  if [ -n "$transcript" ] && [ -f "$transcript" ] && [ ! -L "$transcript" ]; then
+    tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/fm-slack-mirror.XXXXXX" 2>/dev/null) || return 0
+    reversed="$tmpdir/reversed.jsonl"
+    # Newest first, so each read stops at the first match instead of walking the
+    # whole session.
+    if tail -n "${FM_SLACK_MIRROR_SCAN_LINES:-400}" "$transcript" 2>/dev/null \
+        | tac > "$reversed" 2>/dev/null; then
+      read_final_message "$reversed" || true
+    fi
     rm -rf -- "$tmpdir"
-    return 0
   fi
-  if ! read_final_message "$reversed"; then
-    rm -rf -- "$tmpdir"
-    return 0
-  fi
-  rm -rf -- "$tmpdir"
-  body=$FINAL_TEXT
 
-  # A turn that ended without a reply of its own must never re-post an older
-  # one. ISO-8601 UTC instants compare correctly as strings.
-  [ -z "$TURN_TS" ] || [ "$FINAL_TS" ">" "$TURN_TS" ] || return 0
+  # The payload's own account of the turn that just ended wins over the
+  # transcript, which Stop can outrun.
+  payload_text=$(printf '%s' "$payload" | jq -r '
+      if (.last_assistant_message | type) == "string" then .last_assistant_message else "" end
+    ' 2>/dev/null) || payload_text=
+  if [ -n "$payload_text" ]; then
+    body=$payload_text
+    FINAL_EFFORT=$(printf '%s' "$payload" | jq -r '
+        if (.effort.level | type) == "string" then .effort.level else "" end
+      ' 2>/dev/null) || FINAL_EFFORT=
+  else
+    [ -n "$FINAL_TEXT" ] || return 0
+    body=$FINAL_TEXT
+    # A turn that ended without a reply of its own must never re-post an older
+    # one. ISO-8601 UTC instants compare correctly as strings.
+    [ -z "$TURN_TS" ] || [ "$FINAL_TS" ">" "$TURN_TS" ] || return 0
+  fi
 
   ack_max=$(setting_int "${FM_SLACK_MIRROR_ACK_MAX_CHARS-}" mirror_ack_max_chars 120)
   window=$(setting_int "${FM_SLACK_MIRROR_THREAD_WINDOW-}" mirror_thread_window 900)
@@ -350,9 +364,14 @@ cmd_stop() {
     *)
       turn_epoch=$(iso_epoch "$TURN_TS" 2>/dev/null || true)
       case "$turn_epoch" in
-        ''|*[!0-9]*) ;;
-        *) [ "$post_epoch" -lt "$turn_epoch" ] || return 0 ;;
+        ''|*[!0-9]*)
+          # No dated turn start, so fall back to an assumed turn length rather
+          # than losing the duplicate test entirely.
+          turn_epoch=$(( $(now_epoch) - $(setting_int "${FM_SLACK_MIRROR_TURN_WINDOW-}" \
+            mirror_turn_window 900) ))
+          ;;
       esac
+      [ "$post_epoch" -lt "$turn_epoch" ] || return 0
       ;;
   esac
 

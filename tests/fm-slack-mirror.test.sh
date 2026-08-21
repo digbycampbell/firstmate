@@ -355,6 +355,43 @@ test_only_the_final_message_of_the_turn() {
   pass "only the finished turn's own final assistant text is mirrored"
 }
 
+# The real Claude Stop payload carries the finished turn's own final assistant
+# message, and Stop can fire before the transcript's last entry is flushed.
+test_payload_message_wins_over_the_transcript() {
+  local home out status
+  home=$(new_home payload)
+  write_transcript "$home/t.jsonl" 'status?' 'Captain, the stale transcript line.'
+
+  # A transcript that has not caught up yet must not cost the captain the reply.
+  : > "$FAKE_POST_BODY"
+  out=$(env FM_ROOT_OVERRIDE="$home" "$MIRROR" stop 2>&1 <<EOF
+{"hook_event_name":"Stop","transcript_path":"$home/t.jsonl","cwd":"$home","last_assistant_message":"Captain, the real reply of this turn: https://example.invalid/pr/11","effort":{"level":"high"}}
+EOF
+  ); status=$?
+  expect_code 0 "$status" "a payload-carried message must not fail the turn"
+  [ -z "$out" ] || fail "the payload path printed to the turn: $out"
+  assert_contains "$(posted_text)" 'the real reply of this turn' \
+    "the payload's own account of the turn did not win over the transcript"
+
+  # The payload's effort still feeds the standing convention when it is on.
+  rm -f "$home/state/slack-captain/mirror.last-body"
+  : > "$FAKE_POST_BODY"
+  env FM_ROOT_OVERRIDE="$home" FM_SLACK_MIRROR_WORKER_DETAILS=on "$MIRROR" stop >/dev/null 2>&1 <<EOF
+{"hook_event_name":"Stop","transcript_path":"$home/t.jsonl","cwd":"$home","last_assistant_message":"Captain, the real reply of this turn: https://example.invalid/pr/11","effort":{"level":"high"}}
+EOF
+  assert_contains "$(posted_text)" '_worker: claude-opus-5 high_' \
+    "the payload effort and transcript model did not reach the completion convention"
+
+  # A payload-carried acknowledgement is suppressed by the same rule.
+  rm -f "$home/state/slack-captain/mirror.last-body"
+  : > "$FAKE_POST_BODY"
+  env FM_ROOT_OVERRIDE="$home" "$MIRROR" stop >/dev/null 2>&1 <<EOF
+{"hook_event_name":"Stop","transcript_path":"$home/t.jsonl","cwd":"$home","last_assistant_message":"Captain, shipshape."}
+EOF
+  [ "$(posted_count)" = 0 ] || fail "a payload-carried acknowledgement was mirrored"
+  pass "the payload's own final message wins over a transcript Stop can outrun"
+}
+
 test_worker_details_are_configurable() {
   local home
   home=$(new_home details)
@@ -380,4 +417,5 @@ test_fail_open_paths
 test_off_without_a_captain_channel
 test_child_worktree_is_inert
 test_only_the_final_message_of_the_turn
+test_payload_message_wins_over_the_transcript
 test_worker_details_are_configurable
