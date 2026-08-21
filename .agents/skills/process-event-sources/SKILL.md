@@ -24,7 +24,12 @@ For a Lavish review artifact firstmate owns (a live investigating scout should h
 bin/fm-procevent-lavish.sh arm <artifact.html>
 ```
 
-A configured Slack captain channel is armed and handled through `bin/fm-procevent-slack-captain.sh`, whose header owns its configuration, token handling, and read-position rules; its `handle <source-id> <sequence> <result-file>` is the required handling command, because only it advances the channel read position along with the acknowledgement.
+A configured Slack captain channel is armed and handled through `bin/fm-procevent-slack-captain.sh`, whose header owns its configuration, token handling, thread tracking, debounce, and read-position rules; its `handle <source-id> <sequence> <result-file>` is the required handling command, because only it advances the channel and per-thread read positions along with the acknowledgement.
+A captured message carrying `thread_ts` is a reply inside that thread, so read it against the topic that thread is about rather than as a fresh request.
+Post back with `bin/fm-slack-post.sh`, using `--thread <ts>` to answer in place; it also registers the thread so the captain's next reply inside it is captured, which a hand-rolled Slack call would not do.
+A completion post carries `--worker-details "<model> <effort>"`, the standing convention that flag owns.
+
+A configured live quota channel topic is armed through `bin/fm-procevent-quota-topic.sh arm` and needs no handling on a healthy run: it produces no result and no wake, and only a fatal Slack error becomes an `api-error` result to handle.
 
 When a source carries captain answers to decisions that already have durable holds, bind it to their origin BEFORE arming it, so it can never produce an answer that has nowhere to go:
 
