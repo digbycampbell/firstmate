@@ -49,8 +49,7 @@ If `jq` is missing or hook stdin is empty, the guard exits 0 because it cannot s
 
 ## Harness integrations
 
-- Claude registers two `Stop` hooks in `.claude/settings.json`, both anchored through `CLAUDE_PROJECT_DIR`: `bin/fm-turnend-guard.sh --claude`, and `bin/fm-claude-stop-autoarm.sh` with `asyncRewake: true` and `timeout: 28800`.
-- Claude registers one further `Stop` hook, `bin/fm-slack-mirror.sh stop`, which mirrors the turn's final captain-facing message into the configured Slack captain channel.
+- Claude registers three `Stop` hooks in `.claude/settings.json`, all anchored through `CLAUDE_PROJECT_DIR`: `bin/fm-turnend-guard.sh --claude`, `bin/fm-claude-stop-autoarm.sh` with `asyncRewake: true` and `timeout: 28800`, and `bin/fm-slack-mirror.sh stop`, which mirrors the turn's final captain-facing message into the configured Slack captain channel.
   It is not part of this guard: it reads its own stdin payload in its own process, never exits nonzero, never writes stdout, and hands delivery to a detached child, so it cannot change the exit status semantics either the guard or the auto-arm depend on.
   `bin/fm-slack-mirror.sh` owns that contract, and no other primary harness delivers a turn-end payload naming the finished turn's transcript, so the mirror is Claude-only.
 - Codex registers a `Stop` hook in `.codex/hooks.json`, anchors the executable to the hook process working directory, verifies a Firstmate-shaped hook-bearing root, and passes the original payload to the shared guard.
