@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--issue <n>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
@@ -16,6 +16,13 @@
 #   loud one-line deviation notice is printed and the spawn continues.
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
 #   refused as a flag value.
+#   --issue <n> is the OPTIONAL GitHub issue number this ship spawn delivers.
+#   When set, a successful spawn makes one best-effort, strictly fail-open call
+#   to `bin/fm-board.sh move <n> Building` as its very last step, after the
+#   endpoint and worktree already exist - so a board hiccup (missing gh-axi, no
+#   auth, an unrecognized project) can never affect the spawn's own result, and
+#   omitting the flag changes nothing. Refused on --scout, --secondmate, and
+#   --relaunch spawns, which carry no fresh board move of their own.
 #        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded endpoint and worktree instead of creating either. It is
@@ -282,12 +289,14 @@ BACKEND_ARG=
 MODE=
 YOLO=
 TRACEPARENT_ARG=
+ISSUE_ARG=
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
 BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
+ISSUE_SET=0
 TRACEPARENT_SET=0
 RELAUNCH=0
 POS=()
@@ -304,6 +313,7 @@ for a in "$@"; do
       backend) BACKEND_ARG=$a; BACKEND_SET=1 ;;
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
+      issue) ISSUE_ARG=$a; ISSUE_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
@@ -326,6 +336,8 @@ for a in "$@"; do
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --yolo) want_value=yolo ;;
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
+    --issue) want_value=issue ;;
+    --issue=*) ISSUE_ARG=${a#--issue=}; ISSUE_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
     *) POS+=("$a") ;;
@@ -338,6 +350,7 @@ done
 [ "$BACKEND_SET" -eq 0 ] || [ -n "$BACKEND_ARG" ] || { echo "error: --backend requires a non-empty value" >&2; exit 1; }
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
+[ "$ISSUE_SET" -eq 0 ] || [ -n "$ISSUE_ARG" ] || { echo "error: --issue requires a non-empty value" >&2; exit 1; }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
@@ -356,6 +369,11 @@ case "$EFFORT" in
   ''|low|medium|high|xhigh|max) ;;
   *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
 esac
+if [ "$ISSUE_SET" -eq 1 ]; then
+  case "$ISSUE_ARG" in
+    ''|*[!0-9]*) echo "error: --issue must be a positive integer issue number (got '$ISSUE_ARG')" >&2; exit 1 ;;
+  esac
+fi
 
 # --relaunch reuses an existing task's endpoint, worktree, project, and kind,
 # so every axis this block resolves for a fresh spawn instead comes from that
@@ -366,6 +384,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
   [ "$MODE_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded delivery mode; --mode cannot override it" >&2; exit 1; }
   [ "$YOLO_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded yolo posture; --yolo cannot override it" >&2; exit 1; }
+  [ "$ISSUE_SET" -eq 0 ] || { echo "error: --issue applies only to a fresh ship spawn; --relaunch reuses the existing task and makes no new board move" >&2; exit 1; }
 else
   # Delivery contract (AGENTS.md section 7). A ship task's mode and yolo are
   # firstmate's per-task decision, so they are required and closed-set validated
@@ -398,6 +417,10 @@ else
     }
     [ "$YOLO_SET" -eq 0 ] || {
       echo "error: --yolo applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
+      exit 1
+    }
+    [ "$ISSUE_SET" -eq 0 ] || {
+      echo "error: --issue applies only to ship spawns; a scout delivers a report and a secondmate carries no linked issue" >&2
       exit 1
     }
   fi
@@ -861,6 +884,10 @@ fi
 if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in */*) false ;; *) true ;; esac; then
   if [ "$KIND" != secondmate ] && [ -z "$HARNESS_ARG" ] && [ -f "$CONFIG/crew-dispatch.json" ]; then
     echo "error: config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped)." >&2
+    exit 1
+  fi
+  if [ "$ISSUE_SET" -eq 1 ]; then
+    echo "error: --issue applies only to a single-task ship spawn; batch dispatch (id=repo pairs) does not support it, because one issue number cannot fan out across the batch's distinct tasks" >&2
     exit 1
   fi
   rc=0
@@ -2677,6 +2704,12 @@ preserve_relaunch_meta() {
   echo "kind=$KIND"
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
+  # Persisted so later lifecycle points (fm-pr-check.sh, a future no-mistakes
+  # start hook) can recover the linked issue without being re-told; omitted
+  # from `preserve_relaunch_meta`'s owned-key list on purpose, so a relaunch
+  # (which never repeats --issue) carries the original value forward unchanged
+  # instead of losing it.
+  [ -z "$ISSUE_ARG" ] || echo "issue=$ISSUE_ARG"
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
@@ -2880,3 +2913,12 @@ fi
 SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"
+
+# Optional, strictly fail-open board courtesy: the spawn itself is already a
+# complete success by this point (endpoint and worktree exist, the line above
+# already printed), so a board hiccup - missing gh-axi, no auth, an
+# unrecognized project - can never turn this spawn into a failure. See
+# bin/fm-board.sh's own header for its fail-open contract.
+if [ "$ISSUE_SET" -eq 1 ]; then
+  "$FM_ROOT/bin/fm-board.sh" move "$ISSUE_ARG" Building >/dev/null 2>&1 || true
+fi
