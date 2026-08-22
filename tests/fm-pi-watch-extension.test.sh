@@ -409,14 +409,19 @@ EOF
   pass "Pi actionable close starts one successor before wake delivery settles"
 }
 
-test_pi_hung_successor_falls_back_to_typed_wake() {
+test_pi_unready_successor_falls_back_to_typed_wake() {
   local repo home plugin log out status
-  repo="$TMP_ROOT/pi-hung-successor-root"
-  home="$TMP_ROOT/pi-hung-successor-home"
-  log="$TMP_ROOT/pi-hung-successor.log"
+  repo="$TMP_ROOT/pi-unready-successor-root"
+  home="$TMP_ROOT/pi-unready-successor-home"
+  log="$TMP_ROOT/pi-unready-successor.log"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   install_pi_watch_extension_fixture "$repo"
   plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  # Each successor records its arm row and then ends without ever announcing
+  # readiness, so the restoration loop advances on an observed child exit. A
+  # successor that instead hung until the readiness deadline SIGTERMed it would
+  # race its own `bash -lc` start-up: under load the SIGTERM can land before the
+  # arm row is written, losing a row the assertions require.
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
@@ -426,11 +431,14 @@ if [ "$count" -eq 1 ]; then
   printf 'signal: synthetic wake\n'
   exit 0
 fi
-trap 'exit 0' TERM INT
-while :; do sleep 0.02; done
+printf 'watcher: FAILED - successor could not establish a cycle\n'
+exit 1
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+  # The readiness budget is deliberately far above every wait this test performs:
+  # reaching it at all means readiness stopped settling on child exit, and the
+  # poll ceiling below then fails the test instead of hiding the regression.
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=30000 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -453,8 +461,8 @@ const pi = {
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
-await tool.execute("tool-call-hung-successor", {}, undefined, undefined, {});
-for (let i = 0; i < 1500 && !prompt; i += 1) {
+await tool.execute("tool-call-unready-successor", {}, undefined, undefined, {});
+for (let i = 0; i < 500 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -463,6 +471,7 @@ const rows = existsSync(process.env.FM_ARM_LOG)
 if (rows.length !== 4) throw new Error(`expected one successor plus two retries, got ${rows.length}: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 4) throw new Error(`wake arrived before restoration exhausted (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
+if (!prompt.includes("could not verify a ready successor watcher")) throw new Error(`missing readiness failure: ${prompt}`);
 if (!prompt.includes("could not restore watcher continuity after 2 retries")) throw new Error(`missing typed restoration failure: ${prompt}`);
 await new Promise((resolve) => setTimeout(resolve, 100));
 const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
@@ -470,9 +479,9 @@ if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi must deliver the actionable wake after bounded hung-successor recovery"
-  [ -z "$out" ] || fail "Pi hung-successor test printed output: $out"
-  pass "Pi hung successor falls back to one typed actionable wake"
+  expect_code 0 "$status" "Pi must deliver the actionable wake after bounded unready-successor recovery"
+  [ -z "$out" ] || fail "Pi unready-successor test printed output: $out"
+  pass "Pi unready successor falls back to one typed actionable wake"
 }
 
 test_pi_unretired_successor_falls_back_without_retry() {
@@ -1582,16 +1591,18 @@ EOF
   pass "OpenCode pre-ready actionable close preserves its successor"
 }
 
-test_opencode_hung_successor_falls_back_to_typed_wake() {
+test_opencode_unready_successor_falls_back_to_typed_wake() {
   local plugin repo home log out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
-  repo="$TMP_ROOT/opencode-hung-successor-root"
-  home="$TMP_ROOT/opencode-hung-successor-home"
-  log="$TMP_ROOT/opencode-hung-successor.log"
+  repo="$TMP_ROOT/opencode-unready-successor-root"
+  home="$TMP_ROOT/opencode-unready-successor-home"
+  log="$TMP_ROOT/opencode-unready-successor.log"
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
+  # See the Pi twin: successors end without announcing readiness so the loop is
+  # driven by observed exits, never by a readiness deadline racing arm start-up.
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
@@ -1601,11 +1612,11 @@ if [ "$count" -eq 1 ]; then
   printf 'signal: synthetic wake\n'
   exit 0
 fi
-trap 'exit 0' TERM INT
-while :; do sleep 0.02; done
+printf 'watcher: FAILED - successor could not establish a cycle\n'
+exit 1
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_OPENCODE_ARM_READY_TIMEOUT_MS=30000 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -1629,7 +1640,7 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 1500 && !prompt; i += 1) {
+for (let i = 0; i < 500 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -1638,6 +1649,7 @@ const rows = existsSync(process.env.FM_ARM_LOG)
 if (rows.length !== 4) throw new Error(`expected one successor plus two retries, got ${rows.length}: ${rows.join(" | ")}`);
 if (rowsAtPrompt !== 4) throw new Error(`wake arrived before restoration exhausted (${rowsAtPrompt} arm rows)`);
 if (!prompt.includes("signal: synthetic wake")) throw new Error(`original wake was lost: ${prompt}`);
+if (!prompt.includes("could not verify a ready successor watcher")) throw new Error(`missing readiness failure: ${prompt}`);
 if (!prompt.includes("could not restore watcher continuity after 2 retries")) throw new Error(`missing typed restoration failure: ${prompt}`);
 await new Promise((resolve) => setTimeout(resolve, 100));
 const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
@@ -1645,9 +1657,9 @@ if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode must deliver the actionable wake after bounded hung-successor recovery"
-  [ -z "$out" ] || fail "OpenCode hung-successor test printed output: $out"
-  pass "OpenCode hung successor falls back to one typed actionable wake"
+  expect_code 0 "$status" "OpenCode must deliver the actionable wake after bounded unready-successor recovery"
+  [ -z "$out" ] || fail "OpenCode unready-successor test printed output: $out"
+  pass "OpenCode unready successor falls back to one typed actionable wake"
 }
 
 test_opencode_unretired_successor_falls_back_without_retry() {
@@ -2155,7 +2167,7 @@ test_pi_tool_returns_agent_tool_result
 test_pi_redundant_tool_call_is_owned_noop
 test_pi_scheduled_retry_call_is_owned_noop
 test_pi_actionable_close_starts_single_successor_before_delivery
-test_pi_hung_successor_falls_back_to_typed_wake
+test_pi_unready_successor_falls_back_to_typed_wake
 test_pi_unretired_successor_falls_back_without_retry
 test_pi_late_unretired_close_resumes_supervision
 test_pi_empty_close_retries_instead_of_disappearing
@@ -2172,7 +2184,7 @@ test_opencode_primary_watch_plugin_requires_session_lock
 test_opencode_watch_arm_coordinator_respects_primary_scope
 test_opencode_primary_watch_plugin_rearms_after_wake
 test_opencode_pre_ready_actionable_close_preserves_its_successor
-test_opencode_hung_successor_falls_back_to_typed_wake
+test_opencode_unready_successor_falls_back_to_typed_wake
 test_opencode_unretired_successor_falls_back_without_retry
 test_opencode_late_unretired_close_resumes_supervision
 test_opencode_empty_close_retries_instead_of_disappearing
