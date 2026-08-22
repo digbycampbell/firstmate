@@ -2120,7 +2120,12 @@ SH
       "$ROOT/bin/fm-config-push.sh" > "$first_out" 2>&1
   ) &
   first_pid=$!
-  for _ in $(seq 1 100); do
+  # Poll for the first push reaching its send-keys delivery. The push's real
+  # work (guard, inheritance propagation, and the composer-verified submit with
+  # its fixed settles) costs well over the old 100-iteration (2s) ceiling even
+  # unloaded, so this polls the same condition with a ceiling calibrated to
+  # what the fixture costs under load.
+  for _ in $(seq 1 3000); do
     [ -e "$entered" ] && break
     sleep 0.02
   done
