@@ -1347,10 +1347,17 @@ const hooks = await mod.FmPrimaryWatchArm({
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
 await hooks.event(event);
-await new Promise((resolve) => setTimeout(resolve, 120));
-if (existsSync(process.env.FM_ARM_LOG)) {
-  console.error("watch arm ran without owning the session lock");
-  process.exit(1);
+// The ownership check spawns several real subprocesses (git rev-parse x2,
+// up to 8 ps hops), so a short fixed sleep races a loaded CI runner. Poll a
+// generous window instead: any appearance is still an immediate failure,
+// and clearing the window without one proves the first fire-and-forget
+// ensureArm call settled before the lock is rewritten below.
+for (let i = 0; i < 150; i += 1) {
+  if (existsSync(process.env.FM_ARM_LOG)) {
+    console.error("watch arm ran without owning the session lock");
+    process.exit(1);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
 }
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event(event);
