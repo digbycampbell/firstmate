@@ -886,7 +886,9 @@ fm_remote_job_probe() { # <account-home>; a fresh worker heartbeat or active job
 
 fm_remote_job_wait_for_probe() { # <remote-root> <account-home>
   local root=$1 account_home=$2 i=0
-  while [ "$i" -lt 200 ]; do
+  # A worker starting beside a loaded serial test lane can take tens of seconds
+  # to publish a fresh heartbeat carrying the current code identity.
+  while [ "$i" -lt 600 ]; do
     fm_remote_job_probe "$account_home" && fm_remote_job_worker_identity_matches "$root" "$account_home" && return 0
     i=$((i + 1))
     sleep 0.1

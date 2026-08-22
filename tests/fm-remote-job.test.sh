@@ -65,7 +65,7 @@ cat > "$REMOTE_ROOT/bin/fm-shutdown-job.sh" <<'SH'
 #!/bin/bash
 trap '' HUP INT TERM
 printf 'started\n' > "$1"
-sleep 3
+sleep "${3:-3}"
 printf 'ran\n' > "$2"
 SH
 cat > "$REMOTE_ROOT/bin/fm-output-job.sh" <<'SH'
@@ -169,7 +169,7 @@ HOME="$ACCOUNT_HOME" PATH="$RUNTIME_BIN:/usr/bin:/bin:/usr/sbin:/sbin" FM_FAKE_P
   FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" \
   FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux FM_REMOTE_JOB_TIMEOUT=5 \
   "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" > "$TMP_ROOT/worker.out" 2> "$TMP_ROOT/worker.err" &
-for _ in $(seq 1 100); do
+for _ in $(seq 1 300); do
   [ -f "$STATE_ROOT/worker.ready" ] && break
   sleep 0.05
 done
@@ -440,7 +440,7 @@ kill -0 "$WORKER_PID" 2>/dev/null && fail "the worker did not finish its TERM sh
 HOME="$ACCOUNT_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" \
   FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux FM_REMOTE_JOB_TIMEOUT=1 \
   "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" >> "$TMP_ROOT/worker.out" 2>> "$TMP_ROOT/worker.err" &
-for _ in $(seq 1 100); do
+for _ in $(seq 1 300); do
   [ -f "$STATE_ROOT/worker.ready" ] && break
   sleep 0.05
 done
@@ -455,8 +455,11 @@ pass "worker shutdown terminates the active command tree before replacement"
 CRASH_STARTED="$TMP_ROOT/crash-started"
 CRASH_SIDE_EFFECT="$TMP_ROOT/crash-side-effect"
 FM_REMOTE_JOB_TIMEOUT=5
+# The mutation delay must outlast legitimate crash-recovery latency - the
+# supervisor backoff plus a fresh worker's startup on a loaded host - or the
+# orphan can complete before recovery has had its chance to stop it.
 fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" \
-  fm-shutdown-job.sh "$CRASH_STARTED" "$CRASH_SIDE_EFFECT" < /dev/null > /dev/null
+  fm-shutdown-job.sh "$CRASH_STARTED" "$CRASH_SIDE_EFFECT" 8 < /dev/null > /dev/null
 JOB_ID=$FM_REMOTE_JOB_ID
 for _ in $(seq 1 100); do
   [ -f "$CRASH_STARTED" ] && break
@@ -474,7 +477,7 @@ done
   || fail "the Linux supervisor did not restart a crashed worker"
 fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
 [ "$FM_REMOTE_JOB_EXIT" -eq 125 ] || fail "worker crash recovery did not publish unknown completion"
-sleep 3
+sleep 8
 assert_absent "$CRASH_SIDE_EFFECT" "an orphaned command mutated after worker crash recovery"
 fm_remote_job_reap "$ACCOUNT_HOME" "$JOB_ID" || fail "the crash-recovered job could not be reaped"
 fm_remote_job_probe "$ACCOUNT_HOME" || fail "the restarted worker did not remain ready"
@@ -527,7 +530,12 @@ for _ in $(seq 1 100); do
   sleep 0.05
 done
 assert_absent "$STATE_ROOT/worker.pid" "the worker did not stop before the staged-record tamper"
+# The queue window only has to outlast a fresh worker's startup on a loaded
+# host so the tampered record reaches validation instead of expiring in the
+# queue; the symlink refusal it exercises is unchanged.
+FM_REMOTE_JOB_QUEUE_TIMEOUT=60
 fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-touch-job.sh "$SIDE_EFFECT" < /dev/null > /dev/null
+FM_REMOTE_JOB_QUEUE_TIMEOUT=5
 JOB_ID=$FM_REMOTE_JOB_ID
 JOB_DIR="$STATE_ROOT/jobs/$JOB_ID"
 rm -f -- "$JOB_DIR/argv"

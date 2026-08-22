@@ -404,8 +404,25 @@ worker_publish_result() { # <job-dir> <exit>
   fm_remote_job_write_state "$job" 'done'
 }
 
+# Wall clock in microseconds. EPOCHREALTIME is a bash builtin whose decimal
+# separator follows the locale, so both forms are accepted; a shell without it
+# degrades to SECONDS whole-second granularity.
+worker_now_micros() {
+  local frac
+  case ${EPOCHREALTIME:-} in
+    *[0-9][.,][0-9]*)
+      frac=${EPOCHREALTIME#*[.,]}
+      frac=${frac}000000
+      printf '%s\n' $(( ${EPOCHREALTIME%%[.,]*} * 1000000 + 10#${frac:0:6} ))
+      ;;
+    *)
+      printf '%s\n' $(( SECONDS * 1000000 ))
+      ;;
+  esac
+}
+
 worker_run_with_timeout() { # <job-dir> <seconds> <command> [args...]
-  local job=$1 timeout=$2 group_file armed_file group_pid rc tmp deadline next_heartbeat attempt
+  local job=$1 timeout=$2 group_file armed_file group_pid rc tmp deadline next_heartbeat attempt now
   local timed_out=0 heartbeat_failed=0
   WORKER_PREEMPTED=0
   shift 2
@@ -457,10 +474,21 @@ worker_run_with_timeout() { # <job-dir> <seconds> <command> [args...]
     WORKER_ACTIVE_JOB=
     return 125
   fi
-  deadline=$((SECONDS + timeout))
+  # SECONDS ticks on whole-second boundaries, so a deadline computed from it
+  # can fire almost a full second early and cut the command's execution window
+  # short. Measure the window against the wall clock instead; without
+  # EPOCHREALTIME the padded SECONDS bound expires late rather than early. The
+  # heartbeat stays on SECONDS because the readiness probe tolerates ten
+  # seconds of staleness.
+  deadline=$(( $(worker_now_micros) + timeout * 1000000 ))
+  case ${EPOCHREALTIME:-} in
+    *[0-9][.,][0-9]*) ;;
+    *) deadline=$((deadline + 1000000)) ;;
+  esac
   next_heartbeat=$((SECONDS + 1))
   while worker_process_or_group_alive group "$group_pid"; do
-    if [ "$SECONDS" -ge "$deadline" ]; then
+    now=$(worker_now_micros)
+    if [ "$now" -ge "$deadline" ]; then
       worker_signal_process_or_group group TERM "$group_pid"
       worker_signal_process_or_group group KILL "$group_pid"
       timed_out=1
@@ -663,7 +691,11 @@ worker_process_once() { # <account-home>
       worker_publish_result "$job" 126 || true
       continue
     fi
-    deadline=$(( $(date +%s) + timeout ))
+    # Whole-second records round the claim time down, so record the first whole
+    # second after the intended expiry: the remaining-window arithmetic in
+    # worker_run_job then always leaves the job at least its full timeout
+    # instead of up to a second less.
+    deadline=$(( $(date +%s) + timeout + 1 ))
     fm_remote_job_write_number "$job" deadline "$deadline" || {
       worker_publish_result "$job" 125 || true
       continue
