@@ -31,6 +31,10 @@ A completion post carries `--worker-details "<model> <effort>"`, the standing co
 
 A configured live quota channel topic is armed through `bin/fm-procevent-quota-topic.sh arm` and needs no handling on a healthy run: it produces no result and no wake, and only a fatal Slack error becomes an `api-error` result to handle.
 
+A configured GitHub self-assignment watch is armed and handled through `bin/fm-procevent-github-assigned.sh`, whose header owns its configuration, rate-limit design, and cursor scheme; its `handle <source-id> <sequence> <result-file>` is the required handling command, because only it advances the known-assignment cursor along with the acknowledgement.
+A captured `assigned` result's rows each carry a type - `issue` (a promoted, number-and-repo-bearing item: the actual pick-it-up trigger) or `draft` (a board draft: intake only, not yet promoted) - so read the result file directly to see which before treating a captured item as ready to work.
+Its `list` subcommand prints the login's currently assigned issues and drafts on demand, with no cursor side effects.
+
 When a source carries captain answers to captain-held tasks, bind it BEFORE arming it, so it can never produce an answer that has nowhere to go:
 
 ```sh

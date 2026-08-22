@@ -510,6 +510,7 @@ A long-polling external process is registered as a *source* through its adapter,
 `bin/fm-procevent.sh` owns the generic contract; `bin/fm-procevent-lavish.sh` is the first adapter and wraps only the currently published `lavish-axi poll` interface.
 `bin/fm-procevent-slack-captain.sh` is the Slack captain-channel adapter; its configuration keys are below and its header owns everything else.
 `bin/fm-procevent-quota-topic.sh` is the live quota channel-topic adapter; its configuration keys are below and its header owns the topic format, the quota sources, and everything else.
+`bin/fm-procevent-github-assigned.sh` is the GitHub self-assignment adapter, watching for the captain self-assigning a GitHub issue or a project-board draft; its configuration keys are below and its header owns the rate-limit design, the two-surface fetch, and everything else.
 
 The `when` adapter (`bin/fm-procevent-when.sh`) turns this channel into a condition->action primitive: it registers a deterministic condition and a deterministic action once, its blocking child polls the condition without waking firstmate, and a stable true fires the action at most once before one terminal outcome is durably captured and published as a wake that remains eligible for re-announcement until handled.
 The (condition, action) spec is stored privately under `state/when/` and hash-bound by a trust record the same way `bin/fm-check-register.sh` binds a custom check, while the spec separately binds the resolved action executable's bytes; a mutated or unregistered spec or a changed action executable is refused before the action runs.
@@ -622,6 +623,29 @@ Claude and Codex come from `quota-axi --json`; Kimi is read directly from the ma
 That read uses `KIMI_API_QUOTA` from the home's gitignored `.env`, handled exactly like `SLACK_BOT_TOKEN`.
 A healthy run produces no wake at all; only a fatal Slack error becomes a captured result.
 Threshold-crossing quota alerts remain ordinary messages and are unaffected by this source.
+
+## GitHub self-assignment (config/github-assigned)
+
+The GitHub self-assignment process-event source watches for the captain self-assigning a GitHub issue or a project-board draft to himself - firstmate's prioritisation signal - and wakes firstmate with exactly one `check` event per newly assigned item; it decides nothing about what to do with that signal.
+It reads the local, gitignored `config/github-assigned`, one `key=value` per line:
+
+- `login=<github login>` is optional, default `digbycampbell`.
+- `repo=<owner/repo>` is repeatable; issues in each named repo are watched regardless of board membership, default `digio-nz/fcdispatch` when absent.
+- `project_owner=<org login>` is optional, default `digio-nz`; the board is read through GraphQL's `organization(login:...)` field, so a personal (user-owned) project is not currently supported.
+- `project_number=<n>` is optional, default `2`.
+- `interval=<seconds>` is optional, default `300`; how often assigned issues are re-checked.
+- `board_interval=<seconds>` is optional, default `1800`; how often the project board is re-checked, deliberately slower than `interval` - see the rate-limit note below.
+
+No token lives in this adapter or in `.env`; authentication is `gh-axi`'s own, and a broken credential is already surfaced by firstmate's own session-start network check.
+A captured result distinguishes a promoted real issue (carries a number, repo, and url - the actual "pick it up" trigger) from a board draft (intake-only, not yet promoted) through a type column on every row, plus separate `issue_count`/`draft_count` header fields; firstmate reads the captured result directly to see which.
+The stored cursor is an ever-growing set of every id ever reported as newly assigned, not a single advancing position, so a steady state produces no wake and re-polling is safe; the accepted limitation is that unassigning and later reassigning the same item to the same login does not produce a second wake, since its id is already known.
+
+Rate-limit-friendliness is a load-bearing design constraint, not an afterthought: issues are read through the generous 5,000/hour REST "core" quota (`GET /repos/<owner>/<repo>/issues?assignee=<login>`) rather than the Search API's separate 30/minute budget, the project board (GraphQL, which shares a 5,000/hour quota with every other GraphQL caller on the same token, including manual board operations) is polled on its own slower `board_interval` cadence, and every fetch checks the free `/rate_limit` endpoint first and skips itself for the cycle - fail-open, logged, retried next cycle - when remaining capacity is low (`FM_GITHUB_ASSIGNED_MIN_CORE_QUOTA` default 100, `FM_GITHUB_ASSIGNED_MIN_GRAPHQL_QUOTA` default 50).
+A board-quota shortage never blocks noticing a newly assigned issue through the still-healthy core quota.
+Conditional requests (ETag/If-Modified-Since) were evaluated and are not used: `gh-axi api` has no flag to read response headers back, and GitHub does not honor `If-Modified-Since` on this listing endpoint regardless; `bin/fm-procevent-github-assigned.sh`'s header records both findings in detail.
+
+`bin/fm-procevent-github-assigned.sh` and its `--help` own the commands, the canonical-id and cursor-hash scheme, and the tuning variables `FM_GITHUB_ASSIGNED_MAX_LOOPS`, `FM_GITHUB_ASSIGNED_MAX_PAGES`, `FM_GITHUB_ASSIGNED_INTERVAL`, `FM_GITHUB_ASSIGNED_BOARD_INTERVAL`, `FM_GITHUB_ASSIGNED_MIN_CORE_QUOTA`, and `FM_GITHUB_ASSIGNED_MIN_GRAPHQL_QUOTA`.
+Its `list` subcommand prints the configured login's currently assigned open issues and assigned board drafts on demand, with no cursor side effects.
 
 ## Environment variables
 
