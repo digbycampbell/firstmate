@@ -445,7 +445,7 @@ quota_ok() {
 # letters, digits, ., _, -, and / - nothing that can break out of a jq string
 # literal.
 issues_jq_filter() {  # <repo>
-  printf '["count", (length | tostring)] | @tsv,
+  printf '(["count", (length | tostring)] | @tsv),
   (.[] | select(has("pull_request") | not) | [
     "issue", ("issue:%s#" + (.number | tostring)), (.number | tostring), "%s", .html_url, .title
   ] | @tsv)' "$1" "$1"

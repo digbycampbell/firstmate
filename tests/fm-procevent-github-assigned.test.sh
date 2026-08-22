@@ -167,6 +167,50 @@ printf 'schema=fm-github-assigned.v1\nstatus=assigned\n\n' > "$TMP_ROOT/some.res
 "$ADAPTER" terminal "$TMP_ROOT/some.result" && fail "a github-assigned source must never be terminal"
 pass "the source stays armed no matter what a result contained"
 
+# --- issues_jq_filter is a valid jq program run against raw GitHub JSON -----
+#
+# Every other test in this file replaces gh-axi with a fake that hands back
+# already-formatted rows, so --jq is never actually applied to anything and a
+# broken filter program would never be caught here. This test sources the
+# adapter (in a subshell, since its own trailing dispatcher would otherwise
+# exit this test script) purely to obtain the real issues_jq_filter program,
+# then feeds it to real jq against a GitHub-shaped issues array. This guards
+# against jq's `,` binding tighter than `|`: an unparenthesised
+# `A | @tsv, (.[] ...)` parses as `A | (@tsv, (.[] ...))`, making the second
+# `.[]` iterate the first alternative's own array instead of the original
+# response.
+
+issues_fixture="$TMP_ROOT/issues_filter_fixture.json"
+cat > "$issues_fixture" <<'JSON'
+[
+  {"number": 42, "html_url": "https://github.com/acme/repo/issues/42", "title": "Has a PR",
+   "pull_request": {"url": "https://api.github.com/repos/acme/repo/pulls/42"}},
+  {"number": 7, "html_url": "https://github.com/acme/repo/issues/7", "title": "Plain issue"}
+]
+JSON
+
+issues_filter=$(
+  ( set -- source-id
+    FM_HOME="$TMP_ROOT/issues_filter_home"
+    export FM_HOME
+    # shellcheck source=/dev/null
+    . "$ADAPTER" >/dev/null
+    issues_jq_filter "acme/repo"
+  )
+) || fail "could not source the adapter to obtain issues_jq_filter"
+
+issues_filter_out=$(jq -r "$issues_filter" "$issues_fixture" 2>"$TMP_ROOT/issues_filter.err")
+issues_filter_rc=$?
+[ "$issues_filter_rc" -eq 0 ] \
+  || fail "issues_jq_filter must be a valid jq program runnable against a raw issues array: $(cat "$TMP_ROOT/issues_filter.err")"
+assert_contains "$issues_filter_out" "$(printf 'count\t2')" \
+  "the count row reflects the raw array's own length"
+printf '%s\n' "$issues_filter_out" | grep -qF "$(printf 'issue\tissue:acme/repo#7\t7\tacme/repo')" \
+  || fail "the non-PR issue must appear as an issue row derived from the original response"
+! printf '%s\n' "$issues_filter_out" | grep -q '#42' \
+  || fail "an item carrying pull_request must be filtered out of the issue rows"
+pass "issues_jq_filter is a real jq program that emits both a count row and an issue row from the raw response"
+
 # --- a fresh assignment is captured, classified, and named ------------------
 
 home=$(new_home fresh)
