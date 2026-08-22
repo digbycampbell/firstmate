@@ -292,6 +292,23 @@ printf '%s\n' "$draft_out" | grep -qF 'new	draft	draft:PVTI_zzz' \
 no_board_items
 pass "a board draft is flagged distinctly from a promoted real issue"
 
+# --- the board fetch follows GraphQL pagination across pages -----------------
+
+home9=$(new_home paginate)
+: > "$FAKE_ISSUES_BODY_FILE"
+printf 'page\ttrue\tOPAQUECURSOR1\nitem\tdraft\tdraft:PVTI_page1\t\t\t\tPage one draft\n' > "$FAKE_PROJECT_PAGE1_FILE"
+printf 'page\tfalse\t\nitem\tdraft\tdraft:PVTI_page2\t\t\t\tPage two draft\n' > "$FAKE_PROJECT_PAGE2_FILE"
+: > "$FAKE_GH_AXI_ARGV"
+page_out=$(FM_HOME="$home9" "$ADAPTER" poll "$home9") || fail "a board fetch spanning two pages should still capture both drafts"
+assert_contains "$page_out" 'draft_count=2' "both pages' drafts are counted"
+assert_contains "$page_out" 'draft:PVTI_page1' "the first page's draft is present"
+assert_contains "$page_out" 'draft:PVTI_page2' "the second page's draft is present"
+assert_grep 'after=OPAQUECURSOR1' "$FAKE_GH_AXI_ARGV" "the second page request carries the first page's cursor"
+: > "$FAKE_PROJECT_PAGE1_FILE"
+no_board_items
+: > "$FAKE_PROJECT_PAGE2_FILE"
+pass "a board fetch spanning multiple GraphQL pages aggregates every page's items"
+
 # --- end-to-end: arm, run the source, capture, publish, handle --------------
 
 home8=$(new_home roundtrip)
