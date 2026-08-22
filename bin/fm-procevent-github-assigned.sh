@@ -445,9 +445,10 @@ quota_ok() {
 # letters, digits, ., _, -, and / - nothing that can break out of a jq string
 # literal.
 issues_jq_filter() {  # <repo>
-  printf '.[] | select(has("pull_request") | not) | [
+  printf '["count", (length | tostring)] | @tsv,
+  (.[] | select(has("pull_request") | not) | [
     "issue", ("issue:%s#" + (.number | tostring)), (.number | tostring), "%s", .html_url, .title
-  ] | @tsv' "$1" "$1"
+  ] | @tsv)' "$1" "$1"
 }
 
 # Fetches every open issue assigned to the login across the configured repos
@@ -455,7 +456,7 @@ issues_jq_filter() {  # <repo>
 # one call per repo against the generous "core" rate limit (see the
 # RATE-LIMIT header note for why this is not the Search API). Sets FETCHED.
 fetch_issues() {
-  local r page lines
+  local r page kind rest line raw_count
   : > "$issues_tmp"
   if ! quota_ok core "$QUOTA_MIN_CORE"; then
     FETCHED=0
@@ -469,10 +470,17 @@ fetch_issues() {
       gh_api_body "/repos/$r/issues" --field assignee="$CFG_LOGIN" --field state=open \
         --field per_page=100 --field page="$page" --jq "$(issues_jq_filter "$r")"
       [ "$FETCHED" = 1 ] || return 0
-      [ -z "$BODY_TEXT" ] || printf '%s\n' "$BODY_TEXT" >> "$issues_tmp"
-      lines=0
-      [ -z "$BODY_TEXT" ] || lines=$(printf '%s\n' "$BODY_TEXT" | wc -l | tr -d ' ')
-      [ "$lines" -ge 100 ] || break
+      raw_count=0
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        kind=${line%%$'\t'*}
+        rest=${line#*$'\t'}
+        case "$kind" in
+          count) raw_count=$rest ;;
+          issue) printf '%s\n' "$line" >> "$issues_tmp" ;;
+        esac
+      done <<< "$BODY_TEXT"
+      [ "$raw_count" -ge 100 ] || break
       page=$((page + 1))
       [ "$page" -le "$MAX_PAGES" ] \
         || die "assigned issues in $r past page $MAX_PAGES exceed the bounded page count; refusing to emit a partial capture"
@@ -486,10 +494,10 @@ fetch_issues() {
 project_items_query() {  # <after-cursor-or-empty>
   if [ -n "$1" ]; then
     # shellcheck disable=SC2016 # $after is a literal GraphQL variable reference, not a shell expansion
-    printf 'query($after: String) { organization(login: "%s") { projectV2(number: %s) { items(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id content { __typename ... on DraftIssue { title assignees(first: 20) { nodes { login } } } ... on Issue { number title url repository { nameWithOwner } assignees(first: 20) { nodes { login } } } } } } } } }' \
+    printf 'query($after: String) { organization(login: "%s") { projectV2(number: %s) { items(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id content { __typename ... on DraftIssue { title assignees(first: 20) { nodes { login } } } ... on Issue { number title url state repository { nameWithOwner } assignees(first: 20) { nodes { login } } } } } } } } }' \
       "$CFG_PROJECT_OWNER" "$CFG_PROJECT_NUMBER"
   else
-    printf 'query { organization(login: "%s") { projectV2(number: %s) { items(first: 100) { pageInfo { hasNextPage endCursor } nodes { id content { __typename ... on DraftIssue { title assignees(first: 20) { nodes { login } } } ... on Issue { number title url repository { nameWithOwner } assignees(first: 20) { nodes { login } } } } } } } } }' \
+    printf 'query { organization(login: "%s") { projectV2(number: %s) { items(first: 100) { pageInfo { hasNextPage endCursor } nodes { id content { __typename ... on DraftIssue { title assignees(first: 20) { nodes { login } } } ... on Issue { number title url state repository { nameWithOwner } assignees(first: 20) { nodes { login } } } } } } } } }' \
       "$CFG_PROJECT_OWNER" "$CFG_PROJECT_NUMBER"
   fi
 }
@@ -502,7 +510,7 @@ project_jq_filter() {
      | select(.content.assignees.nodes // [] | map(.login) | index("%s") != null)
      | if .content.__typename == "DraftIssue" then
          ["item", "draft", ("draft:" + .id), "", "", "", .content.title]
-       elif .content.__typename == "Issue" then
+       elif .content.__typename == "Issue" and .content.state == "OPEN" then
          ["item", "issue",
            ("issue:" + .content.repository.nameWithOwner + "#" + (.content.number | tostring)),
            (.content.number | tostring), .content.repository.nameWithOwner, .content.url, .content.title]
