@@ -5,6 +5,11 @@
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
 # including a merge request on a self-hosted GitLab instance.
+# When the task's meta carries issue= (set by fm-spawn.sh's --issue flag at
+# spawn time), also makes one best-effort, strictly fail-open
+# `bin/fm-board.sh move <issue> "PR ready"` call after the PR is durably
+# recorded and the merge poll armed - a board hiccup can never affect this
+# script's own result, and a task with no issue= makes no board call.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
@@ -72,6 +77,9 @@ fi
 # metadata and falls back to its provider-agnostic content check, and
 # bin/fm-review-diff.sh resolves the head from the remote when none is recorded.
 WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
+# Persisted at spawn time by bin/fm-spawn.sh's --issue flag; absent for a task
+# spawned with no linked issue, in which case the board move below is skipped.
+ISSUE=$(grep '^issue=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD=
 if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/dev/null 2>&1; then
   if REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \
@@ -134,4 +142,14 @@ fm_pr_poll_publish_prepared || {
   echo "error: could not publish PR poll" >&2
   exit 1
 }
+
+# Optional, strictly fail-open board courtesy: the PR is already durably
+# recorded and the merge poll already armed by this point, so a board hiccup
+# (missing gh-axi, no auth, an unrecognized project) can never affect this
+# script's own result. See bin/fm-board.sh's own header for its fail-open
+# contract.
+if [ -n "$ISSUE" ]; then
+  "$FM_ROOT/bin/fm-board.sh" move "$ISSUE" "PR ready" >/dev/null 2>&1 || true
+fi
+
 printf 'armed: state/%s.check.sh\n' "$ID"

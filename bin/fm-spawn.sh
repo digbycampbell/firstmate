@@ -2704,6 +2704,12 @@ preserve_relaunch_meta() {
   echo "kind=$KIND"
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
+  # Persisted so later lifecycle points (fm-pr-check.sh, a future no-mistakes
+  # start hook) can recover the linked issue without being re-told; omitted
+  # from `preserve_relaunch_meta`'s owned-key list on purpose, so a relaunch
+  # (which never repeats --issue) carries the original value forward unchanged
+  # instead of losing it.
+  [ -z "$ISSUE_ARG" ] || echo "issue=$ISSUE_ARG"
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"

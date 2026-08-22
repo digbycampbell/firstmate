@@ -147,7 +147,11 @@ assert_grep "single-select-option-id opt-building" "$gh_log" \
   "issue-yes: fm-board.sh did not target the Building option"
 pass "fm-spawn --issue triggers a real fm-board.sh move to Building on a successful ship spawn"
 
-# --- (b) omitting --issue makes no gh-axi call at all -----------------------
+assert_grep "issue=42" "$HOME_DIR/state/$id.meta" \
+  "issue-yes: --issue was not persisted onto the task meta"
+pass "fm-spawn --issue persists issue=<n> onto state/<id>.meta"
+
+# --- (b) omitting --issue makes no gh-axi call at all, and no meta line ----
 id=issue-no-z1
 rec=$(make_spawn_case issue-no "$id")
 read_case_record "$rec"
@@ -158,7 +162,9 @@ status=$?
 expect_code 0 "$status" "issue-no: spawn should succeed"
 assert_contains "$out" "spawned $id harness=claude" "issue-no: spawn did not report success"
 [ ! -s "$gh_log" ] || fail "issue-no: omitting --issue still called gh-axi (got: $(cat "$gh_log"))"
-pass "fm-spawn without --issue makes no board call at all"
+assert_no_grep "issue=" "$HOME_DIR/state/$id.meta" \
+  "issue-no: omitting --issue still wrote an issue= line onto the task meta"
+pass "fm-spawn without --issue makes no board call and persists no issue= line"
 
 # --- (c) a failing board (bad gh-axi) does not fail the spawn --------------
 id=issue-fails-z1
@@ -196,5 +202,12 @@ status=$?
 [ "$status" -ne 0 ] || fail "issue-batch: --issue with batch dispatch should be refused"
 assert_contains "$out" "batch dispatch (id=repo pairs) does not support it" "issue-batch: wrong/missing refusal message"
 pass "fm-spawn refuses --issue on batch dispatch"
+
+id3=issue-relaunch-z1
+out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" /dev/null "$id3" --relaunch --issue 42)
+status=$?
+[ "$status" -ne 0 ] || fail "issue-relaunch: --issue with --relaunch should be refused"
+assert_contains "$out" "--issue applies only to a fresh ship spawn" "issue-relaunch: wrong/missing refusal message"
+pass "fm-spawn refuses --issue on --relaunch"
 
 exit 0
