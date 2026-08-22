@@ -779,6 +779,37 @@ test_parked_scout_decision_stays_pending() {
   pass "a scout still parked at a decision stays pending (terminal clear does not over-fire)"
 }
 
+# Regression: a backlog whose rendered JSON exceeds Linux's per-argument limit
+# (MAX_ARG_STRLEN, 128KB) must still snapshot. Passing that document as a single
+# --argjson argv string dies with "jq: Argument list too long" (E2BIG), which
+# took down bearings for a real 152KB home backlog. The defect is size-dependent,
+# so the fixture asserts it actually crossed the limit; growable documents must
+# reach jq through a file, never argv.
+test_backlog_beyond_kernel_argv_limit_still_snapshots() {
+  local home out backlog_bytes i
+  home=$(make_home argv-limit)
+  {
+    printf '## In flight\n\n## Queued\n\n## Done\n'
+    for i in $(seq 1 1400); do
+      printf -- '- [x] done-%04d - Landed change %04d with a long descriptive title that pads the row toward realistic width (repo: alpha) (kind: ship) (merged 2026-08-01)\n' "$i" "$i"
+    done
+  } > "$home/data/backlog.md"
+  out=$(FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "snapshot must survive a backlog beyond the 128KB per-argument limit"
+  printf '%s' "$out" | jq -e . >/dev/null || fail "oversized-backlog snapshot must be valid JSON"
+  backlog_bytes=$(printf '%s' "$out" | jq -c '.backlog' | LC_ALL=C wc -c | tr -d ' ')
+  [ "$backlog_bytes" -gt 131072 ] \
+    || fail "fixture no longer crosses MAX_ARG_STRLEN (backlog JSON is $backlog_bytes bytes); grow it - a small fixture guards nothing here"
+  printf '%s' "$out" | jq -e '
+    ([.backlog.records[] | select(.state == "done")] | length) == 1400
+      and .backlog.records[0].id == "done-0001"
+  ' >/dev/null || fail "oversized backlog records must be complete, not truncated"
+  FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary \
+    | jq -e '.schema == "fm-secondmate-home-summary.v1" and (.counts.landed == 1400)' >/dev/null \
+    || fail "secondmate home summary must survive a backlog beyond the per-argument limit"
+  pass "snapshot survives a backlog larger than the kernel per-argument limit"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_main_inventory_orphan_and_unstructured_disclosure
@@ -792,5 +823,6 @@ test_completed_scout_report_is_pointer_not_pending
 test_parked_scout_decision_stays_pending
 test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
+test_backlog_beyond_kernel_argv_limit_still_snapshots
 test_view_renders_snapshot
 test_view_renders_dead_secondmate_agent_status

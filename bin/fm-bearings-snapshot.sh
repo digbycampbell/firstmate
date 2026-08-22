@@ -252,7 +252,7 @@ EOF
       cnt=$(printf '%s' "$repo_rows" | jq 'length')
       [ "$returned" -gt "$FM_BEARINGS_PR_LIMIT" ] && ncapped=$((ncapped + 1))
       npr=$((npr + cnt))
-      rows=$(jq -n --argjson a "$rows" --argjson b "$repo_rows" '$a + $b')
+      rows=$(printf '%s\n%s\n' "$rows" "$repo_rows" | jq -s '.[0] + .[1]')
     done
     PR_REPOS_SHOWN=$nrepos
     PR_ROWS_CAPPED=$ncapped
@@ -271,7 +271,11 @@ EOF
 fi
 
 # --- projection: canonical snapshot -> fm-bearings.v1 model (JSON) ----------
-MODEL=$(printf '%s' "$SNAP" | jq \
+# The snapshot and candidate_prs both arrive as slurped stdin documents:
+# candidate_prs grows with repository volume under --include-prs, and a single
+# argv string is capped at Linux's MAX_ARG_STRLEN (128KB), so growable
+# documents never ride --argjson.
+MODEL=$(printf '%s\n%s\n' "$SNAP" "$CANDIDATE_PRS" | jq -s \
   --arg home "$HOME_LABEL" \
   --arg now "$NOW" \
   --arg prs "$PR_STATUS" \
@@ -298,7 +302,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   --argjson pr_repos_shown "$PR_REPOS_SHOWN" \
   --argjson pr_rows_capped "$PR_ROWS_CAPPED" \
   --argjson pr_rows_min_total "$PR_ROWS_MIN_TOTAL" \
-  --argjson candidate_prs "$CANDIDATE_PRS" '
+  '
+  .[1] as $candidate_prs | .[0] |
   def trunc($n): if . == null then null else
     (tostring | gsub("\\s+"; " ") | if (length > $n) then (.[:$n] + "…") else . end) end;
   def round_robin_landed($n):
