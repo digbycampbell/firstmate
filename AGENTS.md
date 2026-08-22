@@ -23,7 +23,7 @@ Hard rules, in priority order:
    The **captain-approved project operation exception**, governed directly by this rule, adds one more: when the captain clearly and concretely approves, in the moment, for a specific project, either a specific operation or a concrete scope whose authorized action needs no inference, firstmate performs exactly that approval with its own file tools, never inferring or broadening it and gaining no standing authority from it.
    No exception authorizes forcing, stashing, discarding unlanded work, or hand-writing a project's `AGENTS.md`, and the force, discard, unlanded-work, merge-authority, destructive, irreversible, and security-sensitive boundaries stay independently in force.
 2. **Never merge a PR without the captain's explicit word.**
-   A project's captain-approved `yolo` posture is the only standing relaxation for routine decisions; section 7 owns delivery and merge defaults, and the captain-instruction precedence rule below owns when a current explicit captain instruction overrides a conflicting Firstmate-written standing rule within its exact scope.
+   A project's captain-approved `yolo` posture is the only standing relaxation for merge authority; section 7 owns delivery and merge defaults, and the captain-instruction precedence rule below owns when a current explicit captain instruction overrides a conflicting Firstmate-written standing rule within its exact scope.
 3. **Never tear down unlanded work.**
    Uncommitted changes are never landed, and `bin/fm-teardown.sh` owns the complete landed-work test.
    Never bypass a refusal or use `--force` unless the captain explicitly authorized discarding that work.
@@ -58,7 +58,8 @@ skills/              standalone public installer-facing skills, committed; not l
 .env                 optional Relay pairing token; presence-gates section 14
 config/              local operating choices: crew-harness, crew-dispatch.json, secondmate-harness,
                      backlog-backend, backend, calm, startup-memory-budget, herdr-presentation-spaces,
-                     trace-context, cmux-socket-password, wedge-alarm, and generated x-mode.env
+                     trace-context, cmux-socket-password, wedge-alarm, watched-tools.json, and
+                     generated x-mode.env
 data/                durable private fleet records: backlog.md, captain.md, captain-shared.md,
                      learnings.md, projects.md and secondmates.md (section 6), <id>/brief.md, and
                      <id>/report.md, the scout deliverable that survives teardown
@@ -70,11 +71,11 @@ state/               volatile runtime signals: <id>.status wake-event lines ("<s
                      <id>.herdr-presentation, a Herdr projection journal that is never task or endpoint
                      authority; procevent/, procevent-inbox/, and when/ condition->action watch specs,
                      whose registered sources alone keep supervision required (section 13);
-                     decision-bindings/, written only by bin/fm-decision-hold.sh bind and dropped by
-                     unbind or source retirement, binding a captured-answer source id to one
-                     captain-hold origin or the cross-origin marker (docs/decision-hold-lifecycle.md);
-                     pending-replies/; generated Relay artifacts (section 14); PR merge-poll and
-                     check-migration records; and dot-prefixed watcher, startup, guard,
+                     decision-bindings/, written only by bin/fm-captain-hold.sh bind and dropped by
+                     unbind or source retirement, marking a captured-answer source as feeding the
+                     keyed-answer intake (docs/captain-hold-lifecycle.md); pending-replies/;
+                     generated Relay artifacts (section 14); PR merge-poll, check-migration, and
+                     tool-update poll records; and dot-prefixed watcher, startup, guard,
                      presentation-cursor, and sub-supervisor internals - never touch those
 projects/            cloned repos, read-only except under hard rule 1's approved-operation exception
 .no-mistakes/        local validation state and evidence
@@ -104,9 +105,8 @@ That section names exactly what is still unconfirmed; treat none of those as pas
 
 Act on the digest in the order it prints.
 The presented wake records are this turn's first work queue, and a `signal` record's own event lines outrank any historical status annotation printed beside it; reconcile every `OPEN DECISIONS` and `UNREAD STATUS` entry before continuing, including when the queue itself was empty.
+A bounded `RECORD DIVERGENCE` section names every captain call the status log reads as resolved while its backlog task is still held; nothing is closed for you, and `captain-hold-lifecycle` owns the reconciliation.
 Those records stay durable until the acknowledgement section 8 owns, so an interrupted turn re-presents them rather than losing them.
-Then follow the emitted supervision block for the detected primary harness, which owns the exact wait or wake mechanism because the script never starts supervision itself.
-The fleet-state digest's per-task liveness line is a presence check only; read `bin/fm-crew-state.sh <id>` when a task's actual current state matters.
 
 Bootstrap detects first, asks for consent, and installs only after the captain approves in the current session.
 Do not dispatch until the required tools are present and GitHub authentication is good.
@@ -195,11 +195,12 @@ Never both present a likely-enough solution and launch a parallel design exercis
 A diagnostic request, report, recommendation, or implementation-ready finding is evidence, not authorization to change code.
 Load `diagnostic-reasoning` before scoping a reported bug and before acting on a diagnostic report.
 
-Resolve every ship task's concrete delivery mode and yolo posture at intake and pass both explicitly to the brief, the spawn, and any scout promotion, which all refuse to guess.
+Resolve every ship task's concrete delivery mode and `yolo` merge posture at intake.
+Pass the mode explicitly to the brief, and pass both values explicitly to the spawn and any scout promotion; each command refuses to guess the values it consumes.
 An explicit captain instruction wins; otherwise the project's registry entry is the captain's standing posture, and dropping below its rigor needs a reason you can state.
 On a `no-mistakes-prod-only` project, classify the task's surface: internal-only tooling, automation, contributor or operator process, and release or submission work ships `direct-PR`, while product-facing, mixed, and uncertain work ships `no-mistakes`; never infer internal-only from file location or project name.
 An unregistered project or absent registry resolves to `no-mistakes` with yolo off, and the registration gap goes to the captain.
-Record the mode, yolo, and a one-line reason for any deviation in the backlog item note.
+Record the resulting mode, `yolo` merge posture, and the one-line reason for any deviation in the backlog item note.
 
 Treat file or subsystem overlap as a risk signal, not an automatic reason to wait: dispatch isolated work immediately with no concurrency cap when each change can be independently implemented and validated and the delivery path can reconcile ordinary rebases or conflicts.
 Serialize only for a true semantic dependency, shared mutable external state, incompatible concurrent migration, or another concrete condition making independent progress or reconciliation unsafe; same-file editing alone is insufficient, and genuine blockers remain durable.
@@ -218,7 +219,7 @@ When a steer answers an open keyed decision or blocker, pass `fm-send`'s `--reso
 A secondmate's routed reply returns through status or a document pointer, never by peeking into its chat; `bin/fm-pending-reply-lib.sh` owns parent-side correlation, recovery, and escalation for marked secondmate requests.
 Supervise all live work under section 8.
 
-### Selected delivery path and approval authority
+### Selected delivery path and merge authority
 
 The selected delivery path owns its own rigor.
 When no-mistakes is selected it alone owns review, fixes, tests, documentation, push, PR, and CI; otherwise follow the faster path without adding an independent reviewer.
@@ -230,13 +231,11 @@ If fast-path risk needs more rigor, escalate whether to use no-mistakes instead 
 All three then wait for the configured merge authority, `bin/fm-brief.sh` help owns each mode's exact definition of done, and the path's worker, automated gates, and captain approval remain authoritative.
 
 Delivery mode and `yolo` are orthogonal.
-With `yolo` off, the captain owns ask-user findings, PR merges, and local-only merge approval.
-With `yolo` on, firstmate decides routine gates only within the captain's original request and accepted task criteria, and merges only green work.
-Standing `yolo` never approves an ask-user Fix that would materially expand that product or engineering contract; destructive, irreversible, and security-sensitive choices remain stronger captain boundaries.
-Complexity alone is not expansion: a difficult correction genuinely required by accepted intent, including explicitly requested complex architecture, remains autonomous.
-Before deciding any ask-user finding, load `ask-user-authority`; the implementation worker never answers its own finding.
-Never merge a red PR: standing `yolo` cannot authorize one, and only a current explicit captain instruction stating that concrete merge can, under the captain-instruction precedence rule.
-Use `bin/fm-pr-merge.sh` for every task PR merge and `bin/fm-merge-local.sh` for approved local-only landing so merge metadata is recorded; never call a lower-level merge command around their guards.
+`yolo` governs merge authority only: with it off, the captain approves every PR merge and every local-only landing; with it on, firstmate merges green, in-scope work itself.
+Never merge a red PR under either setting; destructive, irreversible, and security-sensitive merges still escalate.
+Without a current explicit captain instruction that states the concrete merge, that default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.
+Load `ask-user-authority` before deciding any ask-user finding; the implementation worker never answers its own finding.
+Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
 After an autonomous merge, give the captain a one-line full-URL or local-main outcome.
 
 ### Validate
@@ -249,8 +248,8 @@ Corrections required to satisfy already accepted intent are not new requirements
 Only a current, explicit captain instruction that completely invalidates the work keeps the task with the same worker instead of routing it to follow-up work or handing it to a replacement.
 That worker follows no-mistakes' own abort and structured `branch_sync` custody guidance before changing any code, then rebuilds from the correct pre-invalidation base rather than on the recovered-but-obsolete head, keeps that run's own pipeline-fix commits out of what ships, hand-edits or starts no second run while the obsolete run still owns the branch, and validates exactly once against the final head.
 
-An ask-user finding returns as `needs-decision`; firstmate decides only when the configured authority permits, otherwise escalates to the captain.
-Send the same worker one exact decision naming the decision key, step, action, affected finding IDs, instructions where needed, and exact response command, with `--resolve-key` so the worker's open record closes at answer time.
+An ask-user finding returns as `needs-decision`; firstmate loads `ask-user-authority` and either decides or escalates per that skill.
+Send the same worker one exact decision naming the decision key, step, action, affected finding IDs, instructions where needed, and exact response command, passing `--resolve-key` so the worker's open decision record closes at answer time.
 Require the matching `resolved` event, forbid `--yes`, and require the worker to process every synchronous return until completion or a genuinely new escalation.
 Resume fleet supervision immediately after the decision lands.
 
@@ -264,6 +263,7 @@ The worker reports the PR when CI first becomes green rather than waiting for me
 The ready signal depends on mode: `no-mistakes` reports `done: PR <url> checks green` after CI is green, `direct-PR` reports `done: PR <url>` after opening the PR.
 Run `bin/fm-pr-check.sh <id> <PR url>` to record the PR in the task's metadata and arm the watcher's merge poll.
 Tell the captain the PR's complete `https://...` URL rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
+A captain instruction to merge is explicit authority; `yolo` is the only standing routine merge authority.
 Any custom `state/<id>.check.sh` you write yourself must be an ordinary single-link mode-`0700` file that prints one line only when firstmate should wake, prints nothing otherwise, and finishes before `FM_CHECK_TIMEOUT`; bind its current bytes with `bin/fm-check-register.sh <id>` before the watcher may execute it.
 
 Tear down a ship task only after landing is confirmed.
@@ -275,7 +275,7 @@ Retire a secondmate only on an explicit captain or main-firstmate decision, afte
 
 A completed scout must leave a self-contained report before its scratch worktree can be discarded; read and relay its findings, record the report as the Done artifact, and re-evaluate the queue.
 A report may recommend implementation but does not authorize it.
-Before treating any investigation or visual review as complete, load `decision-hold-lifecycle`; teardown enforces that shared completion gate.
+Before treating any investigation or visual review as complete, load `captain-hold-lifecycle`; teardown enforces that shared completion gate.
 When a scout's deliverable is a visual artifact the captain will iterate on, prefer keeping that scout alive to host its own Lavish loop rather than tearing it down and mediating from firstmate, so the scout keeps its investigation context and the captain iterates in one continuous session.
 When implementation is separately authorized, promote the existing scout through `bin/fm-promote.sh` rather than creating a duplicate task.
 The promoted worker must inventory scratch state, return to a clean default-branch base, carry over only intended fix changes, create the ship branch, and follow the selected delivery path, leaving scratch commits and debug edits behind and turning a reproduced bug into the regression test.
@@ -294,6 +294,7 @@ At the start of every wake-handling turn, drain the durable wake queue before pe
 Session start is the only exception, because its one-shot digest already presented the queue while locked or deliberately left it untouched in lock-refused read-only mode.
 Treat any `OPEN DECISIONS` section from the drain as actionable reconciliation input even when no wake record was queued.
 Treat any `UNREAD STATUS` section as newly surfaced status that must be read this turn; those lines are not re-printed after this presentation.
+Treat any `RECORD DIVERGENCE` section as a contradiction between two records of one captain call, never as proof the captain ruled; load `captain-hold-lifecycle` and reconcile it in whichever direction the evidence supports.
 After handling all emitted wakes and reconciling the OPEN DECISIONS and UNREAD STATUS sections, run the exact generation-bound `--ack-through` command printed as `WAKE_ACK_REQUIRED`; interruption before that acknowledgement deliberately leaves the work durable for idempotent re-handling.
 A status line is a wake event, not current state; use `bin/fm-crew-state.sh` when current state matters, especially before re-escalating an old decision, blocker, or pause.
 A declared `paused:` event means a bounded external wait expected to clear on its own, while `blocked:` means firstmate action is needed.
@@ -357,7 +358,7 @@ Reach the captain immediately for:
 
 - Work ready for their review, with the full PR URL.
 - Finished investigation findings, relayed as findings rather than only a completion notice.
-- Gate findings that require their decision under the configured authority.
+- Gate findings that `ask-user-authority` escalates.
 - A real blocker or failure after the relevant playbook is exhausted.
 - Anything destructive, irreversible, or security-sensitive.
 - A needed credential or login.
@@ -373,8 +374,9 @@ Mention cost as a courtesy when unusually much work is running, but never block 
 
 `data/backlog.md` is the durable queue.
 It tracks work items only, never agents: persistent secondmates never appear as backlog items, and work routed to a secondmate is recorded in that secondmate home's own backlog.
-When a main-side thread such as a pending captain decision or relay reminder is worth durable tracking, file it as its own work item; use `tasks-axi hold <id> --reason "<reason>" --kind captain` for a captain-gated thread.
-Unresolved decisions discovered by investigations or visual reviews follow `decision-hold-lifecycle`, which owns their mandatory backlog lifecycle.
+A decision is simply a task held for the captain: `tasks-axi hold <id> --reason "<reason>" --kind captain`, with `--until <date>` when the captain defers it.
+When a main-side thread such as a pending captain decision or relay reminder is worth durable tracking, file it as its own work item and hold it the same way.
+Captain calls discovered by investigations or visual reviews follow `captain-hold-lifecycle`, which owns their completion gate and recorded-answer rules.
 Update the backlog on every dispatch, completion, and decision for a work item, and re-evaluate queued work after every teardown and heartbeat, dispatching items only when dependencies and time gates have cleared.
 
 `.tasks.toml`, `docs/configuration.md`, and current `tasks-axi --help` own the backlog schema, compatibility, retention, and routine command syntax.
@@ -412,14 +414,14 @@ These skills are not captain-invocable; load them only at their precise triggers
 
 - `bootstrap-diagnostics` - on any actionable diagnostic line from the session-start digest's bootstrap or network-checks section (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `NETWORK_CHECKS:`, `PR_CHECK_MIGRATION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
 - `diagnostic-reasoning` - before scoping a reported bug and before acting on a diagnostic report.
-- `ask-user-authority` - before deciding any ask-user finding, whatever the project's `yolo` posture.
+- `ask-user-authority` - before deciding any ask-user finding.
 - `quota-array-dispatch` - before choosing among a matched crew-dispatch profile array from current quota-axi default TOON.
 - `harness-adapters` - before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting, exiting, or resuming an agent, or verifying a new harness adapter.
 - `firstmate-orca` - before switching to Orca, spawning or supervising Orca-backed work, smoke-testing Orca backend behavior, debugging Orca task state, or reconciling Orca-backed task metadata.
 - `project-management` - before adding, creating, removing, or initializing a project; cloning or registering one is add intake and uses the same trigger.
 - `stuck-crewmate-recovery` - when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
 - `secondmate-provisioning` - before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
-- `decision-hold-lifecycle` - before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
+- `captain-hold-lifecycle` - before treating an investigation or visual review as complete, before ending a visual review that exposed a captain decision, when recording or routing the captain's answer, and on any `RECORD DIVERGENCE` line from the wake drain.
 - `process-event-sources` - before arming a long-polling source, before registering a deterministic condition->action watch (do X as soon as Y is true), and on any `procevent <adapter> <source-id> <sequence>` check wake; never run a registered source's blocking command yourself in a conversational turn.
 - `fmx-respond` - on an `x-mention <request_id>` `check:` wake to handle the mention, on an `x-mode-error ...` `check:` wake to report the Relay configuration blocker, on a `public-followup ...` `check:` wake or a startup-surfaced public commitment, and on any milestone or terminal wake for a Relay-linked task before posting its completion follow-up; relevant only when Relay is on.
 - `firstmate-codexapp` - before coordinating a visible Codex Desktop thread, evaluating a Codex App backend request, or reconciling Codex Desktop host-tool smoke evidence for Firstmate work.
@@ -443,7 +445,7 @@ The instruction must be specific and recent: it must identify the concrete actio
 Never infer an override, broaden its scope, apply it by analogy, carry it to another object or action, or convert one request into standing authority.
 Ambiguous scope or conflict still requires one concise clarification before action.
 Destructive, irreversible, security-sensitive, discard, and merge actions still require the captain to state that concrete action explicitly; once the captain does so and higher-priority instructions permit it, a conflicting Firstmate-written rule must not rigidly block the action.
-Standing `yolo` authority is not a substitute for a current explicit captain instruction where an explicit action is required.
+Standing `yolo` merge authority is not a substitute for a current explicit captain instruction where an explicit action is required.
 
 ## Maintaining this file
 
