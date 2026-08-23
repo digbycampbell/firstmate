@@ -176,7 +176,7 @@ Only a named non-default branch checked out in `FM_ROOT` is a worktree tangle.
 `fm-tangle-lib.sh` resolves the default branch from `origin/HEAD`, then local `main` or `master`, and classifies that named non-default primary branch as the tangle.
 `fm-guard.sh` prints the repair command on the next mutable fleet action, while `bin/fm-session-start.sh` reports the same condition through bootstrap as a `TANGLE:` line at session start.
 If another live session holds the fleet lock, both surfaces keep the alarm but switch to read-only wording with no repair command.
-Ship briefs also tell the crewmate to verify `pwd -P` and `git rev-parse --show-toplevel` before creating `fm/<id>`, then stop with a blocked status if it landed in firstmate's permanent clone.
+Ship briefs also tell the crewmate to verify `pwd -P` and `git rev-parse --show-toplevel` before creating its branch (`fm-issue-<n>` when the brief carries a linked issue, else `fm/<id>`), then stop with a blocked status if it landed in firstmate's permanent clone.
 That brief-side check uses the same structural discriminator rather than a directory label, because a harness banner naming its own starting directory would otherwise read as a false isolation failure: a task worktree sits at a detached HEAD in a pool or managed path, while the permanent clone sits on its default branch at an attached HEAD, either under a firstmate home's `projects/<repo>` or, in a project-less self-repo domain, as the home's own checkout.
 `bin/fm-brief.sh` owns the exact wording.
 
