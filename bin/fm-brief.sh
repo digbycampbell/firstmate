@@ -177,7 +177,7 @@ if [ "$KIND" != ship ] && [ "$ISSUE_SET" -eq 1 ]; then
 fi
 ID=${POS[0]}
 if [ "$ISSUE_SET" -eq 1 ]; then
-  BRANCH_NAME="issue-$ISSUE"
+  BRANCH_NAME="fm-issue-$ISSUE"
 else
   BRANCH_NAME="fm/$ID"
 fi
