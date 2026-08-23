@@ -195,6 +195,11 @@ Never both present a likely-enough solution and launch a parallel design exercis
 A diagnostic request, report, recommendation, or implementation-ready finding is evidence, not authorization to change code.
 Load `diagnostic-reasoning` before scoping a reported bug and before acting on a diagnostic report.
 
+**Folding in is the default; a new repo issue is the exception.**
+While work is in flight, file a repo issue only for a separate one-PR-sized work package the captain named or would prioritise.
+Otherwise fold a one-line fix into the PR in hand, draft a bigger one on the board, or record it in that PR's `## Findings not fixed` section.
+Keep related follow-ups on that one surface rather than an issue and a PR each, because a scatter of issues costs more captain attention than it saves.
+
 Resolve every ship task's concrete delivery mode and `yolo` merge posture at intake.
 Pass the mode explicitly to the brief, and pass both values explicitly to the spawn and any scout promotion; each command refuses to guess the values it consumes.
 An explicit captain instruction wins; otherwise the project's registry entry is the captain's standing posture, and dropping below its rigor needs a reason you can state.
