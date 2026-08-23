@@ -226,9 +226,9 @@ test_issue_based_branch_names() {
     issue-branch-a1 firstmate --mode no-mistakes --issue 512 >/dev/null 2>&1 \
     || fail "fm-brief.sh should scaffold an issue-linked ship brief"
   issue_brief="$home/data/issue-branch-a1/brief.md"
-  grep -Fx '1. First action: create your branch: `git checkout -b issue-512`' "$issue_brief" >/dev/null \
+  grep -Fx "1. First action: create your branch: \`git checkout -b issue-512\`" "$issue_brief" >/dev/null \
     || fail "issue-linked brief did not use the exact slugless issue branch in checkout"
-  grep -Fx '1. Never push to the default branch (push only your `issue-512` branch). Never merge a PR.' "$issue_brief" >/dev/null \
+  grep -Fx "1. Never push to the default branch (push only your \`issue-512\` branch). Never merge a PR." "$issue_brief" >/dev/null \
     || fail "issue-linked brief did not use the exact slugless issue branch in its push rule"
 
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
@@ -237,7 +237,7 @@ test_issue_based_branch_names() {
   fallback_brief="$home/data/no-issue-branch-a2/brief.md"
   assert_grep 'git checkout -b fm/no-issue-branch-a2' "$fallback_brief" \
     "issue-less brief lost the task-slug fallback branch"
-  assert_grep 'push only your `fm/no-issue-branch-a2` branch' "$fallback_brief" \
+  assert_grep "push only your \`fm/no-issue-branch-a2\` branch" "$fallback_brief" \
     "issue-less brief did not preserve its mode-specific push rule"
   pass "fm-brief.sh: issue-linked and issue-less briefs use discriminating branch names"
 }
