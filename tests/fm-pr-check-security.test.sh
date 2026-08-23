@@ -83,6 +83,8 @@ case " $* " in
     [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
     printf '%s\n' "${FM_TEST_GH_STATE:-OPEN}"
     ;;
+  *" baseRefName "*) printf '%s\n' "${FM_TEST_GH_BASE_REF:-main}" ;;
+  *" merged,autoMerge "*) printf '%s\n' "${FM_TEST_GH_LANDED:-true}" ;;
 esac
 SH
   cat > "$fakebin/gh-axi" <<'SH'
