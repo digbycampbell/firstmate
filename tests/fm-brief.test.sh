@@ -217,6 +217,31 @@ test_ship_modes_generate_clean_briefs() {
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
 }
 
+test_issue_based_branch_names() {
+  local home issue_brief fallback_brief
+  home="$TMP_ROOT/issue-branch-home"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
+    issue-branch-a1 firstmate --mode no-mistakes --issue 512 >/dev/null 2>&1 \
+    || fail "fm-brief.sh should scaffold an issue-linked ship brief"
+  issue_brief="$home/data/issue-branch-a1/brief.md"
+  assert_grep 'git checkout -b issue-512' "$issue_brief" \
+    "issue-linked brief did not use the issue number in checkout"
+  assert_grep 'push only your `issue-512` branch' "$issue_brief" \
+    "issue-linked brief did not use the same branch in its push rule"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
+    no-issue-branch-a2 firstmate --mode no-mistakes >/dev/null 2>&1 \
+    || fail "fm-brief.sh should scaffold a ship brief without an issue"
+  fallback_brief="$home/data/no-issue-branch-a2/brief.md"
+  assert_grep 'git checkout -b fm/no-issue-branch-a2' "$fallback_brief" \
+    "issue-less brief lost the task-slug fallback branch"
+  assert_grep 'push only your `fm/no-issue-branch-a2` branch' "$fallback_brief" \
+    "issue-less brief did not preserve its mode-specific push rule"
+  pass "fm-brief.sh: issue-linked and issue-less briefs use discriminating branch names"
+}
+
 # The verification standard must be structural, not something a brief author has to
 # remember: every ship mode carries it, it sits inside the definition of done right
 # after the machine-readable contract line, and the scout contract is untouched.
@@ -824,6 +849,7 @@ test_no_heredoc_in_command_substitution
 test_ship_dod_carries_standing_verification_clause
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_issue_based_branch_names
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
