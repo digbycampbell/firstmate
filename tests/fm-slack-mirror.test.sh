@@ -216,6 +216,54 @@ test_reply_lands_in_the_captain_thread() {
   pass "a mirrored reply lands where the captain wrote, and the binding expires"
 }
 
+# The deterministic record firstmate writes for the turn it is answering must
+# beat the newest-inbound guess, so an interleaved captain message in another
+# thread cannot pull the reply out of the thread it answers.
+test_recorded_reply_target_is_deterministic() {
+  local home
+  home=$(new_home reply-target)
+
+  # The newest captured inbound points at thread B, exactly the interleaving that
+  # misroutes the guess; firstmate records that it is answering thread A.
+  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-inbound "$CHANNEL" 700.000700 222.000222 \
+    >/dev/null 2>&1
+  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-reply-target "$CHANNEL" 111.000111 >/dev/null 2>&1
+  write_transcript "$home/t.jsonl" 'answer thread A' \
+    'Captain, answering thread A: https://example.invalid/a'
+  run_stop "$home" "$home/t.jsonl" >/dev/null 2>&1
+  [ "$(posted_thread)" = 111.000111 ] \
+    || fail "the recorded reply target did not beat the newest-inbound guess ($(posted_thread))"
+
+  # The record is consumed: the next turn, with no fresh record, falls back to
+  # the newest inbound (thread B).
+  write_transcript "$home/t2.jsonl" 'next' 'Captain, a different reply: https://example.invalid/b'
+  run_stop "$home" "$home/t2.jsonl" >/dev/null 2>&1
+  [ "$(posted_thread)" = 222.000222 ] \
+    || fail "the reply target was not consumed after one turn ($(posted_thread))"
+  [ ! -f "$home/state/slack-captain/mirror.reply-target" ] \
+    || fail "the reply-target record survived the turn it was recorded for"
+
+  # `none` forces the channel top level even while an inbound thread is fresh.
+  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-reply-target "$CHANNEL" none >/dev/null 2>&1
+  write_transcript "$home/t3.jsonl" 'top level' 'Captain, at the top level: https://example.invalid/c'
+  run_stop "$home" "$home/t3.jsonl" >/dev/null 2>&1
+  [ "$(posted_thread)" = "" ] \
+    || fail "a recorded 'none' did not force the channel top level ($(posted_thread))"
+
+  # A record orphaned by a hung turn is older than the window: discard it and
+  # fall back rather than routing a much later turn into it.
+  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-reply-target "$CHANNEL" 111.000111 >/dev/null 2>&1
+  sed -i "s/epoch=[0-9]*/epoch=$(( $(date +%s) - 4000 ))/" \
+    "$home/state/slack-captain/mirror.reply-target"
+  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-inbound "$CHANNEL" 800.000800 222.000222 \
+    >/dev/null 2>&1
+  write_transcript "$home/t4.jsonl" 'much later' 'Captain, much later: https://example.invalid/d'
+  run_stop "$home" "$home/t4.jsonl" FM_SLACK_MIRROR_THREAD_WINDOW=900 >/dev/null 2>&1
+  [ "$(posted_thread)" = 222.000222 ] \
+    || fail "a stale reply target was applied instead of discarded ($(posted_thread))"
+  pass "the recorded reply target is deterministic, consumed once, and expires"
+}
+
 test_adapter_records_the_reply_target() {
   local home result out
   home=$(new_home adapter)
@@ -411,6 +459,7 @@ test_substantive_reply_is_mirrored
 test_acknowledgement_is_suppressed
 test_identical_bodies_are_never_repeated
 test_reply_lands_in_the_captain_thread
+test_recorded_reply_target_is_deterministic
 test_adapter_records_the_reply_target
 test_deliberate_post_suppresses_the_mirror
 test_fail_open_paths
