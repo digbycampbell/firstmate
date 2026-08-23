@@ -68,17 +68,30 @@ fm_pr_base_branch() {
 # A merge-queue branch requires --auto so the PR is enqueued rather than merged
 # immediately. gh pr merge --squash alone returns success on such branches
 # without enqueueing or merging, so firstmate would falsely report a merge.
+fm_pr_urlencode() {
+  local s=$1 c i out=
+  for ((i = 0; i < ${#s}; i++)); do
+    c=${s:i:1}
+    case "$c" in
+      [a-zA-Z0-9._~-]) out+="$c" ;;
+      *) out+=$(printf '%%%02X' "'$c") ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
 fm_pr_branch_has_merge_queue() {
   local base rules
   base=$(fm_pr_base_branch) || return 1
   [ -n "$base" ] || return 1
-  rules=$(gh api "repos/$PR_OWNER/$PR_REPO/rules/branches/$base" \
+  rules=$(gh api "repos/$PR_OWNER/$PR_REPO/rules/branches/$(fm_pr_urlencode "$base")" \
     --jq '.[] | select(.type == "merge_queue")' 2>/dev/null) || return 1
   [ -n "$rules" ]
 }
 
 fm_pr_verify_landed() {
   local state
+  command -v gh >/dev/null 2>&1 || return 0
   state=$(gh pr view "$URL" --json merged,autoMerge \
     -q '.merged or (.autoMerge.enabled // false)' 2>/dev/null) || return 1
   [ "$state" = "true" ]
