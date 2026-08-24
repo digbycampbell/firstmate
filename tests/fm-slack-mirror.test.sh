@@ -111,6 +111,26 @@ run_stop() {  # <home> <transcript> [extra env assignments...]
 EOF
 }
 
+# The realistic shape of a captain Slack message reaching firstmate: the turn is
+# opened by a watcher wake naming the exact captured result, never by the
+# captain's raw text. This is the surface auto-detect reads.
+wake_trigger() {  # <source-id> <sequence>
+  printf 'firstmate watcher wake - one supervision event needs a handling turn now.\ncheck: process-event result captured: procevent:%s:%s\ncheck: procevent slack-captain %s %s\n' \
+    "$1" "$2" "$1" "$2"
+}
+
+# Fire the Stop hook with a payload-carried final message and no readable
+# transcript, so the turn's trigger cannot be read at all: the last-resort
+# newest-inbound fallback path.
+run_stop_payload() {  # <home> <reply-text> [extra env assignments...]
+  local home=$1 reply=$2
+  shift 2
+  : > "$FAKE_POST_BODY"
+  env FM_ROOT_OVERRIDE="$home" "$@" "$MIRROR" stop <<EOF
+{"hook_event_name":"Stop","transcript_path":"$home/absent.jsonl","cwd":"$home","last_assistant_message":$(jq -Rn --arg r "$reply" '$r')}
+EOF
+}
+
 posted_text() { jq -r 'select(has("text")) | .text' "$FAKE_POST_BODY" 2>/dev/null; }
 posted_thread() { jq -r '.thread_ts // ""' "$FAKE_POST_BODY" 2>/dev/null; }
 posted_count() { jq -s 'length' "$FAKE_POST_BODY" 2>/dev/null; }
@@ -184,36 +204,123 @@ test_identical_bodies_are_never_repeated() {
   pass "two consecutive identical bodies are never both sent"
 }
 
-# --- thread routing ----------------------------------------------------------
+# --- thread routing: auto-detect from the triggering wake --------------------
 
-test_reply_lands_in_the_captain_thread() {
-  local home
-  home=$(new_home thread)
-  # The captain adapter records the routing target as it commits a capture.
-  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-inbound "$CHANNEL" 400.000400 300.000300 \
+# With NO manual note-reply-target call, a reply to a captain Slack message
+# threads into that message's own thread, resolved from the wake that opened the
+# turn. This is the whole point: firstmate does nothing by hand.
+test_auto_detect_threads_by_the_triggering_wake() {
+  local home sid
+  home=$(new_home autodetect)
+  sid="slack-captain-$CHANNEL"
+
+  # An in-thread capture (seq 41) and a top-level capture (seq 42) both recorded,
+  # exactly as the adapter records them as each result commits.
+  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-trigger "$CHANNEL" "$sid" 41 300.000300 \
     >/dev/null 2>&1
-  write_transcript "$home/t.jsonl" 'inside a thread' \
+  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-trigger "$CHANNEL" "$sid" 42 none \
+    >/dev/null 2>&1
+
+  # A turn opened by the wake for the in-thread capture threads into that thread.
+  write_transcript "$home/t.jsonl" "$(wake_trigger "$sid" 41)" \
     'Captain, answering in the thread: https://example.invalid/a'
   run_stop "$home" "$home/t.jsonl" >/dev/null 2>&1
   [ "$(posted_thread)" = 300.000300 ] \
-    || fail "a reply to a threaded captain message did not land in that thread"
+    || fail "auto-detect did not thread the reply into the triggering message's thread ($(posted_thread))"
 
-  # A top-level captain message binds the channel top level, not the old thread.
-  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-inbound "$CHANNEL" 500.000500 "" >/dev/null 2>&1
-  write_transcript "$home/t2.jsonl" 'in the channel' \
+  # A turn opened by the wake for the top-level capture posts at the top level.
+  write_transcript "$home/t2.jsonl" "$(wake_trigger "$sid" 42)" \
     'Captain, answering in the channel: https://example.invalid/b'
   run_stop "$home" "$home/t2.jsonl" >/dev/null 2>&1
-  [ "$(posted_thread)" = "" ] || fail "a top-level captain message was answered inside a stale thread"
+  [ "$(posted_thread)" = "" ] \
+    || fail "auto-detect threaded a reply to a top-level captain message ($(posted_thread))"
+  pass "auto-detect routes the reply by the wake that opened the turn, with no manual step"
+}
+
+# The interleaved case the newest-inbound guess gets WRONG: the captain writes in
+# thread A (seq 41), then a fresh message lands top-level (seq 42) so the newest
+# inbound now points there; firstmate is still answering thread A. Auto-detect,
+# keyed by the triggering wake, must still reach thread A.
+test_auto_detect_beats_the_interleaved_newest_inbound() {
+  local home sid
+  home=$(new_home interleaved)
+  sid="slack-captain-$CHANNEL"
+
+  # The earlier capture answered by this turn.
+  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-trigger "$CHANNEL" "$sid" 41 222.000222 \
+    >/dev/null 2>&1
+  # A later, unrelated capture moves the newest-inbound guess to the top level -
+  # the exact interleaving that misroutes a guess by newest inbound.
+  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-inbound "$CHANNEL" 900.000900 "" >/dev/null 2>&1
+  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-trigger "$CHANNEL" "$sid" 42 none >/dev/null 2>&1
+
+  write_transcript "$home/t.jsonl" "$(wake_trigger "$sid" 41)" \
+    'Captain, answering the earlier thread: https://example.invalid/a'
+  run_stop "$home" "$home/t.jsonl" >/dev/null 2>&1
+  [ "$(posted_thread)" = 222.000222 ] \
+    || fail "the interleaved newest-inbound pulled the reply out of the thread it answered ($(posted_thread))"
+  pass "auto-detect files the reply by the triggering wake, not the newest inbound"
+}
+
+# A turn NOT opened by a captain Slack message - a crew wake, a terminal-typed
+# line, an operational injection - must post at the top level even while a fresh
+# inbound thread exists: it must never guess a thread it does not actually answer.
+test_non_slack_trigger_never_threads() {
+  local home sid
+  home=$(new_home nonslack)
+  sid="slack-captain-$CHANNEL"
+
+  # A fresh inbound thread AND a recorded capture both exist; neither is what
+  # opened this turn.
+  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-inbound "$CHANNEL" 700.000700 555.000555 \
+    >/dev/null 2>&1
+  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-trigger "$CHANNEL" "$sid" 41 555.000555 \
+    >/dev/null 2>&1
+
+  # The turn is opened by an unrelated crew wake naming no captain capture.
+  write_transcript "$home/t.jsonl" \
+    'firstmate watcher wake - stale: fm-some-crew endpoint stopped responding' \
+    'Captain, the crew task stalled: https://example.invalid/x'
+  run_stop "$home" "$home/t.jsonl" >/dev/null 2>&1
+  [ "$(posted_thread)" = "" ] \
+    || fail "a non-Slack-triggered turn misfiled into a thread ($(posted_thread))"
+  pass "a readable non-Slack trigger posts at the top level and never guesses a thread"
+}
+
+# --- thread routing: the newest-inbound last-resort fallback -----------------
+
+# When the trigger cannot be read at all - a payload-only turn whose transcript
+# never named an opening message - the mirror falls back to the newest-inbound
+# guess, the pre-existing behavior, and that binding still expires.
+test_newest_inbound_is_the_last_resort_fallback() {
+  local home
+  home=$(new_home fallback)
+
+  # A fresh in-thread inbound: an unreadable trigger falls back to it.
+  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-inbound "$CHANNEL" 400.000400 300.000300 \
+    >/dev/null 2>&1
+  run_stop_payload "$home" 'Captain, answering in the thread: https://example.invalid/a' \
+    >/dev/null 2>&1
+  [ "$(posted_thread)" = 300.000300 ] \
+    || fail "an unreadable trigger did not fall back to the newest inbound thread ($(posted_thread))"
+
+  # A top-level inbound binds the channel top level.
+  rm -f "$home/state/slack-captain/mirror.last-body"
+  FM_ROOT_OVERRIDE="$home" "$MIRROR" note-inbound "$CHANNEL" 500.000500 "" >/dev/null 2>&1
+  run_stop_payload "$home" 'Captain, answering in the channel: https://example.invalid/b' \
+    >/dev/null 2>&1
+  [ "$(posted_thread)" = "" ] || fail "the fallback answered a top-level message inside a stale thread"
 
   # A binding older than the window expires rather than capturing later turns.
+  rm -f "$home/state/slack-captain/mirror.last-body"
   FM_ROOT_OVERRIDE="$home" "$MIRROR" note-inbound "$CHANNEL" 600.000600 300.000300 \
     >/dev/null 2>&1
   sed -i "s/epoch=[0-9]*/epoch=$(( $(date +%s) - 4000 ))/" \
     "$home/state/slack-captain/mirror.inbound"
-  write_transcript "$home/t3.jsonl" 'later' 'Captain, much later: https://example.invalid/c'
-  run_stop "$home" "$home/t3.jsonl" FM_SLACK_MIRROR_THREAD_WINDOW=900 >/dev/null 2>&1
+  run_stop_payload "$home" 'Captain, much later: https://example.invalid/c' \
+    FM_SLACK_MIRROR_THREAD_WINDOW=900 >/dev/null 2>&1
   [ "$(posted_thread)" = "" ] || fail "an expired thread binding still captured a later turn"
-  pass "a mirrored reply lands where the captain wrote, and the binding expires"
+  pass "the newest-inbound guess is the last resort for an unreadable trigger, and it expires"
 }
 
 # The deterministic record firstmate writes for the turn it is answering must
@@ -234,10 +341,10 @@ test_recorded_reply_target_is_deterministic() {
   [ "$(posted_thread)" = 111.000111 ] \
     || fail "the recorded reply target did not beat the newest-inbound guess ($(posted_thread))"
 
-  # The record is consumed: the next turn, with no fresh record, falls back to
-  # the newest inbound (thread B).
-  write_transcript "$home/t2.jsonl" 'next' 'Captain, a different reply: https://example.invalid/b'
-  run_stop "$home" "$home/t2.jsonl" >/dev/null 2>&1
+  # The record is consumed: the next turn, with no fresh record and an unreadable
+  # trigger, falls back to the newest inbound (thread B).
+  run_stop_payload "$home" 'Captain, a different reply: https://example.invalid/b' \
+    >/dev/null 2>&1
   [ "$(posted_thread)" = 222.000222 ] \
     || fail "the reply target was not consumed after one turn ($(posted_thread))"
   [ ! -f "$home/state/slack-captain/mirror.reply-target" ] \
@@ -257,8 +364,8 @@ test_recorded_reply_target_is_deterministic() {
     "$home/state/slack-captain/mirror.reply-target"
   FM_ROOT_OVERRIDE="$home" "$MIRROR" note-inbound "$CHANNEL" 800.000800 222.000222 \
     >/dev/null 2>&1
-  write_transcript "$home/t4.jsonl" 'much later' 'Captain, much later: https://example.invalid/d'
-  run_stop "$home" "$home/t4.jsonl" FM_SLACK_MIRROR_THREAD_WINDOW=900 >/dev/null 2>&1
+  run_stop_payload "$home" 'Captain, much later: https://example.invalid/d' \
+    FM_SLACK_MIRROR_THREAD_WINDOW=900 >/dev/null 2>&1
   [ "$(posted_thread)" = 222.000222 ] \
     || fail "a stale reply target was applied instead of discarded ($(posted_thread))"
   pass "the recorded reply target is deterministic, consumed once, and expires"
@@ -285,7 +392,19 @@ test_adapter_records_the_reply_target() {
   assert_contains "$out" 'applied:' "the adapter did not commit the capture: $out"
   assert_contains "$(cat "$home/state/slack-captain/mirror.inbound")" 'thread=300.000300' \
     "committing a capture did not record where a reply belongs"
-  pass "the captain adapter records the reply target from the threads it already tracks"
+  # The same commit records the keyed correlation the wake for this result carries.
+  assert_contains "$(cat "$home/state/slack-captain/mirror.correlate")" \
+    "source=slack-captain-$CHANNEL seq=1 thread=300.000300" \
+    "committing a capture did not record the wake-keyed reply target"
+
+  # End to end: a turn opened by the wake for this exact result threads correctly
+  # off only what the adapter recorded, with no manual note-reply-target step.
+  write_transcript "$home/t.jsonl" "$(wake_trigger "slack-captain-$CHANNEL" 1)" \
+    'Captain, answering the captured thread: https://example.invalid/z'
+  run_stop "$home" "$home/t.jsonl" >/dev/null 2>&1
+  [ "$(posted_thread)" = 300.000300 ] \
+    || fail "auto-detect did not route off the adapter's own recorded capture ($(posted_thread))"
+  pass "the captain adapter records the reply target, and the mirror auto-detects off it"
 }
 
 # --- a deliberate post is never mirrored again -------------------------------
@@ -458,7 +577,10 @@ test_worker_details_are_configurable() {
 test_substantive_reply_is_mirrored
 test_acknowledgement_is_suppressed
 test_identical_bodies_are_never_repeated
-test_reply_lands_in_the_captain_thread
+test_auto_detect_threads_by_the_triggering_wake
+test_auto_detect_beats_the_interleaved_newest_inbound
+test_non_slack_trigger_never_threads
+test_newest_inbound_is_the_last_resort_fallback
 test_recorded_reply_target_is_deterministic
 test_adapter_records_the_reply_target
 test_deliberate_post_suppresses_the_mirror

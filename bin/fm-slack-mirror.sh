@@ -8,6 +8,7 @@
 #   fm-slack-mirror.sh stop                       Stop-hook entry, payload on stdin
 #   fm-slack-mirror.sh note-post <channel>        record a deliberate outbound post
 #   fm-slack-mirror.sh note-inbound <channel> <message-ts> [thread-ts]
+#   fm-slack-mirror.sh note-trigger <channel> <source-id> <sequence> <thread-ts|none>
 #   fm-slack-mirror.sh note-reply-target <channel> <thread-ts|none>
 #   fm-slack-mirror.sh deliver <channel> <body-file> [--thread <ts>] [--worker-details <d>]
 #
@@ -63,22 +64,50 @@
 #
 # THREAD CORRECTNESS. Slack does not render a channel message inside a thread
 # view, so a reply to a captain message written in a thread must go back into
-# that thread. The target is resolved DETERMINISTICALLY: firstmate records the
-# thread it is answering with `note-reply-target` before the turn ends, and
-# `stop` files the mirrored reply into exactly that thread. The record is
-# consumed on read, so it binds to one turn only and a later, unrelated turn is
-# never misrouted by a leftover; a recorded `none` forces the channel top level.
-# This is what keeps interleaved captain messages - a reply to one thread while a
-# fresh message lands in another - from ever filing a reply into the wrong
-# thread. Only when no fresh record exists does `stop` fall back to the older
-# guess: bin/fm-procevent-slack-captain.sh records the routing target of the
-# newest captured captain message here as it commits a capture, and while that
-# record is newer than `mirror_thread_window` seconds the mirror replies into
-# that thread. Either way delivery goes through `bin/fm-slack-post.sh --thread`,
-# which also keeps the thread registered for capture; otherwise it posts at the
-# channel's top level. The recorded target must be fresh within the same
-# `mirror_thread_window`, which a normal turn always is; the bound only discards a
-# target orphaned by a hung or crashed turn.
+# that thread. The target is resolved in three layers, highest precedence first:
+#
+#   1. EXPLICIT OVERRIDE. Firstmate may record the thread it is answering with
+#      `note-reply-target` before the turn ends; a fresh record wins over
+#      everything below, binds exactly one turn (consumed on read), and a
+#      recorded `none` forces the channel top level. It exists for a substantive
+#      reply whose own turn is not opened by the triggering wake, so auto-detect
+#      cannot see it.
+#
+#   2. AUTO-DETECT from the turn's trigger. A captain Slack message reaches
+#      firstmate as a watcher wake naming the exact captured result
+#      (`procevent:slack-captain-<channel>:<sequence>`), so with no explicit
+#      record `stop` reads the turn's own opening message from the transcript and,
+#      when it names such a capture, files the reply into the thread that capture
+#      recorded. bin/fm-procevent-slack-captain.sh records that thread PER CAPTURE
+#      as it commits, keyed by the same source id and sequence the wake carries
+#      (`note-trigger`), so the routing binds to the message that actually opened
+#      the turn rather than to whichever inbound was captured most recently. This
+#      is what keeps interleaved captain messages - a reply to one thread while a
+#      fresh message lands in another - from ever filing a reply into the wrong
+#      thread, with no manual `note-reply-target` step. A turn whose trigger is
+#      readable but names no such capture is NOT a Slack turn (a crew wake, a
+#      terminal-typed line, an operational injection): it posts at the channel top
+#      level and never guesses a thread.
+#
+#   3. NEWEST-INBOUND FALLBACK, last resort only. When the trigger cannot be read
+#      at all - a payload-only turn whose transcript never named an opening
+#      message - `stop` falls back to the older guess: the adapter records the
+#      routing target of the newest captured captain message (`note-inbound`), and
+#      while that record is newer than `mirror_thread_window` seconds the mirror
+#      replies into that thread.
+#
+# Either way delivery goes through `bin/fm-slack-post.sh --thread`, which also
+# keeps the thread registered for capture; otherwise it posts at the channel's
+# top level. Every recorded target must be fresh within `mirror_thread_window`,
+# which a normal turn always is; the bound only discards a target orphaned by a
+# hung or crashed turn.
+#
+# HARNESS SCOPE OF AUTO-DETECT. Reading the turn's opening trigger from the
+# transcript is a Claude-specific surface, exactly like the mirror itself;
+# docs/turnend-guard.md owns what each harness exposes at the turn boundary. The
+# correlation core - a captured sequence mapped to its thread - is
+# harness-agnostic: a future harness extension supplies its own way to name the
+# turn's trigger and reuses the same `note-trigger` store unchanged.
 #
 # CONFIGURATION - additional optional keys in $FM_HOME/config/slack-captain:
 #   mirror=on|off                 default on once `channel=` is set
@@ -100,6 +129,9 @@
 #   mirror.inbound        the newest captured captain message and its thread, if any
 #   mirror.reply-target   the thread firstmate recorded for this turn's reply,
 #                         consumed by `stop`; a deterministic override of inbound
+#   mirror.correlate      a bounded newest-first log mapping each captured result
+#                         (source id and sequence) to its reply thread, so `stop`
+#                         can route by the wake that opened the turn
 #
 # TOKEN. This script never reads SLACK_BOT_TOKEN. Posting is delegated whole to
 # bin/fm-slack-post.sh, which owns the token contract, so no secret reaches
@@ -114,13 +146,18 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 MIRROR_DIR="$STATE/slack-captain"
 INBOUND_SCHEMA=fm-slack-mirror-inbound.v1
 REPLY_TARGET_SCHEMA=fm-slack-mirror-reply-target.v1
+CORRELATE_SCHEMA=fm-slack-mirror-correlate.v1
+# The bounded number of recent captures the correlation log retains. A capture
+# maps one wake to one thread, so this only has to cover the captures whose reply
+# turn might still be in flight; older entries are dropped newest-first.
+CORRELATE_MAX=${FM_SLACK_MIRROR_CORRELATE_MAX:-128}
 
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
 # shellcheck source=bin/fm-hook-host-lib.sh
 . "$SCRIPT_DIR/fm-hook-host-lib.sh"
 
-usage() { sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 valid_slack_id() {
   case "${1-}" in
@@ -258,6 +295,55 @@ cmd_note_inbound() {  # <channel> <message-ts> [thread-ts]
         "$INBOUND_SCHEMA" "$(now_epoch)" "$msg" "$thread")" || return 0
 }
 
+# A source id as the process-event runner names it: an opaque, path-safe token.
+# Validated for charset only, never reconstructed here, so this recorder never
+# owns bin/fm-procevent-slack-captain.sh's `slack-captain-<channel>` format.
+valid_source_id() {
+  case "${1-}" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  [ "${#1}" -le 64 ]
+}
+
+# Prepend one newest-first correlation line and keep only the newest CORRELATE_MAX,
+# so the log stays bounded whatever the capture rate. Fail-soft: a write problem
+# never disrupts the capture that triggered it.
+correlate_write() {  # <source-id> <sequence> <thread-or-empty>
+  local path line existing dir tmp
+  path="$MIRROR_DIR/mirror.correlate"
+  line=$(printf 'schema=%s epoch=%s source=%s seq=%s thread=%s' \
+    "$CORRELATE_SCHEMA" "$(now_epoch)" "$1" "$2" "$3")
+  dir=$(dirname "$path")
+  (umask 077; mkdir -p "$dir") || return 1
+  [ ! -L "$path" ] || return 1
+  existing=
+  [ ! -f "$path" ] || existing=$(head -n "$((CORRELATE_MAX - 1))" "$path" 2>/dev/null || true)
+  tmp=$(umask 077; mktemp "$dir/.correlate.XXXXXX") || return 1
+  {
+    printf '%s\n' "$line"
+    [ -z "$existing" ] || printf '%s\n' "$existing"
+  } > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  mv -f -- "$tmp" "$path"
+}
+
+# Record where a reply to one captured result belongs, keyed by the source id and
+# sequence the wake for that result carries, so `stop` can route the mirror by the
+# message that actually opened the turn. `none` (or empty) binds the channel top
+# level. Fail-soft like the other recorders: it must never disrupt a capture.
+cmd_note_trigger() {  # <channel> <source-id> <sequence> <thread-ts-or-none>
+  local channel=${1-} source=${2-} seq=${3-} thread=${4-} watched
+  valid_slack_id "$channel" || return 0
+  valid_source_id "$source" || return 0
+  case "$seq" in ''|*[!0-9]*) return 0 ;; esac
+  watched=$(captain_channel) || return 0
+  [ "$watched" = "$channel" ] || return 0
+  case "$thread" in
+    none|top|'') thread= ;;
+    *) valid_ts "$thread" || return 0 ;;
+  esac
+  correlate_write "$source" "$seq" "$thread" || return 0
+}
+
 # The thread firstmate is answering this turn, recorded before the turn ends so
 # `stop` can route the mirror deterministically instead of guessing from the
 # newest captured inbound. A valid ts targets that thread; `none` (or empty)
@@ -327,11 +413,52 @@ inbound_thread() {  # <window-seconds>
   printf '%s\n' "$thread"
 }
 
+# The AUTO-DETECT layer: resolve this turn's reply thread from the message that
+# opened it. Sets TRIGGER_MODE and TRIGGER_THREAD:
+#   thread   - the trigger names a captured Slack result; TRIGGER_THREAD is that
+#              capture's recorded thread (empty means the channel top level).
+#   toplevel - the trigger is readable but names no captured result, so this is
+#              not a Slack turn; post at the top level and never guess a thread.
+#   fallback - the trigger could not be read at all, so `stop` falls back to the
+#              newest-inbound guess.
+# The correlation log is scanned newest-first, so a turn whose trigger names more
+# than one capture routes to the most recent. A stored source id and sequence are
+# matched against the trigger text as a bounded reference; the recorded thread is
+# never itself compiled into the match, so captured text can forge nothing here.
+resolve_trigger() {
+  local path line source seq thread re
+  TRIGGER_MODE=fallback
+  TRIGGER_THREAD=
+  [ -n "${TURN_TEXT-}" ] || return 0
+  TRIGGER_MODE=toplevel
+  path="$MIRROR_DIR/mirror.correlate"
+  [ -f "$path" ] && [ ! -L "$path" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in "schema=$CORRELATE_SCHEMA "*) ;; *) continue ;; esac
+    source=${line#*source=}; source=${source%% *}
+    seq=${line#*seq=}; seq=${seq%% *}
+    valid_source_id "$source" || continue
+    case "$seq" in ''|*[!0-9]*) continue ;; esac
+    re="(^|[^0-9A-Za-z])${source}[: ]${seq}([^0-9]|$)"
+    if [[ $TURN_TEXT =~ $re ]]; then
+      thread=${line#*thread=}; thread=${thread%% *}
+      [ -z "$thread" ] || valid_ts "$thread" || continue
+      TRIGGER_MODE=thread
+      TRIGGER_THREAD=$thread
+      return 0
+    fi
+  done < "$path"
+  return 0
+}
+
 # The final assistant text of the finished turn. Sets FINAL_TEXT, FINAL_TS,
-# FINAL_MODEL, FINAL_EFFORT, and TURN_TS from the reversed transcript in $1.
+# FINAL_MODEL, FINAL_EFFORT, TURN_TS, and TURN_TEXT from the reversed transcript
+# in $1. TURN_TS and TURN_TEXT describe the same message - the turn's newest
+# opening user entry that carries text - and are set before any early return, so
+# the trigger stays readable even when the turn produced no assistant text.
 read_final_message() {  # <reversed-transcript>
   local meta
-  FINAL_TEXT=; FINAL_TS=; FINAL_MODEL=; FINAL_EFFORT=; TURN_TS=
+  FINAL_TEXT=; FINAL_TS=; FINAL_MODEL=; FINAL_EFFORT=; TURN_TS=; TURN_TEXT=
   TURN_TS=$(jq -r --slurp '
       map(select(.type == "user" and (.isSidechain != true)))
       | map(select(
@@ -341,6 +468,17 @@ read_final_message() {  # <reversed-transcript>
         ))
       | (.[0].timestamp // "")
     ' "$1" 2>/dev/null) || return 1
+  TURN_TEXT=$(jq -r --slurp '
+      map(select(.type == "user" and (.isSidechain != true)))
+      | map(select(
+          (.message.content | type) == "string"
+          or ((.message.content | type) == "array"
+              and (.message.content | any(.type == "text")))
+        ))
+      | (.[0] // empty)
+      | (if (.message.content | type) == "string" then .message.content
+         else (.message.content | map(select(.type == "text") | .text // "") | join("\n")) end)
+    ' "$1" 2>/dev/null) || TURN_TEXT=
   meta=$(jq -r --slurp '
       map(select(.type == "assistant" and (.isSidechain != true)))
       | map(select(((.message.content // []) | type) == "array"))
@@ -370,6 +508,7 @@ cmd_stop() {
   local ack_max window max_chars details_flag
   local body turn_epoch post_epoch digest last_digest thread details
   local REPLY_TARGET_SET=0 REPLY_TARGET_THREAD=
+  local TURN_TEXT='' TRIGGER_MODE=fallback TRIGGER_THREAD=''
 
   payload=$(cat 2>/dev/null) || return 0
   [ -n "$payload" ] || return 0
@@ -388,7 +527,7 @@ cmd_stop() {
   window=$(setting_int "${FM_SLACK_MIRROR_THREAD_WINDOW-}" mirror_thread_window 900)
   reply_target_consume "$window" || true
 
-  FINAL_TEXT=; FINAL_TS=; FINAL_MODEL=; FINAL_EFFORT=; TURN_TS=
+  FINAL_TEXT=; FINAL_TS=; FINAL_MODEL=; FINAL_EFFORT=; TURN_TS=; TURN_TEXT=
   transcript=$(printf '%s' "$payload" | jq -r '.transcript_path // ""' 2>/dev/null) || return 0
   if [ -n "$transcript" ] && [ -f "$transcript" ] && [ ! -L "$transcript" ]; then
     tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/fm-slack-mirror.XXXXXX" 2>/dev/null) || return 0
@@ -453,12 +592,19 @@ cmd_stop() {
   last_digest=$(state_read "$MIRROR_DIR/mirror.last-body" 2>/dev/null || true)
   [ "$digest" != "$last_digest" ] || return 0
 
-  # The explicit record firstmate wrote for this turn wins; only without one does
-  # the mirror fall back to the newest-inbound guess.
+  # Precedence: the explicit record firstmate wrote for this turn wins; else
+  # auto-detect from the message that opened the turn; else, only when the trigger
+  # could not be read at all, the newest-inbound guess. A readable non-Slack
+  # trigger posts at the top level rather than guessing a thread.
   if [ "$REPLY_TARGET_SET" = 1 ]; then
     thread=$REPLY_TARGET_THREAD
   else
-    thread=$(inbound_thread "$window")
+    resolve_trigger
+    case "$TRIGGER_MODE" in
+      thread)   thread=$TRIGGER_THREAD ;;
+      toplevel) thread= ;;
+      *)        thread=$(inbound_thread "$window") ;;
+    esac
   fi
 
   details=
@@ -524,6 +670,7 @@ case "${1-}" in
   stop)         shift; [ "$#" -eq 0 ] || usage; cmd_stop ;;
   note-post)    shift; [ "$#" -eq 1 ] || usage; cmd_note_post "$@" ;;
   note-inbound) shift; [ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage; cmd_note_inbound "$@" ;;
+  note-trigger) shift; [ "$#" -eq 4 ] || usage; cmd_note_trigger "$@" ;;
   note-reply-target) shift; [ "$#" -eq 2 ] || usage; cmd_note_reply_target "$@" ;;
   deliver)      shift; [ "$#" -ge 2 ] || usage; cmd_deliver "$@" ;;
   ''|-h|--help|help) usage ;;
