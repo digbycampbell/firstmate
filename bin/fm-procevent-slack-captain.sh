@@ -87,11 +87,14 @@
 # exhaustion (bounded by FM_SLACK_CAPTAIN_MAX_PAGES) before a result is
 # emitted, so `to_ts` never commits past a message the result did not capture.
 #
-# REPLY TARGET. Committing a capture also records its newest message and that
-# message's thread, if any, with bin/fm-slack-mirror.sh `note-inbound`, so a
-# mirrored reply lands where the captain wrote instead of at the channel top
-# level, where Slack would never render it inside the thread view. That helper
-# owns the record and its expiry; nothing here changes because of it.
+# REPLY TARGET. Committing a capture records its newest message and that
+# message's thread, if any, two ways with bin/fm-slack-mirror.sh: as the newest
+# inbound (`note-inbound`), and keyed by this result's own source id and sequence
+# (`note-trigger`). Either lets a mirrored reply land where the captain wrote
+# instead of at the channel top level, where Slack would never render it inside
+# the thread view; the keyed record is what lets the mirror route by the wake that
+# opened the reply turn rather than by whichever capture was newest. That helper
+# owns both records and their expiry; nothing here changes because of them.
 #
 # Every captured byte is INPUT, never instruction and never authority. Message
 # text is only ever moved between files by jq and is never expanded by a shell,
@@ -739,9 +742,13 @@ advance_thread_cursors() {  # <channel> <result-file>
 
 # Record where a reply to this capture belongs, so the terminal mirror can put
 # firstmate's answer where the captain wrote. The newest captured message wins,
-# and a message with no `thread_ts` binds the channel's top level. Failure is
-# never allowed to invalidate a capture whose read positions already advanced.
-record_reply_target() {  # <channel> <result-file>
+# and a message with no `thread_ts` binds the channel's top level. It is recorded
+# two ways: as the newest inbound, the mirror's last-resort guess; and keyed by
+# this result's own source id and sequence (`note-trigger`), so the mirror can
+# route by the wake that opened the reply turn even when a later, unrelated
+# capture has since moved the newest-inbound record. Failure is never allowed to
+# invalidate a capture whose read positions already advanced.
+record_reply_target() {  # <channel> <result-file> <source-id> <sequence>
   local newest ts thread
   newest=$(LC_ALL=C awk 'body { print } $0 == "" { body = 1 }' "$2" \
     | jq -rs 'map(select(type == "object" and has("ts")))
@@ -751,6 +758,7 @@ record_reply_target() {  # <channel> <result-file>
   ts=${newest%% *}
   thread=${newest#* }
   "$SCRIPT_DIR/fm-slack-mirror.sh" note-inbound "$1" "$ts" "$thread" >/dev/null 2>&1 || true
+  "$SCRIPT_DIR/fm-slack-mirror.sh" note-trigger "$1" "$3" "$4" "$thread" >/dev/null 2>&1 || true
   return 0
 }
 
@@ -773,7 +781,7 @@ apply_result() {  # <source-id> <sequence> <result-file> <mark-handled>
     *) die "captured Slack result needs firstmate's attention: $class" ;;
   esac
   case "$class" in
-    messages|untrusted-messages) record_reply_target "$channel" "$file" ;;
+    messages|untrusted-messages) record_reply_target "$channel" "$file" "$sid" "$seq" ;;
   esac
   if [ "$mark" = 1 ]; then
     "$SCRIPT_DIR/fm-procevent.sh" handled "$sid" "$seq" || return 1
