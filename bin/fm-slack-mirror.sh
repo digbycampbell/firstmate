@@ -8,6 +8,7 @@
 #   fm-slack-mirror.sh stop                       Stop-hook entry, payload on stdin
 #   fm-slack-mirror.sh note-post <channel>        record a deliberate outbound post
 #   fm-slack-mirror.sh note-inbound <channel> <message-ts> [thread-ts]
+#   fm-slack-mirror.sh note-reply-target <channel> <thread-ts|none>
 #   fm-slack-mirror.sh deliver <channel> <body-file> [--thread <ts>] [--worker-details <d>]
 #
 # `deliver` is the detached delivery child `stop` starts; it is not a separate
@@ -62,12 +63,22 @@
 #
 # THREAD CORRECTNESS. Slack does not render a channel message inside a thread
 # view, so a reply to a captain message written in a thread must go back into
-# that thread. bin/fm-procevent-slack-captain.sh records the routing target of
-# the newest captured captain message here as it commits that capture, from the
-# threads it already tracks rather than a parallel store. While that record is
-# newer than `mirror_thread_window` seconds the mirror replies into the same
-# thread through `bin/fm-slack-post.sh --thread`, which also keeps the thread
-# registered for capture; otherwise it posts at the channel's top level.
+# that thread. The target is resolved DETERMINISTICALLY: firstmate records the
+# thread it is answering with `note-reply-target` before the turn ends, and
+# `stop` files the mirrored reply into exactly that thread. The record is
+# consumed on read, so it binds to one turn only and a later, unrelated turn is
+# never misrouted by a leftover; a recorded `none` forces the channel top level.
+# This is what keeps interleaved captain messages - a reply to one thread while a
+# fresh message lands in another - from ever filing a reply into the wrong
+# thread. Only when no fresh record exists does `stop` fall back to the older
+# guess: bin/fm-procevent-slack-captain.sh records the routing target of the
+# newest captured captain message here as it commits a capture, and while that
+# record is newer than `mirror_thread_window` seconds the mirror replies into
+# that thread. Either way delivery goes through `bin/fm-slack-post.sh --thread`,
+# which also keeps the thread registered for capture; otherwise it posts at the
+# channel's top level. The recorded target must be fresh within the same
+# `mirror_thread_window`, which a normal turn always is; the bound only discards a
+# target orphaned by a hung or crashed turn.
 #
 # CONFIGURATION - additional optional keys in $FM_HOME/config/slack-captain:
 #   mirror=on|off                 default on once `channel=` is set
@@ -87,6 +98,8 @@
 #   mirror.last-body      sha256 of the last mirrored body, for the repeat test
 #   mirror.last-post      epoch of the last deliberate post to the captain channel
 #   mirror.inbound        the newest captured captain message and its thread, if any
+#   mirror.reply-target   the thread firstmate recorded for this turn's reply,
+#                         consumed by `stop`; a deterministic override of inbound
 #
 # TOKEN. This script never reads SLACK_BOT_TOKEN. Posting is delegated whole to
 # bin/fm-slack-post.sh, which owns the token contract, so no secret reaches
@@ -100,6 +113,7 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 MIRROR_DIR="$STATE/slack-captain"
 INBOUND_SCHEMA=fm-slack-mirror-inbound.v1
+REPLY_TARGET_SCHEMA=fm-slack-mirror-reply-target.v1
 
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
@@ -244,7 +258,57 @@ cmd_note_inbound() {  # <channel> <message-ts> [thread-ts]
         "$INBOUND_SCHEMA" "$(now_epoch)" "$msg" "$thread")" || return 0
 }
 
+# The thread firstmate is answering this turn, recorded before the turn ends so
+# `stop` can route the mirror deterministically instead of guessing from the
+# newest captured inbound. A valid ts targets that thread; `none` (or empty)
+# forces the channel top level. An invalid ts is reported but writes no record,
+# so `stop` falls back rather than silently forcing the top level. Fail-soft like
+# the other recorders: it must never disrupt firstmate's turn.
+cmd_note_reply_target() {  # <channel> <thread-ts-or-none>
+  local channel=${1-} thread=${2-} watched
+  valid_slack_id "$channel" || return 0
+  watched=$(captain_channel) || return 0
+  [ "$watched" = "$channel" ] || return 0
+  case "$thread" in
+    none|top|'') thread= ;;
+    *) valid_ts "$thread" || {
+         printf 'fm-slack-mirror: invalid thread timestamp for note-reply-target: %s\n' \
+           "$thread" >&2
+         return 0
+       } ;;
+  esac
+  state_write "$MIRROR_DIR/mirror.reply-target" \
+    "$(printf 'schema=%s epoch=%s thread=%s' \
+        "$REPLY_TARGET_SCHEMA" "$(now_epoch)" "$thread")" || return 0
+}
+
 # --- stop hook ---------------------------------------------------------------
+
+# The thread firstmate explicitly recorded for this turn's reply, CONSUMED on
+# read so it binds to exactly one turn end and cannot misroute a later turn. Sets
+# REPLY_TARGET_SET=1 and REPLY_TARGET_THREAD (empty means the channel top level)
+# when a fresh, well-formed record existed; the record is removed either way.
+# Returns nonzero when there was no usable record, so `stop` falls back to the
+# newest-inbound guess. A record older than the window is an orphan from a hung
+# turn and is discarded, not applied.
+reply_target_consume() {  # <window-seconds>
+  local path line schema epoch thread now
+  path="$MIRROR_DIR/mirror.reply-target"
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  line=$(head -n1 "$path")
+  rm -f -- "$path"
+  schema=${line#*schema=}; schema=${schema%% *}
+  [ "$schema" = "$REPLY_TARGET_SCHEMA" ] || return 1
+  epoch=${line#*epoch=}; epoch=${epoch%% *}
+  case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
+  now=$(now_epoch)
+  [ "$((now - epoch))" -le "$1" ] || return 1
+  thread=${line#*thread=}; thread=${thread%% *}
+  [ -z "$thread" ] || valid_ts "$thread" || return 1
+  REPLY_TARGET_SET=1
+  REPLY_TARGET_THREAD=$thread
+  return 0
+}
 
 # The reply target for this turn: the thread of the newest captured captain
 # message while that capture is still recent, or empty for the channel top
@@ -305,6 +369,7 @@ cmd_stop() {
   local payload payload_text transcript reversed tmpdir channel enabled
   local ack_max window max_chars details_flag
   local body turn_epoch post_epoch digest last_digest thread details
+  local REPLY_TARGET_SET=0 REPLY_TARGET_THREAD=
 
   payload=$(cat 2>/dev/null) || return 0
   [ -n "$payload" ] || return 0
@@ -316,6 +381,12 @@ cmd_stop() {
   channel=$(captain_channel) || return 0
   enabled=$(setting_flag "${FM_SLACK_MIRROR-}" mirror on)
   [ "$enabled" = on ] || return 0
+
+  # Consumed unconditionally at turn end so a recorded target binds to exactly
+  # this turn, whatever this turn ends up mirroring. Read before the substantive
+  # and duplicate checks below, which return early on many turns.
+  window=$(setting_int "${FM_SLACK_MIRROR_THREAD_WINDOW-}" mirror_thread_window 900)
+  reply_target_consume "$window" || true
 
   FINAL_TEXT=; FINAL_TS=; FINAL_MODEL=; FINAL_EFFORT=; TURN_TS=
   transcript=$(printf '%s' "$payload" | jq -r '.transcript_path // ""' 2>/dev/null) || return 0
@@ -350,7 +421,6 @@ cmd_stop() {
   fi
 
   ack_max=$(setting_int "${FM_SLACK_MIRROR_ACK_MAX_CHARS-}" mirror_ack_max_chars 120)
-  window=$(setting_int "${FM_SLACK_MIRROR_THREAD_WINDOW-}" mirror_thread_window 900)
   max_chars=$(setting_int "${FM_SLACK_MIRROR_MAX_CHARS-}" mirror_max_chars 3500)
   details_flag=$(setting_flag "${FM_SLACK_MIRROR_WORKER_DETAILS-}" mirror_worker_details off)
 
@@ -383,7 +453,13 @@ cmd_stop() {
   last_digest=$(state_read "$MIRROR_DIR/mirror.last-body" 2>/dev/null || true)
   [ "$digest" != "$last_digest" ] || return 0
 
-  thread=$(inbound_thread "$window")
+  # The explicit record firstmate wrote for this turn wins; only without one does
+  # the mirror fall back to the newest-inbound guess.
+  if [ "$REPLY_TARGET_SET" = 1 ]; then
+    thread=$REPLY_TARGET_THREAD
+  else
+    thread=$(inbound_thread "$window")
+  fi
 
   details=
   if [ "$details_flag" = on ] && [ -n "$FINAL_MODEL" ]; then
@@ -448,6 +524,7 @@ case "${1-}" in
   stop)         shift; [ "$#" -eq 0 ] || usage; cmd_stop ;;
   note-post)    shift; [ "$#" -eq 1 ] || usage; cmd_note_post "$@" ;;
   note-inbound) shift; [ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage; cmd_note_inbound "$@" ;;
+  note-reply-target) shift; [ "$#" -eq 2 ] || usage; cmd_note_reply_target "$@" ;;
   deliver)      shift; [ "$#" -ge 2 ] || usage; cmd_deliver "$@" ;;
   ''|-h|--help|help) usage ;;
   *) usage ;;
