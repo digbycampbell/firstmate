@@ -291,7 +291,10 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
   # arm mid-flight past any fixed delay even when it is behaving correctly.
   # wait_for_exit kills and reaps the child itself if it times out, so a
   # timeout here is the actual "stayed live" failure, not a false negative.
-  wait_for_exit "$ARM_PID" 80
+  # This re-arm has to resurface two durable wakes plus an open remote
+  # decision, so it gets the same 120-tick budget as the other
+  # multi-wake/downtime scenarios in this file rather than the plain 80.
+  wait_for_exit "$ARM_PID" 120
   status=$?
   [ "$status" -ne 124 ] \
     || fail "re-arm stayed live instead of surfacing durable wakes and the still-open remote decision"
