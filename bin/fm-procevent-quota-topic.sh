@@ -34,13 +34,16 @@
 #   interval=<seconds>            optional, default 1200 (20 minutes)
 #
 # TOPIC FORMAT - one line, always naming every provider honestly:
-#   Claude: session xx% week yy% // Codex: week yy% // Kimi: session xx% week yy%
+#   Claude: session xx% week yy% // Codex: week yy% // Grok: credits xx% // Kimi: session xx% week yy%
 # Percentages are percentRemaining. Codex publishes no session window at all, so
-# it is rendered weekly-only rather than with an invented session figure. A
-# provider that is absent, unauthenticated, or erroring renders its reason
-# (`auth expired`, `unavailable`, `n/a`) and is never left blank or stale.
+# it is rendered weekly-only rather than with an invented session figure. Grok
+# publishes only a credits window, no session/weekly split, so it is rendered
+# credits-only for the same reason. A provider that is absent, unauthenticated,
+# or erroring renders its reason (`auth expired`, `unavailable`, `n/a`) and is
+# never left blank or stale - an auth problem always wins over a cached figure
+# quota-axi still carries from before the credential expired.
 #
-# QUOTA SOURCES. Claude and Codex come from `quota-axi --json`. Kimi does NOT:
+# QUOTA SOURCES. Claude, Codex, and Grok come from `quota-axi --json`. Kimi does NOT:
 # quota-axi's Kimi source reads only the Kimi CLI's OAuth store and goes dark the
 # moment that store expires, which is exactly when the number matters. Kimi is
 # therefore read straight from the managed usage endpoint the Kimi CLI itself
@@ -148,25 +151,30 @@ as_percent() {  # <value>
   printf '%s' "$v"
 }
 
-# Render Claude and Codex from one quota-axi document. Prints one line per
-# provider as "<provider> <session> <week> <reason>", where "-" stands for a
-# figure or reason the document does not carry, so no field can go missing and
-# shift the ones after it.
+# Render Claude, Codex, and Grok from one quota-axi document. Prints one line
+# per provider as "<provider> <session> <week> <credits> <reason>", where "-"
+# stands for a figure or reason the document does not carry, so no field can go
+# missing and shift the ones after it. An auth problem is decided from
+# state.status/authStatus alone, never from figure presence, because quota-axi
+# keeps serving a provider's last-known percentRemaining even after its
+# credential expires (grok's live case: state.stale=true with real windows).
 quota_axi_rows() {  # <json-file>
   jq -r '
     def pct(w): (w | if . == null then "-" else ((.percentRemaining // "-") | tostring) end);
-    def dash(v): (if v == "" or v == null then "-" else v end);
-    ["claude", "codex"][] as $p
+    ["claude", "codex", "grok"][] as $p
     | (.providers // [] | map(select(.provider == $p)) | first) as $prov
-    | if $prov == null then "\($p) - - unavailable"
+    | if $prov == null then "\($p) - - - unavailable"
       else
         ($prov.windows // []) as $w
         | (pct($w | map(select(.kind == "session")) | first)) as $session
         | (pct($w | map(select(.kind == "weekly")) | first)) as $week
+        | (pct($w | map(select(.kind == "credits" and .id == "credits")) | first)) as $credits
         | ($prov.state.status // "") as $status
-        | "\($p) \($session) \($week) " +
-          (if ($session == "-" and $week == "-") then
-             (if $status == "auth_required" then "auth-expired" else "unavailable" end)
+        | ($prov.state.authStatus // "") as $authStatus
+        | "\($p) \($session) \($week) \($credits) " +
+          (if ($status == "auth_required") or ($authStatus | test("^expired")) then "auth-expired"
+           elif ($status == "error") then "unavailable"
+           elif ($session == "-" and $week == "-" and $credits == "-") then "unavailable"
            else "-" end)
       end
   ' "$1" 2>/dev/null
@@ -214,36 +222,48 @@ read_kimi() {
   [ -n "$KIMI_WEEK" ] || [ -n "$KIMI_SESSION" ] || KIMI_REASON='n/a'
 }
 
-# "<label>: session xx% week yy%", or the honest reason when a figure is missing.
-render_provider() {  # <label> <session> <week> <reason>
+# "<label>: session xx% week yy%", or the honest reason when every figure is missing.
+render_provider() {  # <label> <session> <week> <credits> <reason>
   local out=
   if [ -n "$2" ]; then out="session $2%"; fi
   if [ -n "$3" ]; then out="${out:+$out }week $3%"; fi
-  [ -n "$out" ] || out=${4:-n/a}
+  if [ -n "$4" ]; then out="${out:+$out }credits $4%"; fi
+  [ -n "$out" ] || out=${5:-n/a}
   printf '%s: %s' "$1" "$out"
 }
 
 cmd_render() {
-  local axi="$POLL_TMP/quota-axi.json" provider session week reason
-  local claude='' codex='' kimi=''
+  local axi="$POLL_TMP/quota-axi.json" provider session week credits reason
+  local claude='' codex='' grok='' kimi=''
   if command -v quota-axi >/dev/null 2>&1 \
      && timeout "$QUOTA_AXI_TIMEOUT" quota-axi --json > "$axi" 2>/dev/null \
      && jq -e . "$axi" >/dev/null 2>&1; then
-    while read -r provider session week reason; do
+    while read -r provider session week credits reason; do
       [ "$reason" != - ] || reason=''
       reason=${reason//-/ }
+      # A named reason always wins over any cached figure quota-axi still
+      # carries from before the credential problem, so a stale percentage
+      # never slips out disguised as a current one.
+      if [ -n "$reason" ]; then
+        session='' week='' credits=''
+      else
+        session=$(as_percent "$session") week=$(as_percent "$week") credits=$(as_percent "$credits")
+      fi
       case "$provider" in
-        claude) claude=$(render_provider Claude "$(as_percent "$session")" "$(as_percent "$week")" "$reason") ;;
+        claude) claude=$(render_provider Claude "$session" "$week" '' "$reason") ;;
         # Codex has no session window at all, so only its weekly figure is real.
-        codex)  codex=$(render_provider Codex '' "$(as_percent "$week")" "$reason") ;;
+        codex)  codex=$(render_provider Codex '' "$week" '' "$reason") ;;
+        # Grok has no session/weekly split at all, only a credits window.
+        grok)   grok=$(render_provider Grok '' '' "$credits" "$reason") ;;
       esac
     done < <(quota_axi_rows "$axi")
   fi
   [ -n "$claude" ] || claude='Claude: unavailable'
   [ -n "$codex" ] || codex='Codex: unavailable'
+  [ -n "$grok" ] || grok='Grok: unavailable'
   read_kimi
-  kimi=$(render_provider Kimi "$KIMI_SESSION" "$KIMI_WEEK" "$KIMI_REASON")
-  printf '%s // %s // %s\n' "$claude" "$codex" "$kimi"
+  kimi=$(render_provider Kimi "$KIMI_SESSION" "$KIMI_WEEK" '' "$KIMI_REASON")
+  printf '%s // %s // %s // %s\n' "$claude" "$codex" "$grok" "$kimi"
 }
 
 # --- applying the topic -----------------------------------------------------
