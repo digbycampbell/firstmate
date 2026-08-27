@@ -287,16 +287,14 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
   append_wake "$state" check startup-network 'check: startup-network'
 
   start_rearm_arm "$home" "$state" "$fakebin" "$armout"
-  sleep 0.25
-  if is_live_non_zombie "$ARM_PID"; then
-    # End the fixture through an ordinary actionable status transition so this
-    # failing pre-fix path leaves no child behind.
-    printf 'done: fixture cleanup\n' > "$state/cleanup.status"
-    wait_for_exit "$ARM_PID" 80 || true
-    fail "re-arm stayed live instead of surfacing durable wakes and the still-open remote decision"
-  fi
-  wait "$ARM_PID"
+  # Poll for exit instead of a fixed sleep: a loaded runner can still have the
+  # arm mid-flight past any fixed delay even when it is behaving correctly.
+  # wait_for_exit kills and reaps the child itself if it times out, so a
+  # timeout here is the actual "stayed live" failure, not a false negative.
+  wait_for_exit "$ARM_PID" 80
   status=$?
+  [ "$status" -ne 124 ] \
+    || fail "re-arm stayed live instead of surfacing durable wakes and the still-open remote decision"
   expect_code 0 "$status" "re-arm re-surface wake must close successfully"
   grep -F 'check: rearm-resurface' "$armout" >/dev/null \
     || fail "re-arm did not report the durable recovery wake: $(cat "$armout")"
