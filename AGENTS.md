@@ -273,6 +273,7 @@ Any custom `state/<id>.check.sh` you write yourself must be an ordinary single-l
 
 Tear down a ship task only after landing is confirmed.
 A teardown refusal for uncommitted or unlanded work is a stop-and-investigate result, never an obstacle to bypass, and forcing it requires explicit discard authority.
+When the captain invokes `/overboard`, asks to clean up a finished worker's leftovers, or asks to find stale finished workers, load the `overboard` skill before touching those traces.
 After successful teardown, record completion, retain only the configured recent Done history, and re-evaluate queued work whose blockers and time gates have cleared.
 Retire a secondmate only on an explicit captain or main-firstmate decision, after loading `secondmate-provisioning`; its home must contain no work under way, and forced discard still requires explicit captain authority.
 
