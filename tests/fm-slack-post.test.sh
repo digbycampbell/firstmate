@@ -167,3 +167,33 @@ err=$(FM_HOME="$home" "$POST" general 'hello' 2>&1) && rc=0 || rc=$?
 [ "$rc" -ne 0 ] || fail "posting without a token must be refused"
 assert_contains "$err" "SLACK_BOT_TOKEN" "the refusal must name the missing credential"
 pass "a Slack error and an absent token are both loud refusals"
+
+# --- a stalled Slack cannot hang the caller ---------------------------------
+#
+# curl's --max-time is a single in-band guard; a curl wedged outside its own
+# transfer accounting outlasts it. The hard wall-clock ceiling is the defense.
+# The stand-in ignores --max-time and sleeps far past the ceiling, so a caller
+# with no ceiling would block for the full sleep and report an unreadable
+# response, never "timed out" - this asserts the ceiling fired instead.
+HANGBIN="$TMP_ROOT/hangbin"
+mkdir -p "$HANGBIN"
+cat > "$HANGBIN/curl" <<SH
+#!/usr/bin/env bash
+printf 'started\n' >> "$TMP_ROOT/hang.log"
+sleep 30
+SH
+chmod +x "$HANGBIN/curl"
+: > "$TMP_ROOT/hang.log"
+home=$(new_home hang)
+start=$(date +%s)
+err=$(PATH="$HANGBIN:$PATH" FM_HOME="$home" \
+  FM_SLACK_POST_HARD_TIMEOUT=2 FM_SLACK_POST_MAX_TIME=1 \
+  "$POST" general 'hi captain' 2>&1) && rc=0 || rc=$?
+end=$(date +%s)
+[ "$rc" -ne 0 ] || fail "a hung Slack must be a nonzero refusal"
+assert_contains "$err" "timed out" "the hard-ceiling refusal must name the timeout, not a downstream parse error"
+[ -s "$TMP_ROOT/hang.log" ] || fail "the ceiling fired before curl ran, so it proves nothing about a hang"
+[ "$((end - start))" -lt 8 ] \
+  || fail "the hard wall-clock ceiling did not stop a curl ignoring --max-time ($((end - start))s)"
+pkill -f "$HANGBIN/curl" 2>/dev/null || true
+pass "a curl that ignores --max-time is stopped by the hard wall-clock ceiling"

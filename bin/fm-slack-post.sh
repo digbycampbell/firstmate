@@ -38,6 +38,13 @@
 # so a caller can thread onto it. A Slack error is a loud nonzero refusal naming
 # the Slack error code.
 #
+# BOUNDED. The curl call is wrapped in a hard wall-clock ceiling
+# (FM_SLACK_POST_HARD_TIMEOUT, default FM_SLACK_POST_MAX_TIME + 5) on top of
+# curl's own --max-time, so a stalled Slack can never hang the caller even if
+# curl fails to honor its in-band bound. Hitting the ceiling is a loud nonzero
+# refusal like any other Slack failure; the detached mirror delivery discards
+# that status, so the guarantee is defense in depth for the synchronous callers.
+#
 # ORIGIN. A successful post to the configured captain channel is recorded with
 # bin/fm-slack-mirror.sh `note-post`, which is how the terminal mirror knows
 # firstmate already spoke in this turn and must not mirror it a second time.
@@ -61,9 +68,23 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
 # shellcheck source=bin/fm-x-lib.sh
 . "$SCRIPT_DIR/fm-x-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 SLACK_API="${FM_SLACK_CAPTAIN_API:-https://slack.com/api}"
 CURL_MAX_TIME=${FM_SLACK_POST_MAX_TIME:-20}
+case "$CURL_MAX_TIME" in ''|*[!0-9]*) CURL_MAX_TIME=20 ;; esac
+# A hard wall-clock ceiling around the whole curl process group. curl's own
+# --max-time is a single in-band guard, so a curl wedged outside its own
+# transfer accounting - a stalled resolver, a proxy that never speaks, a build
+# that ignores the option - can outlast it and hang the caller indefinitely.
+# fm_run_timed (bin/fm-timeout-lib.sh, the single owner of bounded execution)
+# kills the group and returns 124 exactly when this ceiling is hit, so no Slack
+# call - the detached mirror delivery or a synchronous hand-post - can ever hang
+# a turn. The default sits above --max-time so curl's graceful timeout fires
+# first on an ordinary slow network; an explicit override is used verbatim.
+HARD_TIMEOUT=${FM_SLACK_POST_HARD_TIMEOUT:-$((CURL_MAX_TIME + 5))}
+case "$HARD_TIMEOUT" in ''|*[!0-9]*|0) HARD_TIMEOUT=$((CURL_MAX_TIME + 5)) ;; esac
 MAX_BODY_BYTES=${FM_SLACK_POST_MAX_BYTES:-40000}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
@@ -196,12 +217,18 @@ jq -n --arg channel "$channel" --arg text "$text" --arg thread "$THREAD" '
 ' > "$body" || die "cannot build the Slack request body"
 
 token=$(read_token) || exit 1
+curl_rc=0
 printf 'header = "Authorization: Bearer %s"\n' "$token" \
-  | curl -sS --config - --max-time "$CURL_MAX_TIME" \
+  | fm_run_timed "$HARD_TIMEOUT" curl -sS --config - --max-time "$CURL_MAX_TIME" \
       -H 'Content-Type: application/json; charset=utf-8' \
       --data-binary "@$body" \
       "$SLACK_API/chat.postMessage" -o "$resp" 2>/dev/null \
-  || die "the Slack request failed"
+  || curl_rc=$?
+case "$curl_rc" in
+  0) ;;
+  124) die "the Slack request timed out after ${HARD_TIMEOUT}s" ;;
+  *) die "the Slack request failed" ;;
+esac
 
 jq -e . "$resp" >/dev/null 2>&1 || die "Slack returned an unreadable response"
 if ! jq -e '.ok == true' "$resp" >/dev/null 2>&1; then
