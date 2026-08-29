@@ -468,6 +468,66 @@ test_fail_open_paths() {
   pass "every failure path exits 0 and stays silent to the captain"
 }
 
+# --- a stalled Slack never blocks the turn -----------------------------------
+#
+# The mirror's whole safety promise is "never a gate": a slow or unreachable
+# Slack must not delay the turn. Delivery is detached, so the turn-end hook
+# returns at once however long the post takes; and even a caller that runs
+# delivery inline (SYNC=1, the shape a test or a foreign host might use) is now
+# backstopped by fm-slack-post's hard wall-clock ceiling. Both are proven here
+# against a curl that hangs far past any bound, not the instant fake above.
+test_a_stalled_slack_never_blocks_the_turn() {
+  local home hangbin start end waited
+  home=$(new_home stalled)
+  write_transcript "$home/t.jsonl" 'status?' \
+    'Captain, real news that must reach Slack: https://example.invalid/pr/99'
+
+  hangbin="$TMP_ROOT/stalled-curl"
+  mkdir -p "$hangbin"
+  cat > "$hangbin/curl" <<SH
+#!/usr/bin/env bash
+printf 'started\n' >> "$home/curl.hang.log"
+sleep 30
+SH
+  chmod +x "$hangbin/curl"
+  : > "$home/curl.hang.log"
+
+  # Detached (production) path: the hook must return at once, not wait on curl.
+  start=$(date +%s)
+  env PATH="$hangbin:$PATH" FM_ROOT_OVERRIDE="$home" FM_SLACK_MIRROR_SYNC= \
+    "$MIRROR" stop >/dev/null 2>&1 <<EOF
+{"hook_event_name":"Stop","session_id":"s","stop_hook_active":false,"transcript_path":"$home/t.jsonl","cwd":"$home"}
+EOF
+  end=$(date +%s)
+  [ "$((end - start))" -lt 8 ] \
+    || fail "the detached turn-end path waited on a hung Slack ($((end - start))s)"
+  # And the detachment did not swallow the delivery: the child really ran curl.
+  waited=0
+  while [ ! -s "$home/curl.hang.log" ] && [ "$waited" -lt 100 ]; do
+    sleep 0.1; waited=$((waited + 1))
+  done
+  [ -s "$home/curl.hang.log" ] \
+    || fail "the detached path returned fast because it skipped delivery, not because it detached"
+  pkill -f "$hangbin/curl" 2>/dev/null || true
+
+  # Inline path: with no detachment, the hard ceiling in fm-slack-post is the
+  # only thing standing between a hung curl and a blocked turn. It must bound it.
+  rm -f "$home/state/slack-captain/mirror.last-body" "$home/curl.hang.log"
+  start=$(date +%s)
+  env PATH="$hangbin:$PATH" FM_ROOT_OVERRIDE="$home" FM_SLACK_MIRROR_SYNC=1 \
+    FM_SLACK_POST_HARD_TIMEOUT=2 FM_SLACK_POST_MAX_TIME=1 \
+    "$MIRROR" stop >/dev/null 2>&1 <<EOF
+{"hook_event_name":"Stop","session_id":"s","stop_hook_active":false,"transcript_path":"$home/t.jsonl","cwd":"$home"}
+EOF
+  end=$(date +%s)
+  [ -s "$home/curl.hang.log" ] \
+    || fail "the inline path never reached curl, so the ceiling assertion is vacuous"
+  [ "$((end - start))" -lt 8 ] \
+    || fail "the inline delivery hung on curl instead of hitting the hard ceiling ($((end - start))s)"
+  pkill -f "$hangbin/curl" 2>/dev/null || true
+  pass "a stalled Slack blocks neither the detached turn-end path nor the inline backstop"
+}
+
 # --- scope -------------------------------------------------------------------
 
 test_off_without_a_captain_channel() {
@@ -796,6 +856,7 @@ test_newest_inbound_is_the_last_resort_fallback
 test_recorded_reply_target_is_deterministic
 test_adapter_records_the_reply_target
 test_deliberate_post_suppresses_the_mirror
+test_a_stalled_slack_never_blocks_the_turn
 test_fail_open_paths
 test_off_without_a_captain_channel
 test_child_worktree_is_inert
