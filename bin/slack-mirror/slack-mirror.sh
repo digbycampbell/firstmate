@@ -110,12 +110,15 @@
 # finished turn's own final message cannot be mirrored, and is recorded as a gap
 # here rather than given an adapter that guesses at one:
 #
-#   codex      A Stop payload of the same Claude-shaped snake_case kind exists
-#              (`stop.command.input` in codex-cli 0.149.0 carries
-#              `last_assistant_message` and `transcript_path`), so
-#              adapters/claude.sh already reads it, but no host registers it yet
-#              and it has not been proven end to end against a running Codex,
-#              whose project hooks need per-hook trust before they load.
+#   codex      Registered by the host (a Stop hook in its `.codex/hooks.json`)
+#              and read by adapters/claude.sh, because its Stop payload is the
+#              same Claude-shaped snake_case kind (`stop.command.input` in
+#              codex-cli 0.149.0 carries `last_assistant_message` and
+#              `transcript_path`). Its rollout transcript is not Claude-shaped,
+#              so a Codex turn reports no trigger and routes by the fallback.
+#              Not yet proven end to end against a running Codex, whose project
+#              hooks need per-hook trust before they load; until that live run
+#              is recorded, treat this as registered-but-unproven, not covered.
 #   cursor     Its `stop` step is claimed by the host's own turn-boundary park
 #              and its payload has not been shown to carry the finished turn's
 #              final assistant message.

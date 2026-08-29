@@ -28,9 +28,12 @@
 #
 # HARNESS SCOPE. `stop` is registered on every primary harness whose turn end
 # delivers a payload naming the finished turn's own final message:
-# `.claude/settings.json` as a third Claude `Stop` hook, and
-# `.grok/hooks/fm-primary-slack-mirror.json` as a Grok `Stop` hook. The adapter
-# is selected from the payload itself, so one registration shape serves both and
+# `.claude/settings.json` as a third Claude `Stop` hook,
+# `.grok/hooks/fm-primary-slack-mirror.json` as a Grok `Stop` hook, and
+# `.codex/hooks.json` as a second Codex `Stop` hook (Codex's snake_case Stop
+# payload is read by the same Claude-shaped adapter; the coverage table records
+# it as registered-but-unproven until a live Codex run is recorded). The adapter
+# is selected from the payload itself, so one registration shape serves all and
 # a harness that delivers no such payload is simply never registered;
 # `bin/slack-mirror/slack-mirror.sh adapters` prints the current coverage and
 # every recorded gap. docs/turnend-guard.md owns what each harness exposes at the

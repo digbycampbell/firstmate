@@ -805,6 +805,66 @@ EOF
   pass "the Grok transcript fallback is bound to the finished turn's own prompt"
 }
 
+# Codex's Stop payload is the same snake_case shape Claude emits, read by the
+# same adapter; its rollout transcript is not Claude-shaped, so the trigger is
+# unreadable and the reply posts by the fallback rather than guessing a thread.
+test_codex_shaped_payload_is_mirrored() {
+  local home out status
+  home=$(new_home codex)
+  printf '{"record_type":"turn_context","turn_id":"t-1"}\n' > "$home/rollout.jsonl"
+  : > "$FAKE_POST_BODY"
+  out=$(env FM_ROOT_OVERRIDE="$home" "$MIRROR" stop 2>&1 <<EOF
+{"hook_event_name":"Stop","session_id":"s-9","turn_id":"t-1","model":"gpt-5.3-codex","stop_hook_active":false,"transcript_path":"$home/rollout.jsonl","cwd":"$home","last_assistant_message":"Captain, the fix is up: https://example.invalid/pr/31"}
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "the mirror must never fail a Codex turn"
+  [ -z "$out" ] || fail "the Codex path printed to the turn: $out"
+  [ "$(posted_count)" = 1 ] || fail "a substantive Codex reply was not mirrored"
+  assert_contains "$(posted_text)" 'https://example.invalid/pr/31' \
+    "the mirrored Codex body lost the URL it carried"
+  [ "$(posted_thread)" = "" ] \
+    || fail "a Codex turn with no readable trigger guessed a thread ($(posted_thread))"
+  pass "a Codex-shaped Stop payload is mirrored through the shared adapter"
+}
+
+# The Codex registration is the only thing that makes the mirror fire on that
+# harness, so it is exercised as a command string rather than trusted: the
+# tracked entry must reach the mirror from a Firstmate-shaped root, and must
+# stay inert in a root whose own hooks file does not carry the registration.
+test_codex_registration_reaches_the_mirror() {
+  local hook cmd root
+  hook="$ROOT/.codex/hooks.json"
+  [ -f "$hook" ] || fail "the tracked Codex hooks registration is missing"
+  cmd=$(jq -r '[.hooks.Stop[]?.hooks[]?.command | select(contains("fm-slack-mirror.sh"))][0] // empty' "$hook")
+  [ -n "$cmd" ] || fail "no Codex Stop registration names the Slack mirror"
+
+  root="$TMP_ROOT/codex-registration"
+  mkdir -p "$root/bin" "$root/.codex"
+  printf '# firstmate\n' > "$root/AGENTS.md"
+  cp "$hook" "$root/.codex/hooks.json"
+  # shellcheck disable=SC2016 # the expansions belong to the generated stub.
+  printf '#!/usr/bin/env bash\nprintf "%%s:" "$1" >> %q\ncat >> %q\n' \
+    "$root/invoked" "$root/invoked" > "$root/bin/fm-slack-mirror.sh"
+  chmod +x "$root/bin/fm-slack-mirror.sh"
+
+  rm -f "$root/invoked"
+  (cd "$root" && printf '{"hook_event_name":"Stop"}' | bash -c "$cmd") \
+    >/dev/null 2>&1
+  [ "$(cat "$root/invoked" 2>/dev/null)" = 'stop:{"hook_event_name":"Stop"}' ] \
+    || fail "the Codex registration did not hand the payload to the mirror's stop entry"
+
+  # A root whose hooks file lacks the registration fails the self-check and
+  # stays inert, exactly like the other tracked Codex entries.
+  printf '{"hooks":{}}\n' > "$root/.codex/hooks.json"
+  rm -f "$root/invoked"
+  (cd "$root" && printf '{"hook_event_name":"Stop"}' | bash -c "$cmd") \
+    >/dev/null 2>&1
+  [ ! -e "$root/invoked" ] \
+    || fail "the Codex registration ran from a root that does not register it"
+  pass "the tracked Codex Stop registration reaches the mirror and self-checks its root"
+}
+
 test_adapter_coverage_is_reported() {
   local out
   out=$(FM_ROOT_OVERRIDE="$TMP_ROOT" "$MIRROR" adapters 2>&1)
@@ -867,5 +927,7 @@ test_grok_turn_is_mirrored
 test_grok_shutdown_stop_is_not_mirrored
 test_grok_auto_detect_threads_by_the_triggering_wake
 test_grok_transcript_fallback_is_bound_to_this_turn
+test_codex_shaped_payload_is_mirrored
+test_codex_registration_reaches_the_mirror
 test_adapter_coverage_is_reported
 test_grok_registration_reaches_the_mirror
