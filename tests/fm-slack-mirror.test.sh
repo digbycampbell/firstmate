@@ -805,6 +805,24 @@ EOF
   pass "the Grok transcript fallback is bound to the finished turn's own prompt"
 }
 
+# An installed pinned release of the tool wins over the in-tree fallback, which
+# is what lets the tree itself leave this repository.
+test_installed_release_is_preferred() {
+  local home
+  home=$(new_home installed-release)
+  mkdir -p "$home/tools/agent-slack-mirror"
+  # shellcheck disable=SC2016 # the expansion belongs to the generated stub.
+  printf '#!/usr/bin/env bash\nprintf "%%s" "$1" > %q\n' "$home/tool-invoked" \
+    > "$home/tools/agent-slack-mirror/slack-mirror.sh"
+  chmod +x "$home/tools/agent-slack-mirror/slack-mirror.sh"
+  write_transcript "$home/t.jsonl" 'where is the fix?' \
+    'Captain, installed tool: https://example.invalid/pr/40'
+  run_stop "$home" "$home/t.jsonl" >/dev/null 2>&1
+  [ "$(cat "$home/tool-invoked" 2>/dev/null)" = turn-end ] \
+    || fail "an installed release was not preferred over the in-tree copy"
+  pass "an installed pinned release is preferred over the in-tree fallback"
+}
+
 # Codex's Stop payload is the same snake_case shape Claude emits, read by the
 # same adapter; its rollout transcript is not Claude-shaped, so the trigger is
 # unreadable and the reply posts by the fallback rather than guessing a thread.
@@ -929,5 +947,6 @@ test_grok_auto_detect_threads_by_the_triggering_wake
 test_grok_transcript_fallback_is_bound_to_this_turn
 test_codex_shaped_payload_is_mirrored
 test_codex_registration_reaches_the_mirror
+test_installed_release_is_preferred
 test_adapter_coverage_is_reported
 test_grok_registration_reaches_the_mirror

@@ -50,7 +50,12 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
-MIRROR="$SCRIPT_DIR/slack-mirror/slack-mirror.sh"
+# The tool itself now lives in its own public repository
+# (https://github.com/digbycampbell/agent-slack-mirror); an installed pinned
+# release (bin/fm-install-slack-mirror.sh) is preferred, and the in-tree copy
+# remains the fallback until every home has moved to the installed release.
+MIRROR="$FM_HOME/tools/agent-slack-mirror/slack-mirror.sh"
+[ -x "$MIRROR" ] || MIRROR="$SCRIPT_DIR/slack-mirror/slack-mirror.sh"
 
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
