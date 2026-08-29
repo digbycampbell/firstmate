@@ -43,9 +43,16 @@ make_case() {
 }
 
 # gh-axi mock recording every invocation to a log file, and gh mock answering
-# headRefOid for fm-pr-check.sh's pr_head lookup. Args: case_dir head_sha
+# PR state queries. Args: case_dir head_sha [base_branch] [merge_queue] [merged]
+# Defaults: base_branch=main, merge_queue=false, merged=true. When merge_queue
+# is true and merged is false, autoMerge.enabled is reported true so the
+# enqueued path can be exercised.
 add_gh_mocks() {
-  local case_dir=$1 head=$2
+  local case_dir=$1 head=$2 base=${3:-main} queue=${4:-false} merged=${5:-true}
+  local auto_merge_enabled="false"
+  if [ "$merged" != "true" ] && [ "$queue" = "true" ]; then
+    auto_merge_enabled="true"
+  fi
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
@@ -57,6 +64,25 @@ case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
       *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
+      *baseRefName*) printf '%s\n' '$base' ; exit 0 ;;
+      *merged,autoMerge*)
+        if [ "$merged" = "true" ]; then
+          printf '%s\n' 'true'
+        elif [ "$auto_merge_enabled" = "true" ]; then
+          printf '%s\n' 'true'
+        else
+          printf '%s\n' 'false'
+        fi
+        exit 0 ;;
+    esac
+    ;;
+  "api"*)
+    case " \$* " in
+      *rules/branches/$base*)
+        if [ "$queue" = "true" ]; then
+          printf '%s\n' '{"type":"merge_queue"}'
+        fi
+        exit 0 ;;
     esac
     ;;
 esac
@@ -68,7 +94,7 @@ SH
 # gh-axi mock that fails the merge call but succeeds everything else, so a
 # real merge failure is distinguishable from the recording step.
 add_gh_mocks_merge_fails() {
-  local case_dir=$1
+  local case_dir=$1 base=${2:-main} queue=${3:-false}
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
@@ -77,8 +103,25 @@ case "${1:-} ${2:-}" in
 esac
 exit 0
 SH
-  cat > "$case_dir/fakebin/gh" <<'SH'
+  cat > "$case_dir/fakebin/gh" <<SH
 #!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "pr view")
+    case " \$* " in
+      *headRefOid*) printf '%s\n' '0000000000000000000000000000000000000000' ; exit 0 ;;
+      *baseRefName*) printf '%s\n' '$base' ; exit 0 ;;
+    esac
+    ;;
+  "api"*)
+    case " \$* " in
+      *rules/branches/$base*)
+        if [ "$queue" = "true" ]; then
+          printf '%s\n' '{"type":"merge_queue"}'
+        fi
+        exit 0 ;;
+    esac
+    ;;
+esac
 exit 0
 SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
@@ -301,6 +344,108 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+test_merge_queue_uses_auto_and_succeeds_when_merged() {
+  local case_dir rc
+  case_dir=$(make_case queue-merged)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111 main true true
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "queue-merged: fm-pr-merge should succeed when merge queue lands the PR"
+  grep -qxF 'pr merge 31 --repo example/repo --auto --squash' "$case_dir/gh-axi.log" \
+    || fail "queue-merged: gh-axi pr merge was not invoked with --auto --squash on a merge-queue branch"
+  pass "fm-pr-merge uses --auto --squash and succeeds when a merge-queue PR is merged"
+}
+
+test_merge_queue_uses_auto_and_succeeds_when_enqueued() {
+  local case_dir rc
+  case_dir=$(make_case queue-enqueued)
+  mkdir -p "$case_dir/wt"
+  # merge_queue=true, merged=false: the mock reports autoMerge.enabled=true.
+  add_gh_mocks "$case_dir" bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222 main true false
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/32 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "queue-enqueued: fm-pr-merge should succeed when the PR is enqueued"
+  grep -qxF 'pr merge 32 --repo example/repo --auto --squash' "$case_dir/gh-axi.log" \
+    || fail "queue-enqueued: gh-axi pr merge was not invoked with --auto --squash on a merge-queue branch"
+  pass "fm-pr-merge uses --auto --squash and succeeds when a merge-queue PR is enqueued"
+}
+
+test_merge_queue_reports_failure_when_not_landed() {
+  local case_dir rc
+  case_dir=$(make_case queue-not-landed)
+  mkdir -p "$case_dir/wt"
+  # Set up the gh-axi recorder and a base-branch/rules response, then override
+  # gh so the post-merge PR state is unmerged and not enqueued (the old no-op).
+  add_gh_mocks "$case_dir" cccc3333cccc3333cccc3333cccc3333cccc3333 main true false
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "pr view")
+    case " $* " in
+      *headRefOid*) printf '%s\n' 'cccc3333cccc3333cccc3333cccc3333cccc3333' ; exit 0 ;;
+      *baseRefName*) printf '%s\n' 'main' ; exit 0 ;;
+      *merged,autoMerge*) printf '%s\n' 'false' ; exit 0 ;;
+    esac
+    ;;
+  "api"*)
+    case " $* " in
+      *rules/branches/main*) printf '%s\n' '{"type":"merge_queue"}' ; exit 0 ;;
+    esac
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/33 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "queue-not-landed: fm-pr-merge must fail loudly when the PR is neither merged nor enqueued"
+  grep -qxF 'pr merge 33 --repo example/repo --auto --squash' "$case_dir/gh-axi.log" \
+    || fail "queue-not-landed: gh-axi pr merge was not invoked with --auto --squash"
+  assert_grep 'neither merged nor enqueued' "$case_dir/stderr" \
+    "queue-not-landed: failure did not explain the silent no-op"
+  pass "fm-pr-merge fails loudly when a merge-queue PR is neither merged nor enqueued"
+}
+
+test_non_queue_verification_failure_fails_loudly() {
+  local case_dir rc
+  case_dir=$(make_case non-queue-not-landed)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" dddd4444dddd4444dddd4444dddd4444dddd4444 main false false
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/34 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "non-queue-not-landed: fm-pr-merge must fail loudly when verification fails"
+  grep -qxF 'pr merge 34 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "non-queue-not-landed: gh-axi pr merge was not invoked with --squash"
+  assert_grep 'neither merged nor enqueued' "$case_dir/stderr" \
+    "non-queue-not-landed: failure did not explain the silent no-op"
+  pass "fm-pr-merge fails loudly on a non-queue branch when the PR is not verified landed"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -311,3 +456,7 @@ test_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
+test_merge_queue_uses_auto_and_succeeds_when_merged
+test_merge_queue_uses_auto_and_succeeds_when_enqueued
+test_merge_queue_reports_failure_when_not_landed
+test_non_queue_verification_failure_fails_loudly
