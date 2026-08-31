@@ -124,6 +124,15 @@ usage() { sed -n '2,104p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
 
+# Run an adapter against THIS runner's resolved home. Without this the adapter
+# re-derives its own home from its script location, so it operates on the
+# checkout it was installed in rather than the home the runner is serving -
+# harmless when those coincide, wrong for every other home, and the way a test
+# reaches a real firstmate home despite passing a fixture home explicitly.
+adapter_env() {  # <script> <args>...
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_ROOT_OVERRIDE="$FM_ROOT" "$@"
+}
+
 # Ask the source's own adapter whether a captured result ends the source. Exit 0
 # is the only terminal verdict; everything else - including a missing adapter
 # command - keeps the registration armed. See the terminal-knowledge note in the
@@ -132,7 +141,7 @@ adapter_result_is_terminal() {  # <adapter> <result-file>
   local script
   script=$(adapter_script "$1")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
-  "$script" terminal "$2" >/dev/null 2>&1
+  adapter_env "$script" terminal "$2" >/dev/null 2>&1
 }
 
 # Ask the adapter whether its autohandled results announce themselves through a
@@ -144,7 +153,7 @@ adapter_self_announcing() {  # <adapter>
   local script
   script=$(adapter_script "$1")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
-  "$script" self-announcing >/dev/null 2>&1
+  adapter_env "$script" self-announcing >/dev/null 2>&1
 }
 
 source_file()  { printf '%s/%s.source\n' "$REG" "$1"; }
@@ -168,7 +177,7 @@ adapter_autohandle() {  # <adapter> <source-id> <result-file>
   # such command is a quiet no-op rather than runner noise. This runner's own
   # one-line outcome is the interface; an adapter that failed keeps its result
   # announced, and the handler's own call reproduces the diagnostics in full.
-  "$script" autohandle "$id" "$seq" "$result" >/dev/null 2>&1
+  adapter_env "$script" autohandle "$id" "$seq" "$result" >/dev/null 2>&1
 }
 
 # Pass a bound source's captured result to the one keyed-answer intake. The
@@ -184,7 +193,7 @@ feed_keyed_answers() {  # <adapter> <source-id> <result-file>
   origin=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$id" 2>/dev/null) || return 1
   [ -n "$origin" ] || return 1
   seq=$(fm_procevent_result_sequence "$result") || return 1
-  "$script" answers "$result" 2>/dev/null \
+  adapter_env "$script" answers "$result" 2>/dev/null \
     | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$origin" \
         --source "the captured result $id sequence $seq" >/dev/null 2>&1
 }

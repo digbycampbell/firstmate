@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Send one line of literal text to a crewmate endpoint, then Enter.
-# Usage: fm-send.sh <target> [--resolve-key <key>]... <text...>
+# Usage: fm-send.sh <target> [--resolve-key <key>]... [--no-reply-expected] <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -36,6 +36,17 @@
 # an explicit backend-target escape-hatch target, and the --key path are never
 # marked - their behavior is unchanged.
 #
+# --no-reply-expected: mark the message from firstmate, but arm NO pending-reply
+# expectation. For a fire-and-forget operational instruction that asks the
+# secondmate for nothing back - the inherited-config re-read nudge is the
+# standing case. An expectation exists to notice a report that was owed and did
+# not arrive; when no report is owed it can only ever age into a blocked
+# decision about a missing report nobody promised, and (because the expectation
+# is keyed in the reserved `pending-reply-` namespace) nothing typed in chat can
+# close it. Suppressing the expectation is not suppressing a record: a request
+# that DOES want a report keeps its expectation, so a genuinely missed report
+# still escalates exactly as before.
+#
 # Parent-owned pending-reply expectation: every newly marked secondmate request
 # also receives a privacy-safe correlation id and a durable parent record under
 # state/pending-replies/ before delivery (bin/fm-pending-reply-lib.sh). Delivery
@@ -66,7 +77,12 @@
 # confirmed, fm-send itself appends the closing
 # "resolved [key=<key>]: answered: <capped excerpt>" line to that status file,
 # so the captain-facing OPEN DECISIONS record closes at answer time and never
-# depends on the busy worker writing a matching resolved line. The close is a
+# depends on the busy worker writing a matching resolved line.
+# A reserved decision-key namespace (bin/fm-classify-lib.sh, currently
+# `pending-reply-`) is refused before delivery: only that namespace's owning
+# library can close its decisions, and the "answered: " note shape could never
+# satisfy the reserved rule, so accepting one would silently close nothing.
+# The close is a
 # LOCAL append for every target kind - crewmate, scout, local secondmate, and
 # remote secondmate alike - because the open-decision ledger fm-wake-drain
 # folds lives in this home's own state dir (a remote mate's escalations reach
@@ -348,6 +364,9 @@ fm_send_add_resolve_key() {  # <key>
   esac
   RESOLVE_KEYS="${RESOLVE_KEYS}${RESOLVE_KEYS:+ }$k"
 }
+# A marked instruction that asks the secondmate for nothing. See the
+# no-reply-expected contract in this script's header.
+NO_REPLY_EXPECTED=0
 while :; do
   case "${1:-}" in
     --resolve-key)
@@ -359,9 +378,21 @@ while :; do
       fm_send_add_resolve_key "${1#--resolve-key=}" || exit 1
       shift
       ;;
+    --no-reply-expected)
+      NO_REPLY_EXPECTED=1
+      shift
+      ;;
     *) break ;;
   esac
 done
+
+# The two are contradictory by construction: --resolve-key closes a decision
+# opened by a report this home is waiting for, which is exactly the tracking
+# --no-reply-expected declares absent.
+if [ "$NO_REPLY_EXPECTED" = 1 ] && [ -n "$RESOLVE_KEYS" ]; then
+  echo "error: --no-reply-expected cannot accompany --resolve-key: closing a decision is an answer to a report this home awaited, so the request was never reply-free" >&2
+  exit 1
+fi
 
 if [ "$TARGET_BACKEND" != remote ]; then
   fm_backend_validate "$TARGET_BACKEND" || exit 1
@@ -435,6 +466,20 @@ if [ -n "$RESOLVE_KEYS" ]; then
   RESOLVE_STATUS_FILE="$STATE/$RESOLVE_TASK_ID.status"
   resolve_open_set=$(status_open_decisions "$RESOLVE_STATUS_FILE")
   for k in $RESOLVE_KEYS; do
+    # Refuse a reserved key before anything is sent. This close writes
+    # "resolved [key=<k>]: answered: <note>", and bin/fm-classify-lib.sh only
+    # honours a transition on a reserved key when the note begins with that
+    # namespace's own "<namespace>...:" token - which "answered: " can never
+    # do. Without this refusal the command reports success, the answer is
+    # delivered, the line is appended, and the decision stays open forever.
+    # Refusing rather than learning the owner's vocabulary is deliberate: the
+    # reserved rule exists precisely so no other writer can clear the owner's
+    # decision, and one of these records a report that has not arrived, which
+    # answering in chat does not make arrive.
+    if reserved_prefix=$(fm_decision_key_reserved_prefix "$k"); then
+      echo "error: --resolve-key '$k': '$reserved_prefix' is a reserved decision-key namespace (bin/fm-classify-lib.sh). Only the library that owns that namespace can close one of its decisions, and it does so when the condition actually clears - not from an answer typed here. This close would have been silently ignored, so nothing was sent. Resolve the underlying condition instead, or resend without that key." >&2
+      exit 1
+    fi
     case "$resolve_open_set" in
       "$k"$'\t'*|*$'\n'"$k"$'\t'*)
         RESOLVE_STATUS_KEYS="${RESOLVE_STATUS_KEYS}${RESOLVE_STATUS_KEYS:+ }$k"
@@ -530,7 +575,14 @@ else
   # The pre-marker answer text, kept for the closing resolved note so the
   # durable ledger records the plain answer without marker or corr bytes.
   RESOLVE_ANSWER_TEXT=$MESSAGE
-  if [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
+  if [ "$MARK_FROM_FIRSTMATE" = 1 ] && [ "$NO_REPLY_EXPECTED" = 1 ]; then
+    # Marked, so the secondmate still recognises an operational instruction and
+    # its own intake rules apply - but with no expectation, because this request
+    # asks for nothing back. An expectation here could never be satisfied: no
+    # report is coming, so it would age into a blocked decision reporting a
+    # missing report that was never owed. See the header contract.
+    fm_message_mark_from_firstmate "$MESSAGE" MESSAGE
+  elif [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
     # Reuse an existing correlation id for recovery resends; otherwise create a
     # durable parent expectation before delivery. Transport success never
     # resolves that expectation (see fm-pending-reply-lib.sh).

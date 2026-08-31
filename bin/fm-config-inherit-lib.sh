@@ -877,11 +877,26 @@ fm_config_reread_send_pointer() {
     return 1
   fi
   message="CONFIG_REREAD: $instruction_path"
+  # --no-reply-expected: this nudge asks the mate for nothing. It tells it to
+  # re-read files it already re-reads at its own session start, so the mate owes
+  # no report and an armed expectation could only ever decay into a blocked
+  # decision about a report that was never owed (bin/fm-send.sh header).
   out=$(FM_HOME="$FM_HOME" \
     FM_ROOT_OVERRIDE="${FM_ROOT_OVERRIDE:-}" \
     FM_STATE_OVERRIDE="${FM_STATE_OVERRIDE:-}" \
     FM_SEND_SETTLE="${FM_SEND_SETTLE:-0}" \
-    "$send_bin" "$selector" "$message" 2>&1) && rc=0 || rc=$?
+    "$send_bin" "$selector" --no-reply-expected "$message" 2>&1) && rc=0 || rc=$?
+  # Exit 3 is fm-send's documented delivered-but-unconfirmed status, not a
+  # failure: the text was typed into the live endpoint and Enter was sent, and
+  # only the submit read-back was inconclusive - the ordinary reading when the
+  # mate is mid-turn, which is most of the time. Treating it as a failure is
+  # what turned a landed nudge into a retry and a CONFIG_REREAD diagnostic.
+  # Re-sending would duplicate the instruction, so this clears the pending
+  # pointer exactly as a confirmed send does.
+  if [ "$rc" -eq 3 ]; then
+    rm -f "$pending_path"
+    return 0
+  fi
   if [ "$rc" -eq 0 ]; then
     rm -f "$pending_path"
     return 0
