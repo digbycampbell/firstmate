@@ -179,6 +179,29 @@ echo 'ok - a home the test owns is accepted'")
 }
 pass "a fixture home the test created inside its own sandbox is still accepted"
 
+# The ownership exemption must not become a loophole. A firstmate script whose
+# FM_* namespace has been cleared falls back to the home of the checkout the
+# suite runs from, and the guard allows that because it IS a home the run owns.
+# The exemption is scoped to that one checkout: a DIFFERENT firstmate home - the
+# live one, in the 2026-08-31 incident - stays refused even with the exemption
+# in force. Without this case, widening FM_TEST_OWN_ROOT to cover the primary
+# checkout would silently reopen the whole defect.
+out=$(FM_TEST_SANDBOX="$SANDBOX" FM_TEST_OWN_ROOT="$WT" \
+  FM_STATE_OVERRIDE="$PRIMARY/state" FM_HOME="$PRIMARY" \
+  bash "$WT/bin/fm-procevent.sh" list 2>&1) && grc=0 || grc=$?
+[ "$grc" = 99 ] \
+  || fail "the own-checkout exemption let a foreign home through (exit $grc): $out"
+case "$out" in
+  *'ISOLATION FAILURE'*) ;;
+  *) fail "the foreign home was refused without naming itself: $out" ;;
+esac
+# ...while the owned checkout's own default home is accepted under the same flag.
+out=$(FM_TEST_SANDBOX="$SANDBOX" FM_TEST_OWN_ROOT="$WT" \
+  FM_STATE_OVERRIDE="$WT/state" FM_HOME="$WT" \
+  bash "$WT/bin/fm-procevent.sh" list 2>&1) && grc=0 || grc=$?
+[ "$grc" != 99 ] || fail "the checkout the suite runs from was refused its own home: $out"
+pass "the own-checkout exemption is scoped to that checkout and still refuses a foreign home"
+
 # The guard must be completely inert in production, or it would refuse the
 # captain's own fleet. Same command, no sandbox marker.
 out=$(FM_STATE_OVERRIDE="$PRIMARY/state" FM_HOME="$PRIMARY" bash "$WT/bin/fm-procevent.sh" --help 2>&1)

@@ -16,8 +16,15 @@
 # Two independent layers, because they fail for different reasons:
 #
 #   1. Containment (fm_test_sandbox_exec): every test runs with the FM_*
-#      namespace cleared, a private TMPDIR and HOME, and a PATH whose first
-#      entry refuses the real `treehouse` binary. A test that needs treehouse
+#      namespace cleared, a private TMPDIR, and a PATH whose first entry
+#      refuses the real `treehouse` binary.
+#
+#      HOME is deliberately NOT overridden. The guarantee does not need it - it
+#      rests on the FM_* clearing, the resolution-time home guard, and the
+#      treehouse shim - and overriding it breaks the real-harness gated tests,
+#      which legitimately read a tool's own state under the real HOME. Measured:
+#      with a private HOME, tests/fm-afk-inject-herdr-e2e.test.sh cannot see the
+#      running Herdr default session and fails its fleet-state tripwire. A test that needs treehouse
 #      must install its own fake earlier in PATH, which every such test already
 #      does; a test that reaches the real one is operating on the live worktree
 #      pool and is refused loudly.
@@ -80,19 +87,20 @@ SHIM
 # fm_test_sandbox_exec <sandbox-root> <script> : run <script> contained.
 # Returns the script's exit status.
 fm_test_sandbox_exec() {
-  local root=$1 script=$2 shim="$1/shim" tmp="$1/tmp" home="$1/home"
+  local root=$1 script=$2 shim="$1/shim" tmp="$1/tmp"
   local -a clear=()
   local name
-  mkdir -p "$tmp" "$home" || return 1
+  mkdir -p "$tmp" || return 1
   chmod 0700 "$tmp" || return 1
   fm_test_sandbox_shim "$shim" || return 1
   while IFS= read -r name; do
     [ -n "$name" ] && clear+=(-u "$name")
   done < <(fm_test_sandbox_cleared_vars)
   env ${clear[@]+"${clear[@]}"} \
-    TMPDIR="$tmp" TMP="$tmp" HOME="$home" \
+    TMPDIR="$tmp" TMP="$tmp" \
     PATH="$shim:$PATH" \
     FM_TEST_SANDBOX="$root" FM_TEST_SCRIPT="$script" \
+    FM_TEST_OWN_ROOT="${FM_TEST_OWN_ROOT:-$ROOT}" \
     bash "$script"
 }
 
@@ -176,7 +184,7 @@ fm_test_protected_roots() {
 # construction:
 #
 #   * fm_test_sandbox_exec, above, removes the reachability: the FM_* namespace
-#     is cleared, TMPDIR and HOME are private, and the real `treehouse` binary -
+#     is cleared, TMPDIR is private, and the real `treehouse` binary -
 #     the only way a test reaches the live worktree pool, which it resolves from
 #     the working directory - is refused by a shim.
 #   * bin/fm-home-guard-lib.sh refuses at the moment a firstmate script resolves

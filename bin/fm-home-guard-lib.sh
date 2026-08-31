@@ -22,7 +22,7 @@
 # fm_home_guard_assert <state-dir>
 # Dies when <state-dir> resolves outside the running test's sandbox.
 fm_home_guard_assert() {
-  local state=${1:-} sandbox=${FM_TEST_SANDBOX:-} resolved parent
+  local state=${1:-} sandbox=${FM_TEST_SANDBOX:-} own=${FM_TEST_OWN_ROOT:-} resolved parent
   [ -n "$sandbox" ] || return 0
   [ -n "$state" ] || return 0
 
@@ -34,6 +34,16 @@ fm_home_guard_assert() {
   case "$resolved/" in
     "$sandbox"/*) return 0 ;;
   esac
+  # The checkout the suite is running FROM is a home it owns, and with the FM_*
+  # namespace cleared that is exactly what a firstmate script falls back to. The
+  # boundary being enforced is "a home it does not own", so refusing the running
+  # checkout would refuse the legitimate default and break every test that
+  # exercises a real script's own default home.
+  if [ -n "$own" ]; then
+    case "$resolved/" in
+      "$own"/*) return 0 ;;
+    esac
+  fi
 
   printf 'fm-home-guard: ISOLATION FAILURE - %s resolved its firstmate home to %s, which is outside the test sandbox %s.\n' \
     "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]:-a firstmate script}" "$resolved" "$sandbox" >&2
