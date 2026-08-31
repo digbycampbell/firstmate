@@ -162,6 +162,14 @@ init_changed_fixture_repo() {
   : >"$repo/CONTRIBUTING.md"
   : >"$repo/src/unmapped.ts"
   git -C "$repo" init -q
+  # The fixture must not inherit the developer's global ignore file. A machine
+  # that globally ignores .claude/ and .agents/ (a reasonable thing to do, and
+  # what this repo's own captain does) silently drops those fixture paths from
+  # `git add .`, so the changed-file map is asked about a file git never
+  # reports as changed and the assertion fails for a reason that has nothing to
+  # do with the map. Same class as the FM_* clearing in
+  # bin/fm-test-sandbox-lib.sh: ambient config must not reach a fixture.
+  git -C "$repo" config core.excludesFile /dev/null
   git -C "$repo" add .
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm baseline
 }
@@ -360,7 +368,7 @@ PY
   timeout_repo="$tmp/timeout-repo"
   timeout_script=tests/fm-calm-pi-extension.test.sh
   mkdir -p "$timeout_repo/bin" "$timeout_repo/tests"
-  cp "$RUNNER" "$timeout_repo/bin/fm-test-run.sh"
+  install_runner "$timeout_repo/bin"
   cat >"$timeout_repo/bin/fm-timeout-lib.sh" <<'SH'
 fm_run_timed() {
   [ "$1" -eq 900 ] || return 99
@@ -372,7 +380,7 @@ SH
 touch should-not-run
 echo "not ok - automatic timeout helper was bypassed"
 SH
-  chmod +x "$timeout_repo/bin/fm-test-run.sh" "$timeout_repo/$timeout_script"
+  chmod +x "$timeout_repo/$timeout_script"
   git -C "$timeout_repo" init -q
   git -C "$timeout_repo" add .
   git -C "$timeout_repo" -c user.name=test -c user.email=test@example.invalid commit -qm baseline
@@ -814,7 +822,7 @@ test_per_script_timeout_bounds_a_hang() {
   runner="$repo/bin/fm-test-run.sh"
   hang=tests/fm-hang-fixture.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$runner"
+  install_runner "$repo/bin"
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
   grandchild_pid="$tmp/grandchild.pid"
   cat >"$repo/$hang" <<'SH'
@@ -823,7 +831,7 @@ echo "ok - fixture is about to hang"
 sh -c 'trap "" TERM; echo $$ >"$1"; sleep 600' _ "$GRANDCHILD_PID" &
 sleep 600
 SH
-  chmod +x "$runner" "$repo/$hang"
+  chmod +x "$repo/$hang"
 
   began=$(date +%s)
   set +e
@@ -877,13 +885,13 @@ test_max_wall_ms_is_a_result_not_advice() {
   runner="$repo/bin/fm-test-run.sh"
   fast=tests/fm-budget-fixture.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$runner"
+  install_runner "$repo/bin"
   cat >"$repo/$fast" <<'SH'
 #!/usr/bin/env bash
 sleep 1
 echo "ok - budget fixture"
 SH
-  chmod +x "$runner" "$repo/$fast"
+  chmod +x "$repo/$fast"
 
   # Comfortably inside budget: the run passes and states the budget it met.
   set +e
