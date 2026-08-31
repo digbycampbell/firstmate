@@ -1475,3 +1475,9 @@ EOF
 
   return 0
 }
+
+# Sandbox boundary. Inert outside the behavior suite; see
+# bin/fm-home-guard-lib.sh for why the check belongs at resolution time.
+# shellcheck source=bin/fm-home-guard-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fm-home-guard-lib.sh"
+fm_home_guard_assert "${STATE:-}"

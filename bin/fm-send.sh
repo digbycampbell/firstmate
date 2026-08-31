@@ -66,7 +66,12 @@
 # confirmed, fm-send itself appends the closing
 # "resolved [key=<key>]: answered: <capped excerpt>" line to that status file,
 # so the captain-facing OPEN DECISIONS record closes at answer time and never
-# depends on the busy worker writing a matching resolved line. The close is a
+# depends on the busy worker writing a matching resolved line.
+# A reserved decision-key namespace (bin/fm-classify-lib.sh, currently
+# `pending-reply-`) is refused before delivery: only that namespace's owning
+# library can close its decisions, and the "answered: " note shape could never
+# satisfy the reserved rule, so accepting one would silently close nothing.
+# The close is a
 # LOCAL append for every target kind - crewmate, scout, local secondmate, and
 # remote secondmate alike - because the open-decision ledger fm-wake-drain
 # folds lives in this home's own state dir (a remote mate's escalations reach
@@ -435,6 +440,20 @@ if [ -n "$RESOLVE_KEYS" ]; then
   RESOLVE_STATUS_FILE="$STATE/$RESOLVE_TASK_ID.status"
   resolve_open_set=$(status_open_decisions "$RESOLVE_STATUS_FILE")
   for k in $RESOLVE_KEYS; do
+    # Refuse a reserved key before anything is sent. This close writes
+    # "resolved [key=<k>]: answered: <note>", and bin/fm-classify-lib.sh only
+    # honours a transition on a reserved key when the note begins with that
+    # namespace's own "<namespace>...:" token - which "answered: " can never
+    # do. Without this refusal the command reports success, the answer is
+    # delivered, the line is appended, and the decision stays open forever.
+    # Refusing rather than learning the owner's vocabulary is deliberate: the
+    # reserved rule exists precisely so no other writer can clear the owner's
+    # decision, and one of these records a report that has not arrived, which
+    # answering in chat does not make arrive.
+    if reserved_prefix=$(fm_decision_key_reserved_prefix "$k"); then
+      echo "error: --resolve-key '$k': '$reserved_prefix' is a reserved decision-key namespace (bin/fm-classify-lib.sh). Only the library that owns that namespace can close one of its decisions, and it does so when the condition actually clears - not from an answer typed here. This close would have been silently ignored, so nothing was sent. Resolve the underlying condition instead, or resend without that key." >&2
+      exit 1
+    fi
     case "$resolve_open_set" in
       "$k"$'\t'*|*$'\n'"$k"$'\t'*)
         RESOLVE_STATUS_KEYS="${RESOLVE_STATUS_KEYS}${RESOLVE_STATUS_KEYS:+ }$k"

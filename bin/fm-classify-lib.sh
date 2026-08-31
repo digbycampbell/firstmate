@@ -316,6 +316,24 @@ EOF
 # writer-side rejection would.
 FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT='pending-reply-'
 
+# fm_decision_key_reserved_prefix <key>: print the reserved namespace prefix
+# <key> belongs to and return 0, or return 1 when the key is not reserved.
+#
+# Public because the rule above is consumer-side and therefore silent: a writer
+# that appends a wrongly shaped transition on a reserved key gets no error, it
+# just never takes effect. A writer that wants to refuse at the point of use
+# rather than no-op (bin/fm-send.sh --resolve-key) asks here instead of
+# re-deriving the prefix list, so the reserved vocabulary keeps one owner.
+fm_decision_key_reserved_prefix() {  # <key>
+  local key=$1 prefix
+  for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
+    case "$key" in
+      "$prefix"*) printf '%s\n' "$prefix"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # 0 when <key> is not reserved, or is reserved and <note> speaks its vocabulary.
 _fm_decision_key_transition_allowed() {  # <key> <note>
   local key=$1 note=$2 prefix

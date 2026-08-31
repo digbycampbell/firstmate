@@ -1516,6 +1516,31 @@ FAMILIES_TSV="$RUN_TMP/families.tsv"
 : >"$RECORDS"
 trap 'rm -rf "$RUN_TMP"' EXIT
 
+# shellcheck source=bin/fm-test-sandbox-lib.sh
+. "$ROOT/bin/fm-test-sandbox-lib.sh"
+
+# Containment boundary: see bin/fm-test-sandbox-lib.sh for what is enforced and
+# what was measured and rejected.
+# run_one_contained <sandbox-root> <script> <stdout-path>
+# Runs one script inside the sandbox. A script that reaches a firstmate home it
+# does not own is refused at the point of resolution and exits 99
+# (bin/fm-home-guard-lib.sh), so containment failures arrive as ordinary test
+# failures naming the home.
+run_one_contained() {
+  local sandbox=$1 script=$2 outfile=$3 rc
+  # This function must leave the caller's errexit setting alone: it is called
+  # from both runner paths, and a bare conditional here would abort the whole
+  # run under `set -e`.
+  local had_errexit=0
+  case "$-" in *e*) had_errexit=1 ;; esac
+  set +e
+  mkdir -p "$sandbox"
+  fm_test_sandbox_exec "$sandbox" "$script" >"$outfile" 2>&1
+  rc=$?
+  [ "$had_errexit" = 1 ] && set -e
+  return "$rc"
+}
+
 RUN_STARTED_ISO=$(now_iso)
 RUN_STARTED_MS=$(now_ms)
 RUN_ID="fm-test-run-${RUN_STARTED_MS}-$$"
@@ -1603,11 +1628,14 @@ run_one_serial() {
     "$begin_iso" "$script" "$family" "$expected"
 
   set +e
-  # Stream live output while retaining a copy for gate-skip detection.
-  # PIPESTATUS[0] is the test script; tee's exit is ignored for aggregate.
-  bash "$script" 2>&1 | tee "$out"
-  rc=${PIPESTATUS[0]}
+  # Contained run, then stream the retained copy. The serial path is the DEFAULT
+  # path, so it gets exactly the same boundary as --jobs: before this it ran
+  # with the caller's whole environment and cwd, which is how an ambient
+  # FM_STATE_OVERRIDE steered real scripts into the live firstmate home.
+  run_one_contained "$RUN_TMP/s$TOTAL" "$script" "$out"
+  rc=$?
   set -e
+  cat "$out"
   : "${rc:=1}"
 
   end_ms=$(now_ms)
@@ -1706,13 +1734,11 @@ else
       "$(now_iso)" "$script" "$family" "$expected"
     (
       set +e
-      export TMPDIR="$work/tmp"
-      export TMP="$work/tmp"
-      unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
-        FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
-      bash "$script" >"$work/output" 2>&1
+      # Same single owner as the serial path: clearing a remembered list of
+      # variables here was the previous defence and it covered only this branch.
+      run_one_contained "$work" "$script" "$work/output"
       rc=$?
       end_ms=$(now_ms)
       duration=$((end_ms - begin_ms))
