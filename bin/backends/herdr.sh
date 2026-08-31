@@ -2910,6 +2910,53 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
   fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane" || true
 }
 
+# fm_backend_herdr_presentation_order_lock_wait <lock-path>: serialize behind
+# whoever currently holds the presentation-order section, then take it.
+#
+# The invariant is SERIALIZATION - one spawn at a time projects into the named
+# session - not a wall-clock budget. The earlier bounded 50 x 0.1s spin encoded
+# the latter and so refused a concurrent resume purely because the holder was
+# still working: a legitimately longer critical section read as a conflict. That
+# budget was already 84% consumed by a passing concurrent resume before the
+# spawn path grew, so it was one ordinary slowdown away from failing regardless.
+#
+# Two genuinely broken states still refuse, loudly and with the reason in
+# FM_HERDR_PRESENTATION_LOCK_REFUSAL:
+#   - the section cannot be taken and NO live process holds it. fm_lock_try_acquire
+#     reclaims a dead holder itself (bin/fm-wake-lib.sh), so reaching here means
+#     the section is unusable rather than merely busy.
+#   - a live holder never finishes, bounded by
+#     FM_HERDR_PRESENTATION_LOCK_WAIT_SECS (default 300) so a deadlock surfaces
+#     as a named refusal instead of hanging forever.
+FM_HERDR_PRESENTATION_LOCK_REFUSAL=
+fm_backend_herdr_presentation_order_lock_wait() {  # <lock-path>
+  local lock=$1 cap started now
+  [ -n "$lock" ] || return 1
+  if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-wake-lib.sh
+    . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh"
+  fi
+  cap=${FM_HERDR_PRESENTATION_LOCK_WAIT_SECS:-300}
+  case "$cap" in ''|*[!0-9]*) cap=300 ;; esac
+  FM_HERDR_PRESENTATION_LOCK_REFUSAL=
+  started=$(date +%s)
+  while :; do
+    if fm_lock_try_acquire "$lock"; then
+      return 0
+    fi
+    if [ -z "${FM_LOCK_HELD_PID:-}" ]; then
+      FM_HERDR_PRESENTATION_LOCK_REFUSAL="the section could not be taken and no live process holds it"
+      return 1
+    fi
+    now=$(date +%s)
+    if [ "$((now - started))" -ge "$cap" ]; then
+      FM_HERDR_PRESENTATION_LOCK_REFUSAL="pid $FM_LOCK_HELD_PID still held it after ${cap}s"
+      return 1
+    fi
+    sleep 0.1
+  done
+}
+
 fm_backend_herdr_kill() {  # <target>
   fm_backend_herdr_target_ready "$1" || return 0
   local session=$FM_BACKEND_HERDR_SESSION pane=$FM_BACKEND_HERDR_PANE

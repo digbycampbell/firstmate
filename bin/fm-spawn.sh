@@ -901,21 +901,16 @@ trap spawn_abort_cleanup EXIT
 # One bounded lock per live Herdr session/socket, shared across all homes.
 # <session> is required so secondmate and primary spawns serialize against the
 # same session without writing any other home's state directory.
+# Serialization is owned by bin/backends/herdr.sh; this wrapper only binds the
+# session's lock path to the spawn's own held-state bookkeeping.
 spawn_herdr_presentation_order_lock_acquire() {
-  local session=${1:-} attempt lock_path
+  local session=${1:-} lock_path
   [ -n "$session" ] || session=$(fm_backend_herdr_session)
   lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 1
   HERDR_PRESENTATION_ORDER_LOCK="$lock_path"
-  attempt=0
-  while [ "$attempt" -lt 50 ]; do
-    if fm_lock_try_acquire "$HERDR_PRESENTATION_ORDER_LOCK"; then
-      HERDR_PRESENTATION_ORDER_LOCK_HELD=1
-      return 0
-    fi
-    sleep 0.1
-    attempt=$((attempt + 1))
-  done
-  return 1
+  fm_backend_herdr_presentation_order_lock_wait "$HERDR_PRESENTATION_ORDER_LOCK" || return 1
+  HERDR_PRESENTATION_ORDER_LOCK_HELD=1
+  return 0
 }
 
 clear_relaunch_harness_wiring() {
@@ -2159,7 +2154,7 @@ case "$BACKEND" in
           exit 1
         }
         spawn_herdr_presentation_order_lock_acquire "$HERDR_SES" || {
-          echo "error: herdr presentation recovery could not acquire its session lock; refusing a concurrent resume" >&2
+          echo "error: herdr presentation recovery could not acquire its session lock: ${FM_HERDR_PRESENTATION_LOCK_REFUSAL:-unknown reason}" >&2
           exit 1
         }
         if [ -e "$STATE/$ID.meta" ] || [ -L "$STATE/$ID.meta" ]; then

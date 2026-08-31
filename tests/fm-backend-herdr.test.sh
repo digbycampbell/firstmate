@@ -4604,3 +4604,83 @@ test_wait_transition_stream_absorb_clears_then_timeout
 test_wait_transition_reader_failure_returns_2
 test_wait_transition_bad_ack_returns_2_and_cleans_up
 test_wait_transition_clean_timeout_returns_1
+
+# --- presentation-order serialization ---------------------------------------
+#
+# The guard asserts that one spawn at a time projects into a named session, NOT
+# that the section completes inside a wall-clock budget. Each case drives a REAL
+# lock through fm_lock_try_acquire with a real holder process, and each verifies
+# the holder is genuinely holding before it asserts anything: a fixture whose
+# holder quietly died would let the waiter acquire instantly and pass both cases
+# vacuously, which is exactly how the first draft of these tests fooled itself.
+
+# Start a real holder for <secs>. Sets PRES_HOLDER_PID. Must NOT run inside a
+# command substitution: the holder would be a child of a subshell that exits.
+presentation_lock_start_holder() {  # <lock> <secs>
+  local lock=$1 secs=$2 ready waited=0
+  ready="$TMP_ROOT/pres-ready.$RANDOM"
+  bash -c '
+    . "$0/bin/fm-wake-lib.sh"
+    fm_lock_try_acquire "$1" || exit 1
+    : > "$3"
+    sleep "$2"
+    fm_lock_release "$1"
+  ' "$ROOT" "$lock" "$secs" "$ready" &
+  PRES_HOLDER_PID=$!
+  while [ ! -e "$ready" ] && [ "$waited" -lt 200 ]; do
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+  [ -e "$ready" ] || fail "fixture holder never took the presentation lock"
+  # Discriminator guard: prove the section is actually occupied by a live
+  # process, so a later acquire means serialization and not an empty lock.
+  [ -e "$lock" ] || fail "fixture holder reported ready but the lock is absent"
+  kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null \
+    || fail "fixture holder is not alive, so the wait would prove nothing"
+}
+
+test_presentation_lock_serializes_behind_a_slow_holder() {
+  local lock="$TMP_ROOT/pres-slow.lock" began elapsed rc
+  presentation_lock_start_holder "$lock" 15
+  began=$(date +%s)
+  ( . "$ROOT/bin/backends/herdr.sh"
+    FM_BACKEND_HERDR_ROOT="$ROOT" \
+      fm_backend_herdr_presentation_order_lock_wait "$lock" )
+  rc=$?
+  elapsed=$(( $(date +%s) - began ))
+  wait "$PRES_HOLDER_PID" 2>/dev/null || true
+  [ "$rc" -eq 0 ] \
+    || fail "a concurrent resume must serialize behind a slow holder, got rc=$rc"
+  # 15s is deliberately past the retired budget. That budget was nominally
+  # 50 x 0.1s = 5s but measured ~7.3s of wall clock, because each
+  # fm_lock_try_acquire costs ~0.047s on top of its sleep - and it shrinks as
+  # the machine loads, which is why it failed intermittently. Asserting the WAIT
+  # actually happened is what makes this fail on the old implementation instead
+  # of passing on an empty lock.
+  [ "$elapsed" -ge 12 ] \
+    || fail "the waiter returned after ${elapsed}s, so it never serialized behind the holder"
+  pass "presentation lock: serializes behind a holder slower than the retired 5s budget"
+}
+
+test_presentation_lock_still_refuses_a_stuck_holder() {
+  local lock="$TMP_ROOT/pres-stuck.lock" rc out
+  presentation_lock_start_holder "$lock" 120
+  # The deadlock backstop is what keeps this a guard rather than an open wait.
+  set +e
+  out=$( . "$ROOT/bin/backends/herdr.sh"
+    FM_BACKEND_HERDR_ROOT="$ROOT" FM_HERDR_PRESENTATION_LOCK_WAIT_SECS=2 \
+      fm_backend_herdr_presentation_order_lock_wait "$lock"
+    printf 'rc=%s refusal=%s' "$?" "$FM_HERDR_PRESENTATION_LOCK_REFUSAL" )
+  rc=$?
+  set -e
+  kill "$PRES_HOLDER_PID" 2>/dev/null || true
+  wait "$PRES_HOLDER_PID" 2>/dev/null || true
+  case "$out" in
+    "rc=1 refusal=pid "*"still held it after 2s") ;;
+    *) fail "a stuck holder must be refused and named, got '$out'" ;;
+  esac
+  pass "presentation lock: still refuses a holder that never finishes, naming it"
+}
+
+test_presentation_lock_serializes_behind_a_slow_holder
+test_presentation_lock_still_refuses_a_stuck_holder
