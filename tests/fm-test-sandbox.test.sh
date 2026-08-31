@@ -13,6 +13,11 @@
 # the worktree, and lets discovery find the primary the same way it finds the
 # live firstmate home on this machine. There is no override that could point
 # the guard somewhere harmless.
+# Fixture bodies below are deliberately single-quoted: they are source text for
+# a CHILD process and must reach it unexpanded, so the parent must not
+# interpolate $TMPDIR, $$, or any FM_* reference in them.
+# shellcheck disable=SC2016
+
 set -u
 
 # shellcheck source=tests/lib.sh

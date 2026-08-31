@@ -58,10 +58,15 @@ fm_test_sandbox_cleared_vars() {
 # The shim refuses every command that mutates shared machine state a test has
 # no business touching. It is deliberately first in PATH and deliberately
 # beatable by a test's own fake, which is what a correctly written test does.
+# Commands the shim refuses. A list rather than a literal because the set is
+# expected to grow: any command that mutates shared machine state a test has no
+# business touching belongs here.
+FM_TEST_SANDBOX_REFUSED_COMMANDS="treehouse"
+
 fm_test_sandbox_shim() {
   local dir=$1 cmd
   mkdir -p "$dir" || return 1
-  for cmd in treehouse; do
+  for cmd in $FM_TEST_SANDBOX_REFUSED_COMMANDS; do
     cat > "$dir/$cmd" <<SHIM || return 1
 #!/usr/bin/env bash
 # Installed by bin/fm-test-sandbox-lib.sh. See that file's header.
