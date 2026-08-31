@@ -1959,26 +1959,27 @@ record_script_result() {
 run_script_bounded() {  # <sandbox> <script> <out> <stream> <id>
   local sandbox=$1 script=$2 out=$3 stream=$4 id=$5
   local rc
-  : "$id"
+  : "$id" "$stream"
   set +e
   # Containment boundary: see bin/fm-test-sandbox-lib.sh for what is enforced
   # and what was measured and rejected. A script that reaches a firstmate home
   # it does not own is refused at the point of resolution and exits 99
   # (bin/fm-home-guard-lib.sh), so containment failures arrive as ordinary test
   # failures naming the home.
+  #
+  # Output is CAPTURED, never streamed through a pipe, on both paths. Upstream
+  # streams the serial path through `tee` for live output; this fork does not,
+  # because a pipe is only closed once every process holding it exits, and a
+  # test that leaves a background process behind (the live-backend E2Es all do)
+  # then blocks the runner until that process dies. Measured on this tree: a
+  # fixture that prints one line and leaves `sleep 45 &` behind takes 45s
+  # through `tee` and 0s captured. The caller prints the file, so the serial
+  # path still shows the same bytes - just after the script instead of during.
   local -a FM_TEST_SANDBOX_ARGV=()
   mkdir -p "$sandbox"
   cd "$ROOT" || return 1
   fm_test_sandbox_argv "$sandbox" "$script" || return 1
-  if [ "$stream" -eq 1 ]; then
-    if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
-      fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" "${FM_TEST_SANDBOX_ARGV[@]}" 2>&1 | tee "$out"
-      rc=${PIPESTATUS[0]}
-    else
-      "${FM_TEST_SANDBOX_ARGV[@]}" 2>&1 | tee "$out"
-      rc=${PIPESTATUS[0]}
-    fi
-  elif [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
+  if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
     fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" "${FM_TEST_SANDBOX_ARGV[@]}" >"$out" 2>&1
     rc=$?
   else
@@ -1988,7 +1989,6 @@ run_script_bounded() {  # <sandbox> <script> <out> <stream> <id>
   if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
     printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
       "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$out"
-    [ "$stream" -eq 1 ] && tail -1 "$out"
   fi
   return "$rc"
 }
@@ -2007,13 +2007,14 @@ run_one_serial() {
     "$begin_iso" "$script" "$family" "$expected"
 
   set +e
-  # Contained run, streamed live. The serial path is the DEFAULT path, so it
-  # gets exactly the same boundary as --jobs: before this it ran with the
-  # caller's whole environment and cwd, which is how an ambient
-  # FM_STATE_OVERRIDE steered real scripts into the live firstmate home.
+  # Contained run. The serial path is the DEFAULT path, so it gets exactly the
+  # same boundary as --jobs: before this it ran with the caller's whole
+  # environment and cwd, which is how an ambient FM_STATE_OVERRIDE steered real
+  # scripts into the live firstmate home.
   run_script_bounded "$RUN_TMP/s$TOTAL" "$script" "$out" 1 "s$TOTAL"
   rc=$?
   set -e
+  cat "$out"
   : "${rc:=1}"
 
   end_ms=$(now_ms)
