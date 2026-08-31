@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Send one line of literal text to a crewmate endpoint, then Enter.
-# Usage: fm-send.sh <target> [--resolve-key <key>]... <text...>
+# Usage: fm-send.sh <target> [--resolve-key <key>]... [--no-reply-expected] <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -35,6 +35,17 @@
 # stranding it in chat the main firstmate never reads. A crewmate/scout target,
 # an explicit backend-target escape-hatch target, and the --key path are never
 # marked - their behavior is unchanged.
+#
+# --no-reply-expected: mark the message from firstmate, but arm NO pending-reply
+# expectation. For a fire-and-forget operational instruction that asks the
+# secondmate for nothing back - the inherited-config re-read nudge is the
+# standing case. An expectation exists to notice a report that was owed and did
+# not arrive; when no report is owed it can only ever age into a blocked
+# decision about a missing report nobody promised, and (because the expectation
+# is keyed in the reserved `pending-reply-` namespace) nothing typed in chat can
+# close it. Suppressing the expectation is not suppressing a record: a request
+# that DOES want a report keeps its expectation, so a genuinely missed report
+# still escalates exactly as before.
 #
 # Parent-owned pending-reply expectation: every newly marked secondmate request
 # also receives a privacy-safe correlation id and a durable parent record under
@@ -353,6 +364,9 @@ fm_send_add_resolve_key() {  # <key>
   esac
   RESOLVE_KEYS="${RESOLVE_KEYS}${RESOLVE_KEYS:+ }$k"
 }
+# A marked instruction that asks the secondmate for nothing. See the
+# no-reply-expected contract in this script's header.
+NO_REPLY_EXPECTED=0
 while :; do
   case "${1:-}" in
     --resolve-key)
@@ -364,9 +378,21 @@ while :; do
       fm_send_add_resolve_key "${1#--resolve-key=}" || exit 1
       shift
       ;;
+    --no-reply-expected)
+      NO_REPLY_EXPECTED=1
+      shift
+      ;;
     *) break ;;
   esac
 done
+
+# The two are contradictory by construction: --resolve-key closes a decision
+# opened by a report this home is waiting for, which is exactly the tracking
+# --no-reply-expected declares absent.
+if [ "$NO_REPLY_EXPECTED" = 1 ] && [ -n "$RESOLVE_KEYS" ]; then
+  echo "error: --no-reply-expected cannot accompany --resolve-key: closing a decision is an answer to a report this home awaited, so the request was never reply-free" >&2
+  exit 1
+fi
 
 if [ "$TARGET_BACKEND" != remote ]; then
   fm_backend_validate "$TARGET_BACKEND" || exit 1
@@ -549,7 +575,14 @@ else
   # The pre-marker answer text, kept for the closing resolved note so the
   # durable ledger records the plain answer without marker or corr bytes.
   RESOLVE_ANSWER_TEXT=$MESSAGE
-  if [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
+  if [ "$MARK_FROM_FIRSTMATE" = 1 ] && [ "$NO_REPLY_EXPECTED" = 1 ]; then
+    # Marked, so the secondmate still recognises an operational instruction and
+    # its own intake rules apply - but with no expectation, because this request
+    # asks for nothing back. An expectation here could never be satisfied: no
+    # report is coming, so it would age into a blocked decision reporting a
+    # missing report that was never owed. See the header contract.
+    fm_message_mark_from_firstmate "$MESSAGE" MESSAGE
+  elif [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
     # Reuse an existing correlation id for recovery resends; otherwise create a
     # durable parent expectation before delivery. Transport success never
     # resolves that expectation (see fm-pending-reply-lib.sh).
