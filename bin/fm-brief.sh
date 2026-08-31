@@ -55,6 +55,9 @@
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
 # blocked when firstmate must act.
+# Every scaffold also carries the steering-inbox receive-and-ack section:
+# process state/<id>.inbox/*.msg in order and acknowledge each by moving it to
+# handled/ (record, doorbell, and ladder owned by bin/fm-task-inbox-lib.sh).
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -81,6 +84,8 @@ esac
 . "$SCRIPT_DIR/fm-marker-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-dod-lib.sh
+. "$SCRIPT_DIR/fm-dod-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 resolve_directory_input() {
@@ -203,6 +208,20 @@ shell_quote() {
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
+INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
+
+# The receive-and-ack half of the steering-inbox contract, included in every
+# scaffold kind. The record format, doorbell line, and re-ring ladder are
+# owned by bin/fm-task-inbox-lib.sh; the doorbell itself is self-describing,
+# so this section is reinforcement for the natural-checkpoint habit, not the
+# only carrier of the instruction.
+IFS= read -r -d '' INBOX_SECTION <<EOF || true
+# Firstmate instruction inbox
+Firstmate steers you through durable message files in $INBOX_DIR.
+When a terminal message says an instruction is waiting there - and at any natural checkpoint when you are unsure - list $INBOX_DIR/*.msg, read and act on each message in numeric order, then acknowledge each handled message by moving it: \`mv $INBOX_DIR/NNN.msg $INBOX_DIR/handled/\`.
+The move IS the acknowledgement: without it firstmate rings again and eventually treats you as stuck. An empty or absent inbox needs no action.
+EOF
+INBOX_SECTION=${INBOX_SECTION%$'\n'}
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
@@ -257,6 +276,9 @@ For a terse result, a status line is the whole answer.
 For a detailed answer (an investigation, a plan, an audit), write it to a doc under your home's \`data/\` and append a status line that points to that doc - the scout-report pattern - so the main firstmate is woken and can read it.
 Before treating an investigation or visual review as complete, load \`captain-hold-lifecycle\` from this home's \`.agents/skills/\` and pass its shared completion gate.
 A message with NO marker is the captain typing directly into your pane: treat it as authoritative captain intervention and stay conversational exactly as you would for any captain message; do not force it onto the status path.
+A request arriving through the instruction inbox below follows the same marker and reply rules.
+
+$INBOX_SECTION
 
 # Escalation to main firstmate
 Handle routine work yourself.
@@ -264,7 +286,8 @@ Report only true captain-relevant outcomes or a declared external wait by append
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
 States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
 Use \`$PAUSED_VERB: {why}\` (distinct from \`blocked:\`) only when your domain is deliberately idling on a known external wait you expect to clear on its own; use \`blocked:\` when you are stuck and need firstmate to act.
-Use this only for material phase changes, a captain decision, a real blocker, a failure, or work ready for review.
+Use this only for material phase changes, a captain decision, a real blocker, a failure, work ready for review, or work you landed.
+Work you landed includes a merge you performed yourself under standing merge authority and one the captain merged on the forge: under that authority nothing is ever \"ready for review\", so a landed merge that goes unreported reaches the captain as silence.
 This is also how you return the answer to a marked from-firstmate request above.
 A marked request requires one correlated answer after the work; it does not require a separate receipt or start acknowledgement.
 Never append \`working:\` merely to acknowledge receipt or announce that a marked request has started.
@@ -317,7 +340,7 @@ HERDR_SECTION=$(printf '%s\n' \
 else
 IFS= read -r -d '' HERDR_SECTION <<'EOF' || true
 # Herdr lifecycle declaration - NOT ENABLED
-**HARD SAFETY GATE:** this scaffold cannot inspect the task text that replaces `{TASK}` later.
+**HARD SAFETY GATE:** this scaffold cannot inspect the task text filled in above.
 If the task will start, stop, delete, restart, profile, or otherwise drive Herdr lifecycle behavior, stop and regenerate the brief with `--herdr-lab` before dispatch.
 Do not add Herdr lifecycle commands to this unguarded brief by hand.
 EOF
@@ -363,6 +386,8 @@ The report is the only thing that survives, so anything worth keeping must be in
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
+$INBOX_SECTION
+
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
 The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
@@ -375,93 +400,27 @@ echo "scaffolded: $BRIEF (scout; replace {TASK})"
 exit 0
 fi
 
-# Ship task: shape Setup / Rule 1 / Definition of done by this task's explicit
-# delivery mode, validated above. The generated DOD opens with the fixed
-# "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
-# explicit --mode before launching.
+# Ship task: shape Setup / Rule 1 by this task's explicit delivery mode, validated
+# above, and render the Definition of done from its single owner, bin/fm-dod-lib.sh,
+# which bin/fm-promote.sh renders too so a promoted scout receives the same contract.
+# The block opens with the fixed "Delivery contract: mode=<mode>" line that
+# bin/fm-spawn.sh checks against its own explicit --mode before launching.
 case "$MODE" in
   direct-PR)
     SETUP2=""
     RULE1='1. Never push to the default branch (push only your `'"$BRANCH_NAME"'` branch). Never merge a PR.'
-    IFS= read -r -d '' DOD <<EOF || true
-# Definition of done
-Delivery contract: mode=direct-PR
-This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
-The task is complete only when committed on your branch.
-When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
-Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
-EOF
     ;;
   local-only)
     SETUP2=""
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`$BRANCH_NAME\` branch; firstmate handles the merge into local \`main\`."
-    IFS= read -r -d '' DOD <<EOF || true
-# Definition of done
-Delivery contract: mode=local-only
-This task ships **local-only**: no remote, no PR, no pipeline.
-The task is complete only when committed on your branch \`$BRANCH_NAME\`. Do NOT push, do NOT open a PR, do NOT merge.
-Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
-When it is implemented and committed, append \`done: ready in branch $BRANCH_NAME\` to the status file and stop.
-The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
-EOF
     ;;
   *)  # no-mistakes
     SETUP2="
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch (push only your `'"$BRANCH_NAME"'` branch). Never merge a PR.'
-    IFS= read -r -d '' DOD <<EOF || true
-# Definition of done
-Delivery contract: mode=no-mistakes
-The task is complete only when committed on your branch.
-When you believe it is complete, append \`done: {summary}\` to the status file and stop.
-Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
-
-You drive no-mistakes by responding to its gates, not by implementing fixes.
-Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
-When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
-Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
-
-Two firstmate-specific rules layer on top of that guidance:
-- ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
-  Firstmate applies \`ask-user-authority\` and obtains any required captain decision.
-  When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
-- Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
-
-After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
-EOF
     ;;
 esac
-
-# read -r -d '' preserves the heredoc's trailing newline that the removed
-# $(...) command substitution used to strip. Drop that one newline so generated
-# briefs stay byte-identical to the historical Bash 5 output.
-DOD=${DOD%$'\n'}
-
-# Standing verification clause, identical for every ship mode: a passing suite is
-# not evidence the behavior is right. It is spliced in directly after the fixed
-# "Delivery contract: mode=<mode>" line so the principle is stated before the
-# mode-specific mechanics, and so fm-spawn.sh still reads that line unchanged.
-# Every obligation here is applicability-scoped ("Where ..."), including the
-# real-application one: a tooling, documentation, or configuration change with no
-# user-facing surface has no running application to exercise, and an unconditional
-# demand would make the clause a completion gate that lies for that whole category.
-IFS= read -r -d '' VERIFY <<'EOF' || true
-Where the change has a user-facing surface, exercise it in the real running application before calling this done, not only in tests, and say what you exercised.
-A passing unit or integration suite is not evidence the behavior is right.
-Where the change could plausibly be timing-sensitive, exercise it under realistic latency rather than only on a fast local machine, and say what you used; this is a prompt to think about timing, not a hard gate on every trivial change.
-Where you are fixing a defect, reproduce it before the fix and prove it gone after, stating the method.
-For UI work, check a realistic desktop width and a narrow one, and be picky about alignment and fit.
-EOF
-VERIFY=${VERIFY%$'\n'}
-DOD_HEADING=${DOD%%$'\n'*}
-DOD_AFTER_HEADING=${DOD#*$'\n'}
-DOD_CONTRACT=${DOD_AFTER_HEADING%%$'\n'*}
-DOD_BODY=${DOD_AFTER_HEADING#*$'\n'}
-DOD="$DOD_HEADING
-$DOD_CONTRACT
-$VERIFY
-
-$DOD_BODY"
+DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH_NAME") || exit 1
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -506,6 +465,8 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+
+$INBOX_SECTION
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
