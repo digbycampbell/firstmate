@@ -2947,11 +2947,14 @@ fm_backend_herdr_presentation_order_lock_wait() {  # <lock-path>
       return 0
     fi
     if [ -z "${FM_LOCK_HELD_PID:-}" ]; then
+      # shellcheck disable=SC2034 # Read by sourcing callers, as above.
       FM_HERDR_PRESENTATION_LOCK_REFUSAL="the section could not be taken and no live process holds it"
       return 1
     fi
     now=$(date +%s)
     if [ "$((now - started))" -ge "$cap" ]; then
+      # shellcheck disable=SC2034 # Read by sourcing callers after this returns:
+      # bin/fm-spawn.sh prints it in its refusal, and tests assert on it.
       FM_HERDR_PRESENTATION_LOCK_REFUSAL="pid $FM_LOCK_HELD_PID still held it after ${cap}s"
       return 1
     fi
