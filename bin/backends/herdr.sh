@@ -2928,6 +2928,8 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
 #   - a live holder never finishes, bounded by
 #     FM_HERDR_PRESENTATION_LOCK_WAIT_SECS (default 300) so a deadlock surfaces
 #     as a named refusal instead of hanging forever.
+# shellcheck disable=SC2034 # Read by sourcing callers after the wait returns:
+# bin/fm-spawn.sh prints it in its refusal, and tests assert on it.
 FM_HERDR_PRESENTATION_LOCK_REFUSAL=
 fm_backend_herdr_presentation_order_lock_wait() {  # <lock-path>
   local lock=$1 cap started now

@@ -4626,6 +4626,9 @@ presentation_lock_start_holder() {  # <lock> <secs>
     sleep "$2"
     fm_lock_release "$1"
   ' "$ROOT" "$lock" "$secs" "$ready" &
+  # shellcheck disable=SC2031 # The assignment is in this function's own body,
+  # not a subshell; the caller reads it directly after the call, and the
+  # liveness assertion below would fail loudly if the pid were ever lost.
   PRES_HOLDER_PID=$!
   while [ ! -e "$ready" ] && [ "$waited" -lt 200 ]; do
     sleep 0.05
