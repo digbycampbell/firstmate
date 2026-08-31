@@ -1866,6 +1866,20 @@ cleanup_run() {
 
 trap cleanup_run EXIT
 
+# The containment boundary is a hard dependency, never an optional enhancement:
+# a runner that silently ran tests uncontained is exactly the 2026-08-31 defect.
+# Refuse loudly and name the missing file, so an incomplete copy of this program
+# is a clear diagnostic rather than a confusing downstream failure.
+if [ ! -f "$ROOT/bin/fm-test-sandbox-lib.sh" ]; then
+  printf 'fm-test-run: missing %s\n' "$ROOT/bin/fm-test-sandbox-lib.sh" >&2
+  printf 'fm-test-run: this runner cannot contain tests without it, and running them uncontained is how the suite wrote into a live firstmate home. If you copied this runner somewhere, copy bin/fm-test-sandbox-lib.sh and bin/fm-home-guard-lib.sh alongside it.\n' >&2
+  exit 1
+fi
+# shellcheck source=bin/fm-test-sandbox-lib.sh
+. "$ROOT/bin/fm-test-sandbox-lib.sh"
+
+RUN_STARTED_ISO=$(now_iso)
+RUN_STARTED_MS=$(now_ms)
 RUN_ID="fm-test-run-${RUN_STARTED_MS}-$$"
 TOTAL=0
 FAILED=0
@@ -1942,27 +1956,33 @@ record_script_result() {
 # positive, a script that outruns it is terminated and reported as exit 124: a
 # hung script must become a bounded failure rather than an unbounded suite,
 # because an unbounded suite is what silently outruns its caller's budget.
-run_script_bounded() {  # <script> <out> <stream> <id>
-  local script=$1 out=$2 stream=$3 id=$4
+run_script_bounded() {  # <sandbox> <script> <out> <stream> <id>
+  local sandbox=$1 script=$2 out=$3 stream=$4 id=$5
   local rc
   : "$id"
   set +e
+  # Containment boundary: see bin/fm-test-sandbox-lib.sh for what is enforced
+  # and what was measured and rejected. A script that reaches a firstmate home
+  # it does not own is refused at the point of resolution and exits 99
+  # (bin/fm-home-guard-lib.sh), so containment failures arrive as ordinary test
+  # failures naming the home.
+  local -a FM_TEST_SANDBOX_ARGV=()
+  mkdir -p "$sandbox"
+  cd "$ROOT" || return 1
+  fm_test_sandbox_argv "$sandbox" "$script" || return 1
   if [ "$stream" -eq 1 ]; then
     if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
-      # Expansion is intentionally deferred to the child bash passed to -c.
-      # shellcheck disable=SC2016
-      fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash -c \
-        'bash "$1" 2>&1 | tee "$2"; exit "${PIPESTATUS[0]}"' _ "$script" "$out"
-      rc=$?
+      fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" "${FM_TEST_SANDBOX_ARGV[@]}" 2>&1 | tee "$out"
+      rc=${PIPESTATUS[0]}
     else
-      bash "$script" 2>&1 | tee "$out"
+      "${FM_TEST_SANDBOX_ARGV[@]}" 2>&1 | tee "$out"
       rc=${PIPESTATUS[0]}
     fi
   elif [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
-    fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash "$script" >"$out" 2>&1
+    fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" "${FM_TEST_SANDBOX_ARGV[@]}" >"$out" 2>&1
     rc=$?
   else
-    bash "$script" >"$out" 2>&1
+    "${FM_TEST_SANDBOX_ARGV[@]}" >"$out" 2>&1
     rc=$?
   fi
   if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
@@ -1987,8 +2007,11 @@ run_one_serial() {
     "$begin_iso" "$script" "$family" "$expected"
 
   set +e
-  # Stream live output while retaining a copy for gate-skip detection.
-  run_script_bounded "$script" "$out" 1 "s$TOTAL"
+  # Contained run, streamed live. The serial path is the DEFAULT path, so it
+  # gets exactly the same boundary as --jobs: before this it ran with the
+  # caller's whole environment and cwd, which is how an ambient
+  # FM_STATE_OVERRIDE steered real scripts into the live firstmate home.
+  run_script_bounded "$RUN_TMP/s$TOTAL" "$script" "$out" 1 "s$TOTAL"
   rc=$?
   set -e
   : "${rc:=1}"
@@ -2087,14 +2110,10 @@ else
     (
       trap - EXIT HUP INT TERM
       set +e
-      export TMPDIR="$work/tmp"
-      export TMP="$work/tmp"
-      unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
-        FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
-      cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
-      set +e
-      run_script_bounded "$script" "$work/output" 0 "w$worker_n"
+      # Same single owner as the serial path: clearing a remembered list of
+      # variables here was the previous defence and it covered only this branch.
+      run_script_bounded "$work" "$script" "$work/output" 0 "w$worker_n"
       rc=$?
       set -e
       end_ms=$(now_ms)

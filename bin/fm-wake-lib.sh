@@ -1847,3 +1847,25 @@ EOF
 
   return 0
 }
+
+# Sandbox boundary. Inert outside the behavior suite; see
+# bin/fm-home-guard-lib.sh for why the check belongs at resolution time.
+#
+# Sourced defensively, and with no subprocess. Several fixtures copy an explicit
+# SUBSET of bin/ into a temporary tree (tests/fm-turnend-guard.test.sh is the
+# standing example), so this file can legitimately load from a directory that
+# holds no guard. A hard source there fails and prints to stderr, which by
+# itself breaks any test asserting a silent run. Absence is safe: the guard only
+# ever acts inside the behavior suite's sandbox, and the real bin/ always ships
+# it - tests/fm-test-sandbox.test.sh proves every home-resolving script still
+# refuses a foreign home, so a genuinely missing guard fails loudly there.
+_fm_home_guard_dir=${BASH_SOURCE[0]%/*}
+[ "$_fm_home_guard_dir" = "${BASH_SOURCE[0]}" ] && _fm_home_guard_dir=.
+if [ -f "$_fm_home_guard_dir/fm-home-guard-lib.sh" ]; then
+  # shellcheck source=bin/fm-home-guard-lib.sh
+  . "$_fm_home_guard_dir/fm-home-guard-lib.sh"
+fi
+unset _fm_home_guard_dir
+if declare -F fm_home_guard_assert >/dev/null 2>&1; then
+  fm_home_guard_assert "${STATE:-}"
+fi

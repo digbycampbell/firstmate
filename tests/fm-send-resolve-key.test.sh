@@ -595,6 +595,71 @@ test_flag_misuse_refuses() {
   pass "fm-send --resolve-key: --key, empty message, explicit targets, and malformed keys refuse loudly"
 }
 
+# A reserved decision-key namespace (bin/fm-classify-lib.sh) may only be opened
+# or closed by a note that begins with that namespace's own "<namespace>...:"
+# token. fm-send's close is always "answered: <note>", which can never begin
+# with it - so before this refusal, answering a pending-reply-* decision was
+# accepted, delivered, appended, and exit 0, while the decision stayed open
+# forever. Six real ones had to be closed by hand. The bar is that it never
+# silently no-ops: it must either close correctly or refuse loudly.
+test_reserved_key_refuses_before_send() {
+  local dir fb log home rc err out
+  dir="$TMP_ROOT/reserved"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/err.log"
+  home=$(setup_home reserved)
+  fm_write_meta "$home/state/t10.meta" "window=sess:fm-t10" "kind=ship"
+  # The exact line bin/fm-pending-reply-lib.sh escalates with.
+  printf 'blocked [key=pending-reply-abc]: pending-reply-missed: task=t10 pending-reply-id=abc request=route this\n' \
+    > "$home/state/t10.status"
+
+  out=$(drain_out "$home")
+  printf '%s' "$out" | grep -F '[key=pending-reply-abc]' >/dev/null \
+    || fail "precondition: the reserved-key blocker should list as open before the answer"
+
+  : > "$log"
+  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" t10 --resolve-key pending-reply-abc "the report arrived, closing it" >/dev/null 2>"$err"; rc=$?
+
+  [ "$rc" -ne 0 ] || fail "answering a reserved-key decision should refuse, not report success"
+  assert_contains "$(cat "$err")" "reserved decision-key namespace" \
+    "the refusal should say the namespace is reserved"
+  assert_contains "$(cat "$err")" "bin/fm-classify-lib.sh" \
+    "the refusal should name the library that owns the rule"
+  [ ! -s "$log" ] || fail "a refused reserved-key answer still delivered text: $(cat "$log")"
+  if grep -F 'resolved' "$home/state/t10.status" >/dev/null; then
+    fail "a refused reserved-key answer still appended a closing line: $(cat "$home/state/t10.status")"
+  fi
+
+  # The discriminator this whole case exists for: had fm-send accepted it, the
+  # decision would still be open afterwards. Assert the open set is unchanged,
+  # so a future "fix" that accepts the key and no-ops cannot pass this test.
+  out=$(drain_out "$home")
+  printf '%s' "$out" | grep -F '[key=pending-reply-abc]' >/dev/null \
+    || fail "the reserved-key decision vanished from the open set without its owner closing it"
+  pass "fm-send --resolve-key: a reserved-key namespace refuses loudly instead of silently closing nothing"
+}
+
+# The refusal must be scoped to the reserved namespace, or it would break every
+# ordinary keyed answer. Same home, same command, one character of key
+# difference.
+test_reserved_refusal_does_not_catch_ordinary_keys() {
+  local dir fb log home rc out
+  dir="$TMP_ROOT/reserved-control"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home reserved-control)
+  fm_write_meta "$home/state/t11.meta" "window=sess:fm-t11" "kind=ship"
+  printf 'blocked [key=pending-reply]: not the reserved namespace, no trailing dash\n' \
+    > "$home/state/t11.status"
+
+  run_send "$fb" "$home" "$log" t11 --resolve-key pending-reply "answered"; rc=$?
+  expect_code 0 "$rc" "a key that only resembles the reserved prefix should still be answerable"
+  out=$(drain_out "$home")
+  if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
+    fail "an ordinary key was left open by the reserved-namespace refusal: $out"
+  fi
+  pass "fm-send --resolve-key: a key that merely resembles a reserved namespace is unaffected"
+}
+
 test_answer_send_closes_open_decision
 test_note_position_key_folds_under_its_slug
 test_answer_close_is_self_announced
@@ -610,3 +675,5 @@ test_remote_secondmate_answer_closes_locally
 test_remote_reply_corr_tag_does_not_block_resolve_key
 test_remote_transport_failure_does_not_close
 test_flag_misuse_refuses
+test_reserved_key_refuses_before_send
+test_reserved_refusal_does_not_catch_ordinary_keys
