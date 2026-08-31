@@ -103,8 +103,9 @@ pass "a script steered onto a foreign home by ambient FM_STATE_OVERRIDE is refus
 
 # Every script that resolves a firstmate home from FM_STATE_OVERRIDE/FM_HOME
 # must carry the guard, or the boundary is only as good as whichever scripts
-# someone remembered. Each one is RUN against a home it does not own; nothing
-# here reads a script's source to decide.
+# someone remembered. Each one is RUN against a home it does not own: the grep
+# below only ENUMERATES candidates, and every verdict comes from executing the
+# script and observing what it did to a foreign home, never from source bytes.
 #
 # Two acceptable outcomes, because a script whose no-argument path is a usage
 # message or an inert no-op exits before it resolves anything: it must either
