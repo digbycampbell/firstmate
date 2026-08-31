@@ -213,20 +213,55 @@ pass "the guard is inert when FM_TEST_SANDBOX is unset, so production runs are u
 # --- the worktree pool ------------------------------------------------------
 #
 # `treehouse` resolves its pool from the working directory, so a test that
-# reaches the real binary operates on the live pool that holds this repo's
-# worktrees - which on 2026-08-31 lost two leases and handed an occupied slot
-# out three times. Prevented, not detected: there is no way to attribute a pool
-# mutation after the fact either.
+# reaches the real binary unredirected operates on the live pool holding this
+# repo's worktrees - which on 2026-08-31 lost two leases and handed an occupied
+# slot out three times. Prevented, not detected: a pool mutation cannot be
+# attributed after the fact either.
+#
+# The boundary is "never a pool this run does not own", not "never treehouse":
+# bin/fm-spawn.sh really does run `treehouse get`, so the real binary must stay
+# usable or those spawn paths lose their coverage entirely.
 
-rc=$(run_fixture treehouse-real 'out=$(treehouse list 2>&1); trc=$?
-[ "$trc" = "97" ] || { echo "not ok - real treehouse was not refused (exit $trc)"; exit 1; }
-case "$out" in *"refusing real"*) ;; *) echo "not ok - refusal did not explain itself: $out"; exit 1 ;; esac
-echo "ok - real treehouse refused"')
-[ "$rc" = "0" ] || {
-  cat "$TMP_ROOT/treehouse-real.out" >&2
-  fail "the real treehouse binary was reachable from a test"
-}
-pass "a test reaching the real treehouse binary is refused loudly"
+# Drive fm_test_sandbox_shim directly with a stand-in "real" treehouse, so the
+# shim's own logic is under test rather than whatever this machine has
+# installed. The shim resolves the real binary once at install time (baking the
+# path in, so a later PATH change cannot swap it), which is why the stand-in has
+# to be on PATH here at install time.
+SHIM_DIR="$TMP_ROOT/shim-unit"
+SHIM_POOL="$TMP_ROOT/shim-unit-pool"
+SHIM_FAKEBIN="$TMP_ROOT/shim-unit-realbin"
+mkdir -p "$SHIM_FAKEBIN"
+cat > "$SHIM_FAKEBIN/treehouse" <<'FAKE'
+#!/usr/bin/env bash
+printf 'ROOT=%s ARGS=%s\n' "${TREEHOUSE_ROOT:-unset}" "$*"
+FAKE
+chmod +x "$SHIM_FAKEBIN/treehouse"
+( PATH="$SHIM_FAKEBIN:$PATH"; . "$ROOT/bin/fm-test-sandbox-lib.sh"; fm_test_sandbox_shim "$SHIM_DIR" "$SHIM_POOL" ) \
+  || fail "the shim could not be installed with a real treehouse present"
+[ -x "$SHIM_DIR/treehouse" ] || fail "no treehouse shim was installed despite a real binary being present"
+
+# Redirected, not refused: the real binary runs, against the sandbox pool.
+out=$(FM_TEST_SANDBOX="$TMP_ROOT" FM_TEST_SCRIPT=unit "$SHIM_DIR/treehouse" get 2>&1) && trc=0 || trc=$?
+[ "$trc" = 0 ] || fail "an ordinary treehouse call was not allowed through (exit $trc): $out"
+case "$out" in
+  "ROOT=$SHIM_POOL ARGS=get") ;;
+  *) fail "treehouse was not redirected into the sandbox pool: $out" ;;
+esac
+pass "a real treehouse is redirected into the sandbox's own pool, keeping the real binary usable"
+
+# The one remaining route to the live pool is an explicit --root, which beats
+# TREEHOUSE_ROOT. It must refuse loudly, and the real binary must not run.
+OUTSIDE="$TMP_ROOT/outside-pool"; mkdir -p "$OUTSIDE"
+out=$(FM_TEST_SANDBOX="$SHIM_POOL" FM_TEST_SCRIPT=unit "$SHIM_DIR/treehouse" --root "$OUTSIDE" get 2>&1) && trc=0 || trc=$?
+[ "$trc" = 97 ] || fail "an explicit --root escape was not refused (exit $trc): $out"
+case "$out" in
+  *ROOT=*) fail "the real binary ran against a pool outside the sandbox: $out" ;;
+esac
+case "$out" in
+  *"outside this test sandbox"*) ;;
+  *) fail "the --root refusal did not explain itself: $out" ;;
+esac
+pass "an explicit --root outside the sandbox is refused loudly, so the live pool stays unreachable"
 
 # A test that installs its own fake still wins, which is what every test that
 # legitimately exercises the pool already does.
@@ -237,9 +272,9 @@ out=$(PATH="$fb:$PATH" treehouse list 2>&1)
 echo "ok - test fake wins"')
 [ "$rc" = "0" ] || {
   cat "$TMP_ROOT/treehouse-fake.out" >&2
-  fail "a test's own treehouse fake did not take precedence over the refusing shim"
+  fail "a test's own treehouse fake did not take precedence over the shim"
 }
-pass "a test's own fake still takes precedence over the refusing shim"
+pass "a test's own fake still takes precedence over the shim"
 
 # --- the environment hole that caused the incident --------------------------
 

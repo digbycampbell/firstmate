@@ -1516,6 +1516,15 @@ FAMILIES_TSV="$RUN_TMP/families.tsv"
 : >"$RECORDS"
 trap 'rm -rf "$RUN_TMP"' EXIT
 
+# The containment boundary is a hard dependency, never an optional enhancement:
+# a runner that silently ran tests uncontained is exactly the 2026-08-31 defect.
+# Refuse loudly and name the missing file, so an incomplete copy of this program
+# is a clear diagnostic rather than a confusing downstream failure.
+if [ ! -f "$ROOT/bin/fm-test-sandbox-lib.sh" ]; then
+  printf 'fm-test-run: missing %s\n' "$ROOT/bin/fm-test-sandbox-lib.sh" >&2
+  printf 'fm-test-run: this runner cannot contain tests without it, and running them uncontained is how the suite wrote into a live firstmate home. If you copied this runner somewhere, copy bin/fm-test-sandbox-lib.sh and bin/fm-home-guard-lib.sh alongside it.\n' >&2
+  exit 1
+fi
 # shellcheck source=bin/fm-test-sandbox-lib.sh
 . "$ROOT/bin/fm-test-sandbox-lib.sh"
 

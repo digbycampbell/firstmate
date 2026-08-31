@@ -28,8 +28,27 @@ fm_home_guard_assert() {
 
   # Resolve without requiring the directory to exist yet: scripts routinely
   # mkdir their state dir after this point.
-  parent=$(CDPATH='' cd -- "$(dirname -- "$state")" 2>/dev/null && pwd -P) || return 0
-  resolved="$parent/$(basename -- "$state")"
+  #
+  # Split the path with parameter expansion rather than `dirname`/`basename`.
+  # This guard is sourced by libraries that real scripts load near the top of
+  # their startup, so every external command it runs is a side effect imposed on
+  # the whole fleet. tests/fm-pr-check-security.test.sh stubs `basename` as a
+  # timing gate to prove a migration excludes an older watcher BEFORE it does any
+  # other work; a `basename` call in here opened that gate early and made the
+  # migration look racy when it was not. A guard must not perturb what it
+  # watches, so it spawns no process.
+  local dirpart basepart
+  while [ "${state%/}" != "$state" ] && [ "$state" != / ]; do state=${state%/}; done
+  basepart=${state##*/}
+  if [ "$state" = "$basepart" ]; then
+    dirpart=.
+  else
+    dirpart=${state%/*}
+    [ -n "$dirpart" ] || dirpart=/
+  fi
+  parent=$(CDPATH='' cd -- "$dirpart" 2>/dev/null && pwd -P) || return 0
+  [ "$parent" = / ] && parent=""
+  resolved="$parent/$basepart"
 
   case "$resolved/" in
     "$sandbox"/*) return 0 ;;

@@ -61,43 +61,87 @@ fm_test_sandbox_cleared_vars() {
   done < <(compgen -e)
 }
 
-# fm_test_sandbox_shim <dir>: build the refusing-PATH shim directory.
-# The shim refuses every command that mutates shared machine state a test has
-# no business touching. It is deliberately first in PATH and deliberately
-# beatable by a test's own fake, which is what a correctly written test does.
-# Commands the shim refuses. A list rather than a literal because the set is
-# expected to grow: any command that mutates shared machine state a test has no
-# business touching belongs here.
-FM_TEST_SANDBOX_REFUSED_COMMANDS="treehouse"
-
+# fm_test_sandbox_shim <dir> <pool>: build the redirecting-PATH shim directory.
+#
+# The boundary being enforced is "never operate on a worktree pool this run does
+# not own" - NOT "never run treehouse". Those are different, and the difference
+# matters: bin/fm-spawn.sh sends a literal `treehouse get` into the spawned
+# pane and waits 60s for its cwd to move into a worktree, so a shim that simply
+# refused turned four real-harness spawn tests into 60s timeouts while proving
+# nothing. Those tests were genuinely consuming LIVE pool leases, which is the
+# 2026-08-31 pool incident, so they must keep exercising the real binary - just
+# never against the real pool.
+#
+# So the shim redirects rather than refuses: it runs the real treehouse with
+# TREEHOUSE_ROOT pointed at a pool inside this sandbox, and refuses loudly only
+# when an explicit --root would escape that sandbox (an explicit --root beats
+# TREEHOUSE_ROOT, so it is the one way left to reach the live pool).
+#
+# It is installed ONLY when a real treehouse exists, so that on a machine
+# without one - standard CI - absence stays absence and every caller's
+# not-found fallback behaves exactly as it does today.
 fm_test_sandbox_shim() {
-  local dir=$1 cmd
-  mkdir -p "$dir" || return 1
-  for cmd in $FM_TEST_SANDBOX_REFUSED_COMMANDS; do
-    cat > "$dir/$cmd" <<SHIM || return 1
+  local dir=$1 pool=$2 real
+  mkdir -p "$dir" "$pool" || return 1
+  real=$(PATH=${PATH#"$dir":} command -v treehouse 2>/dev/null) || real=""
+  [ -n "$real" ] || return 0
+  cat > "$dir/treehouse" <<SHIM || return 1
 #!/usr/bin/env bash
 # Installed by bin/fm-test-sandbox-lib.sh. See that file's header.
-printf 'fm-test-sandbox: refusing real \`%s\` in \${FM_TEST_SCRIPT:-a test}: it would operate on the live worktree pool resolved from the current directory. Install a fake %s earlier in PATH.\\n' "$cmd" "$cmd" >&2
-exit 97
+set -u
+# Read at RUN time, never baked in: an install-time expansion is empty here,
+# which would turn an allow-glob into "/*" and match every absolute path.
+sandbox=\${FM_TEST_SANDBOX:-}
+pool='$pool'
+real='$real'
+
+# Only an explicit --root can still escape, because it beats TREEHOUSE_ROOT.
+want=""
+expect_value=0
+for arg in "\$@"; do
+  if [ "\$expect_value" = 1 ]; then
+    want=\$arg
+    expect_value=0
+    continue
+  fi
+  case "\$arg" in
+    --root) expect_value=1 ;;
+    --root=*) want=\${arg#--root=} ;;
+  esac
+done
+
+if [ -n "\$want" ]; then
+  resolved=\$(CDPATH='' cd -- "\$want" 2>/dev/null && pwd -P) || resolved=\$want
+  allowed=0
+  [ "\${resolved#"\$pool"}" != "\$resolved" ] && allowed=1
+  [ -n "\$sandbox" ] && [ "\${resolved#"\$sandbox"}" != "\$resolved" ] && allowed=1
+  if [ "\$allowed" != 1 ]; then
+    printf 'fm-test-sandbox: refusing \`treehouse --root %s\` in %s: that pool is outside this test sandbox, and operating on a live worktree pool is how the 2026-08-31 run lost two leases. Drop --root to use the sandbox pool.\n' \
+      "\$want" "\${FM_TEST_SCRIPT:-a test}" >&2
+    exit 97
+  fi
+fi
+
+export TREEHOUSE_ROOT="\$pool"
+exec "\$real" "\$@"
 SHIM
-    chmod 0755 "$dir/$cmd" || return 1
-  done
+  chmod 0755 "$dir/treehouse" || return 1
 }
 
 # fm_test_sandbox_exec <sandbox-root> <script> : run <script> contained.
 # Returns the script's exit status.
 fm_test_sandbox_exec() {
-  local root=$1 script=$2 shim="$1/shim" tmp="$1/tmp"
+  local root=$1 script=$2 shim="$1/shim" tmp="$1/tmp" pool="$1/pool"
   local -a clear=()
   local name
-  mkdir -p "$tmp" || return 1
+  mkdir -p "$tmp" "$pool" || return 1
   chmod 0700 "$tmp" || return 1
-  fm_test_sandbox_shim "$shim" || return 1
+  fm_test_sandbox_shim "$shim" "$pool" || return 1
   while IFS= read -r name; do
     [ -n "$name" ] && clear+=(-u "$name")
   done < <(fm_test_sandbox_cleared_vars)
   env ${clear[@]+"${clear[@]}"} \
-    TMPDIR="$tmp" TMP="$tmp" \
+    TMPDIR="$tmp" TMP="$tmp" TREEHOUSE_ROOT="$pool" \
     PATH="$shim:$PATH" \
     FM_TEST_SANDBOX="$root" FM_TEST_SCRIPT="$script" \
     FM_TEST_OWN_ROOT="${FM_TEST_OWN_ROOT:-$ROOT}" \

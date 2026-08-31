@@ -12,6 +12,19 @@ set -u
 
 RUNNER="$ROOT/bin/fm-test-run.sh"
 
+# The runner is not a single file: it sources its containment boundary, and it
+# refuses to run without it (deliberately - a runner silently running tests
+# uncontained is the 2026-08-31 defect). A fixture that copies the runner must
+# copy those libraries too, or it is not a faithful copy of the program.
+install_runner() {  # <dest-bin-dir>
+  local dest=$1
+  mkdir -p "$dest"
+  cp "$RUNNER" "$dest/fm-test-run.sh"
+  cp "$ROOT/bin/fm-test-sandbox-lib.sh" "$dest/fm-test-sandbox-lib.sh"
+  cp "$ROOT/bin/fm-home-guard-lib.sh" "$dest/fm-home-guard-lib.sh"
+  chmod +x "$dest/fm-test-run.sh"
+}
+
 assert_present "$RUNNER" "bin/fm-test-run.sh is missing"
 [ -x "$RUNNER" ] || fail "bin/fm-test-run.sh must be executable"
 
@@ -91,7 +104,7 @@ test_changed_file_selection_is_conservative() {
 init_changed_fixture_repo() {
   local repo=$1 script
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  install_runner "$repo/bin"
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-brief.test.sh \
@@ -506,7 +519,7 @@ test_jobs_parallel_scheduler_and_failure_propagation() {
   c=tests/fm-lint.test.sh
   d=tests/fm-supervision-instructions.test.sh
   mkdir -p "$repo/bin" "$repo/tests" "$evidence" "$fake_bin"
-  cp "$RUNNER" "$runner"
+  install_runner "$repo/bin"
   cat >"$fake_bin/stat" <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
