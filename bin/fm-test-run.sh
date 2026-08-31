@@ -1544,6 +1544,7 @@ run_one_contained() {
   case "$-" in *e*) had_errexit=1 ;; esac
   set +e
   mkdir -p "$sandbox"
+  cd "$ROOT" || { [ "$had_errexit" = 1 ] && set -e; return 1; }
   fm_test_sandbox_exec "$sandbox" "$script" >"$outfile" 2>&1
   rc=$?
   [ "$had_errexit" = 1 ] && set -e
@@ -1743,7 +1744,6 @@ else
       "$(now_iso)" "$script" "$family" "$expected"
     (
       set +e
-      cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
       # Same single owner as the serial path: clearing a remembered list of
       # variables here was the previous defence and it covered only this branch.

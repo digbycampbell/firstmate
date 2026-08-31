@@ -263,6 +263,18 @@ case "$out" in
 esac
 pass "an explicit --root outside the sandbox is refused loudly, so the live pool stays unreachable"
 
+# A lexical sibling of the sandbox pool that merely shares its path as a string
+# prefix (e.g. "$SHIM_POOL-evil") is not inside the pool and must be refused,
+# the same as any other outside root. This is the boundary a bare prefix test
+# would miss and a trailing-slash comparison catches.
+SIBLING="${SHIM_POOL}-evil"; mkdir -p "$SIBLING"
+out=$(FM_TEST_SANDBOX="$TMP_ROOT/no-such-sandbox" FM_TEST_SCRIPT=unit "$SHIM_DIR/treehouse" --root "$SIBLING" get 2>&1) && trc=0 || trc=$?
+[ "$trc" = 97 ] || fail "a sibling path sharing the pool as a string prefix was not refused (exit $trc): $out"
+case "$out" in
+  *ROOT=*) fail "the real binary ran against a sibling path outside the sandbox pool: $out" ;;
+esac
+pass "a lexical sibling of the sandbox pool sharing its path as a string prefix is refused, not misclassified as inside"
+
 # A test that installs its own fake still wins, which is what every test that
 # legitimately exercises the pool already does.
 rc=$(run_fixture treehouse-fake 'fb=$TMPDIR/fakebin; mkdir -p "$fb"

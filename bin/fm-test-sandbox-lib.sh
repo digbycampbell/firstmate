@@ -113,8 +113,14 @@ done
 if [ -n "\$want" ]; then
   resolved=\$(CDPATH='' cd -- "\$want" 2>/dev/null && pwd -P) || resolved=\$want
   allowed=0
-  [ "\${resolved#"\$pool"}" != "\$resolved" ] && allowed=1
-  [ -n "\$sandbox" ] && [ "\${resolved#"\$sandbox"}" != "\$resolved" ] && allowed=1
+  case "\$resolved/" in
+    "\$pool"/*) allowed=1 ;;
+  esac
+  if [ -n "\$sandbox" ]; then
+    case "\$resolved/" in
+      "\$sandbox"/*) allowed=1 ;;
+    esac
+  fi
   if [ "\$allowed" != 1 ]; then
     printf 'fm-test-sandbox: refusing \`treehouse --root %s\` in %s: that pool is outside this test sandbox, and operating on a live worktree pool is how the 2026-08-31 run lost two leases. Drop --root to use the sandbox pool.\n' \
       "\$want" "\${FM_TEST_SCRIPT:-a test}" >&2
