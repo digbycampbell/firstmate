@@ -134,9 +134,15 @@ SHIM
   chmod 0755 "$dir/treehouse" || return 1
 }
 
-# fm_test_sandbox_exec <sandbox-root> <script> : run <script> contained.
-# Returns the script's exit status.
-fm_test_sandbox_exec() {
+# fm_test_sandbox_argv <sandbox-root> <script> : prepare the sandbox and set
+# FM_TEST_SANDBOX_ARGV to the contained argv that runs <script>.
+#
+# The argv is exported separately from fm_test_sandbox_exec because the runner's
+# per-script bound (fm_run_timed, bin/fm-timeout-lib.sh) execs an external
+# command and so cannot call a shell function. A caller that needs a bound, a
+# pipeline, or both composes around this argv; fm_test_sandbox_exec is the
+# plain-call convenience over the same single owner.
+fm_test_sandbox_argv() {
   local root=$1 script=$2 shim="$1/shim" tmp="$1/tmp" pool="$1/pool"
   local -a clear=()
   local name
@@ -146,12 +152,20 @@ fm_test_sandbox_exec() {
   while IFS= read -r name; do
     [ -n "$name" ] && clear+=(-u "$name")
   done < <(fm_test_sandbox_cleared_vars)
-  env ${clear[@]+"${clear[@]}"} \
-    TMPDIR="$tmp" TMP="$tmp" TREEHOUSE_ROOT="$pool" \
-    PATH="$shim:$PATH" \
-    FM_TEST_SANDBOX="$root" FM_TEST_SCRIPT="$script" \
-    FM_TEST_OWN_ROOT="${FM_TEST_OWN_ROOT:-$ROOT}" \
-    bash "$script"
+  FM_TEST_SANDBOX_ARGV=(env ${clear[@]+"${clear[@]}"}
+    TMPDIR="$tmp" TMP="$tmp" TREEHOUSE_ROOT="$pool"
+    PATH="$shim:$PATH"
+    FM_TEST_SANDBOX="$root" FM_TEST_SCRIPT="$script"
+    FM_TEST_OWN_ROOT="${FM_TEST_OWN_ROOT:-$ROOT}"
+    bash "$script")
+}
+
+# fm_test_sandbox_exec <sandbox-root> <script> : run <script> contained.
+# Returns the script's exit status.
+fm_test_sandbox_exec() {
+  local -a FM_TEST_SANDBOX_ARGV=()
+  fm_test_sandbox_argv "$1" "$2" || return 1
+  "${FM_TEST_SANDBOX_ARGV[@]}"
 }
 
 # --- protected-root discovery ----------------------------------------------

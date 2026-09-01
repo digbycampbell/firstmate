@@ -3083,6 +3083,28 @@ test_composer_state_pi_separator_idle_is_empty() {
   pass "fm_backend_herdr_composer_state: a native idle Pi separator composer reads empty"
 }
 
+# A pi worker parked on an interactive prompt (permission dialog, question
+# menu, trust dialog) reports agent_status=blocked: it is waiting on a human
+# keystroke. The menu is drawn ABOVE the separator pair, so the composer region
+# itself is blank and structure alone looks like a free composer. Typing there
+# does not compose a message - the menu consumes the keys and Enter selects the
+# highlighted default, so the text is discarded and a decision nobody made is
+# recorded (issue #2797). Every "is it safe to type here?" consumer reads this
+# verdict: the away-mode injection guard (bin/fm-supervise-daemon.sh) and
+# fm-send's pre-type refusal both proceed ONLY on an affirmative `empty`.
+test_composer_state_pi_parked_prompt_is_not_empty() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-pi-parked-prompt"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf 'Should I keep going?\n  1. Yes, continue\n\x1b[7m  2. Stop, do not act\x1b[0m\n\x1b[0m\x1b[38;2;129;162;190m─────────────────────────────────────────────────────\x1b[0m\n\x1b[0m\x1b[7m \x1b[0m                                                    \n\x1b[0m\x1b[38;2;129;162;190m─────────────────────────────────────────────────────\x1b[0m\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"blocked"}}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state lab:w1:p2' "$ROOT" )
+  [ "$out" != empty ] \
+    || fail "a pi pane parked on a prompt must not report an affirmatively empty composer, got '$out'"
+  pass "fm_backend_herdr_composer_state: a blocked pi pane parked on a prompt is not an empty composer"
+}
+
 test_composer_state_pi_separator_real_text_is_pending() {
   local dir log resp fb out
   dir="$TMP_ROOT/composer-pi-separated-pending"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -3584,11 +3606,11 @@ test_send_text_submit_idle_native_pending_plus_rendered_busy_is_queued() {
 # --- the never-idle-native-state harness (real cursor on herdr) --------------
 # Measured live on cursor-agent 2026.08.11-e8db854 under herdr: `agent get`
 # reports a cursor pane `blocked` in EVERY state - idle, mid-turn, and after -
-# so the idle-baseline native path is structurally unreachable and every send
-# lands in the composer branch. Cursor's mid-turn composer row renders its own
+# so the idle-baseline native path is structurally unreachable and every typed
+# send lands in the composer branch. Cursor's mid-turn composer row renders its own
 # `Add a follow-up` placeholder beside a right-aligned `ctrl+c to stop`, so the
 # content verdict is `pending` on a composer holding no user text, and every
-# steer reported delivery unconfirmed on a message that had actually landed.
+# typed steer reported delivery unconfirmed on a message that had actually landed.
 # The bytes below are the real captures from that pane.
 
 # The idle capture: no busy token anywhere, which is the pre-Enter baseline.
@@ -4520,6 +4542,7 @@ test_composer_state_real_text_is_pending
 test_composer_state_popup_placeholder_fill_is_pending
 test_composer_state_unknown_on_capture_failure
 test_composer_state_unknown_when_no_composer_row_found
+test_composer_state_pi_parked_prompt_is_not_empty
 test_composer_state_pi_separator_idle_is_empty
 test_composer_state_pi_separator_real_text_is_pending
 test_composer_state_pi_incomplete_separator_below_stale_generic_is_unknown
@@ -4581,3 +4604,86 @@ test_wait_transition_stream_absorb_clears_then_timeout
 test_wait_transition_reader_failure_returns_2
 test_wait_transition_bad_ack_returns_2_and_cleans_up
 test_wait_transition_clean_timeout_returns_1
+
+# --- presentation-order serialization ---------------------------------------
+#
+# The guard asserts that one spawn at a time projects into a named session, NOT
+# that the section completes inside a wall-clock budget. Each case drives a REAL
+# lock through fm_lock_try_acquire with a real holder process, and each verifies
+# the holder is genuinely holding before it asserts anything: a fixture whose
+# holder quietly died would let the waiter acquire instantly and pass both cases
+# vacuously, which is exactly how the first draft of these tests fooled itself.
+
+# Start a real holder for <secs>. Sets PRES_HOLDER_PID. Must NOT run inside a
+# command substitution: the holder would be a child of a subshell that exits.
+presentation_lock_start_holder() {  # <lock> <secs>
+  local lock=$1 secs=$2 ready waited=0
+  ready="$TMP_ROOT/pres-ready.$RANDOM"
+  bash -c '
+    . "$0/bin/fm-wake-lib.sh"
+    fm_lock_try_acquire "$1" || exit 1
+    : > "$3"
+    sleep "$2"
+    fm_lock_release "$1"
+  ' "$ROOT" "$lock" "$secs" "$ready" &
+  # shellcheck disable=SC2031 # The assignment is in this function's own body,
+  # not a subshell; the caller reads it directly after the call, and the
+  # liveness assertion below would fail loudly if the pid were ever lost.
+  PRES_HOLDER_PID=$!
+  while [ ! -e "$ready" ] && [ "$waited" -lt 200 ]; do
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+  [ -e "$ready" ] || fail "fixture holder never took the presentation lock"
+  # Discriminator guard: prove the section is actually occupied by a live
+  # process, so a later acquire means serialization and not an empty lock.
+  [ -e "$lock" ] || fail "fixture holder reported ready but the lock is absent"
+  kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null \
+    || fail "fixture holder is not alive, so the wait would prove nothing"
+}
+
+test_presentation_lock_serializes_behind_a_slow_holder() {
+  local lock="$TMP_ROOT/pres-slow.lock" began elapsed rc
+  presentation_lock_start_holder "$lock" 15
+  began=$(date +%s)
+  ( . "$ROOT/bin/backends/herdr.sh"
+    FM_BACKEND_HERDR_ROOT="$ROOT" \
+      fm_backend_herdr_presentation_order_lock_wait "$lock" )
+  rc=$?
+  elapsed=$(( $(date +%s) - began ))
+  wait "$PRES_HOLDER_PID" 2>/dev/null || true
+  [ "$rc" -eq 0 ] \
+    || fail "a concurrent resume must serialize behind a slow holder, got rc=$rc"
+  # 15s is deliberately past the retired budget. That budget was nominally
+  # 50 x 0.1s = 5s but measured ~7.3s of wall clock, because each
+  # fm_lock_try_acquire costs ~0.047s on top of its sleep - and it shrinks as
+  # the machine loads, which is why it failed intermittently. Asserting the WAIT
+  # actually happened is what makes this fail on the old implementation instead
+  # of passing on an empty lock.
+  [ "$elapsed" -ge 12 ] \
+    || fail "the waiter returned after ${elapsed}s, so it never serialized behind the holder"
+  pass "presentation lock: serializes behind a holder slower than the retired 5s budget"
+}
+
+test_presentation_lock_still_refuses_a_stuck_holder() {
+  local lock="$TMP_ROOT/pres-stuck.lock" rc out
+  presentation_lock_start_holder "$lock" 120
+  # The deadlock backstop is what keeps this a guard rather than an open wait.
+  set +e
+  out=$( . "$ROOT/bin/backends/herdr.sh"
+    FM_BACKEND_HERDR_ROOT="$ROOT" FM_HERDR_PRESENTATION_LOCK_WAIT_SECS=2 \
+      fm_backend_herdr_presentation_order_lock_wait "$lock"
+    printf 'rc=%s refusal=%s' "$?" "$FM_HERDR_PRESENTATION_LOCK_REFUSAL" )
+  rc=$?
+  set -e
+  kill "$PRES_HOLDER_PID" 2>/dev/null || true
+  wait "$PRES_HOLDER_PID" 2>/dev/null || true
+  case "$out" in
+    "rc=1 refusal=pid "*"still held it after 2s") ;;
+    *) fail "a stuck holder must be refused and named, got '$out'" ;;
+  esac
+  pass "presentation lock: still refuses a holder that never finishes, naming it"
+}
+
+test_presentation_lock_serializes_behind_a_slow_holder
+test_presentation_lock_still_refuses_a_stuck_holder
