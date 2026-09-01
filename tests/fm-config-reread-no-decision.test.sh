@@ -96,6 +96,23 @@ run_send() {  # <fakebin> <home> <send-log> <args...>
     "$SEND" "$@" 2>/dev/null
 }
 
+# The steer body as the worker durably receives it. Upstream's inbox plane
+# makes the enqueued record the delivery, so the message text lands in
+# state/<id>.inbox/NNN.msg and only a constant doorbell line is typed into the
+# pane. Everything below that asserted on the typed pane now asserts on this
+# record body, which is the same bytes fm-send was handed.
+inbox_body() {  # <home> <task-id> [seq]
+  local rec="$1/state/$2.inbox/${3:-001}.msg"
+  [ -f "$rec" ] || fail "no durable inbox record at $rec"
+  sed -n '/^--$/,$p' "$rec" | sed '1d'
+}
+
+# The doorbell is what reaches the pane. Asserting it keeps a real delivery
+# discriminator here: a send that enqueued nothing, or never rang, still fails.
+assert_doorbell_rang() {  # <send-log> <msg>
+  assert_contains "$(cat "$1")" "Firstmate instruction waiting:" "$2"
+}
+
 # assert_expectation_count <home> <expected> <msg>
 assert_expectation_count() {
   local actual
@@ -120,8 +137,9 @@ test_no_reply_expected_arms_no_expectation() {
   run_send "$fb" "$home" "$log" sm1 --no-reply-expected "CONFIG_REREAD: /tmp/x"; rc=$?
   expect_code 0 "$rc" "a no-reply-expected nudge should be delivered normally"
 
-  sent=$(cat "$log")
+  sent=$(inbox_body "$home" sm1)
   assert_contains "$sent" "CONFIG_REREAD: /tmp/x" "the nudge text should reach the mate"
+  assert_doorbell_rang "$log" "the mate's pane should be rung about the waiting nudge"
   # Still MARKED: the mate must recognise an operational instruction from
   # firstmate. Suppressing the expectation must not silently demote the
   # message to ordinary chat.
@@ -152,7 +170,8 @@ test_ordinary_secondmate_request_still_arms_expectation() {
   run_send "$fb" "$home" "$log" sm2 "report back on the migration"; rc=$?
   expect_code 0 "$rc" "an ordinary marked request should be delivered"
 
-  sent=$(cat "$log")
+  sent=$(inbox_body "$home" sm2)
+  assert_doorbell_rang "$log" "an ordinary marked request should ring the mate's pane"
   printf '%s' "$sent" | grep -qE 'corr=[0-9a-f]{16}' \
     || fail "an ordinary marked request lost its correlation id: $sent"
   assert_expectation_count "$home" 1 \
@@ -177,7 +196,9 @@ test_no_reply_expected_refuses_with_resolve_key() {
   [ "$rc" -ne 0 ] || fail "--no-reply-expected with --resolve-key should refuse"
   assert_contains "$(cat "$err")" "cannot accompany --resolve-key" \
     "the refusal should name the contradiction"
-  [ ! -s "$log" ] || fail "a refused contradictory send still delivered text: $(cat "$log")"
+  [ ! -s "$log" ] || fail "a refused contradictory send still rang the pane: $(cat "$log")"
+  [ ! -e "$home/state/sm3.inbox/001.msg" ] \
+    || fail "a refused contradictory send still enqueued a durable steer"
   pass "fm-send --no-reply-expected: refuses alongside --resolve-key"
 }
 

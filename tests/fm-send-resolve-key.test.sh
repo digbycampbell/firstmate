@@ -179,7 +179,10 @@ test_note_position_key_folds_under_its_slug() {
   # The advertised slug is the slug --resolve-key accepts.
   run_send "$fb" "$home" "$log" t9 --resolve-key palette-review-gate "Fix both findings"; rc=$?
   expect_code 0 "$rc" "--resolve-key should accept the slug the listing advertised"
-  assert_contains "$(cat "$log")" "Fix both findings" "the answer text should reach the worker"
+  grep -qF "Fix both findings" "$home/state/t9.inbox/001.msg" \
+    || fail "the answer text should reach the worker's durable inbox record"
+  assert_contains "$(cat "$log")" "Firstmate instruction waiting" \
+    "the doorbell should be rung for the answer"
 
   # The historical wrong guess is now itself refused, before anything is sent.
   env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \

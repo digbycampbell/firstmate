@@ -283,6 +283,12 @@ strand_submodule_pin_via_spawn() {  # <seed-id>
     || fail "the first spawn did not move the pooled base across the moved submodule pin"
   [ "$(git -C "$POOL_DIR/ui" rev-parse HEAD)" = "$SUBPIN1" ] \
     || fail "the first spawn did not strand the submodule on the pin the old base recorded"
+  # The pool hands one slot to one task at a time, so the cases below model the
+  # NEXT task getting this slot after the seed was cleaned up. Without dropping
+  # the seed's record, the double-allocation guard would (correctly) refuse the
+  # slot as still held and the spawn would never reach the submodule inspection
+  # these cases exist to exercise (tests/fm-worktree-claim.test.sh).
+  rm -f "$HOME_DIR/state/$id.meta"
 }
 
 test_stale_submodule_pin_explains_itself() {
