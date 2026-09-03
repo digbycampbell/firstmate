@@ -157,7 +157,8 @@ as_percent() {  # <value>
 # missing and shift the ones after it. An auth problem is decided from
 # state.status/authStatus alone, never from figure presence, because quota-axi
 # keeps serving a provider's last-known percentRemaining even after its
-# credential expires (grok's live case: state.stale=true with real windows).
+# credential expires: an expired grok token has been observed served as
+# state.stale=true with real percentRemaining windows still attached.
 quota_axi_rows() {  # <json-file>
   jq -r '
     def pct(w): (w | if . == null then "-" else ((.percentRemaining // "-") | tostring) end);

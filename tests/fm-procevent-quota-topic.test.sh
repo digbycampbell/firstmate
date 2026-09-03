@@ -102,9 +102,11 @@ CLAUDE_EXPIRED='{"provider":"claude","state":{"status":"auth_required"},"windows
 GROK_OK='{"provider":"grok","state":{"status":"fresh"},"windows":[
   {"id":"credits","kind":"credits","percentRemaining":42},
   {"id":"product:grok_build","kind":"credits","percentRemaining":42}]}'
-# The live shape: quota-axi keeps serving grok'"'"'s last-known credits figure
+# An observed shape: quota-axi keeps serving grok's last-known credits figure
 # even once its token has expired, so this fixture pins the case that matters -
 # an auth problem must win over a cached percentage rather than render it stale.
+# The second credits-kind window also pins that the selector takes the `credits`
+# id rather than whichever credits window happens to come first.
 GROK_EXPIRED='{"provider":"grok","state":{"status":"stale","stale":true,
   "authStatus":"expired_refreshable","reason":"credentials_expired"},"windows":[
   {"id":"credits","kind":"credits","percentRemaining":15},
