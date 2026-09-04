@@ -89,8 +89,8 @@ export FAKE_KIMI_BODY="$TMP_ROOT/kimi.json"
 : > "$FAKE_TOPIC_CALLS"
 printf '{"ok":true}\n' > "$FAKE_SLACK_RESPONSE"
 
-quota_axi_doc() {  # <claude-json> <codex-json>
-  printf '{"providers":[%s,%s]}\n' "$1" "$2" > "$FAKE_QUOTA_AXI_JSON"
+quota_axi_doc() {  # <claude-json> <codex-json> <grok-json>
+  printf '{"providers":[%s,%s,%s]}\n' "$1" "$2" "$3" > "$FAKE_QUOTA_AXI_JSON"
 }
 CLAUDE_OK='{"provider":"claude","state":{"status":"fresh"},"windows":[
   {"id":"five_hour","kind":"session","percentRemaining":81},
@@ -99,6 +99,18 @@ CLAUDE_OK='{"provider":"claude","state":{"status":"fresh"},"windows":[
 CODEX_OK='{"provider":"codex","state":{"status":"fresh"},"windows":[
   {"id":"weekly","kind":"weekly","percentRemaining":40}]}'
 CLAUDE_EXPIRED='{"provider":"claude","state":{"status":"auth_required"},"windows":[]}'
+GROK_OK='{"provider":"grok","state":{"status":"fresh"},"windows":[
+  {"id":"credits","kind":"credits","percentRemaining":42},
+  {"id":"product:grok_build","kind":"credits","percentRemaining":42}]}'
+# An observed shape: quota-axi keeps serving grok's last-known credits figure
+# even once its token has expired, so this fixture pins the case that matters -
+# an auth problem must win over a cached percentage rather than render it stale.
+# The second credits-kind window also pins that the selector takes the `credits`
+# id rather than whichever credits window happens to come first.
+GROK_EXPIRED='{"provider":"grok","state":{"status":"stale","stale":true,
+  "authStatus":"expired_refreshable","reason":"credentials_expired"},"windows":[
+  {"id":"credits","kind":"credits","percentRemaining":15},
+  {"id":"product:grok_build","kind":"credits","percentRemaining":15}]}'
 
 kimi_ok() {
   cat > "$FAKE_KIMI_BODY" <<'JSON'
@@ -128,18 +140,19 @@ file_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 # --- the topic renders every provider from its own source -------------------
 
 home=$(new_home render)
-quota_axi_doc "$CLAUDE_OK" "$CODEX_OK"
+quota_axi_doc "$CLAUDE_OK" "$CODEX_OK" "$GROK_OK"
 kimi_ok
 out=$(FM_HOME="$home" "$ADAPTER" render) || fail "render failed"
-[ "$out" = 'Claude: session 81% week 93% // Codex: week 40% // Kimi: session 90% week 65%' ] \
+[ "$out" = 'Claude: session 81% week 93% // Codex: week 40% // Grok: credits 42% // Kimi: session 90% week 65%' ] \
   || fail "unexpected topic: $out"
 assert_contains "$out" 'Codex: week' "Codex renders weekly-only, because it publishes no session window"
 case "$out" in
   *'Codex: week 40% //'*) ;;
   *) fail "Codex must carry no invented session figure: $out" ;;
 esac
+assert_contains "$out" 'Grok: credits 42%' "Grok renders credits-only, because it publishes no session/weekly split"
 assert_grep 'usages' "$FAKE_CURL_ARGV" "Kimi is read from its own usage endpoint"
-pass "the topic renders Claude, Codex, and Kimi from their authoritative sources"
+pass "the topic renders Claude, Codex, Grok, and Kimi from their authoritative sources"
 
 # --- neither secret ever reaches argv ---------------------------------------
 
@@ -150,9 +163,14 @@ pass "both secrets are confined to curl's stdin"
 
 # --- a missing or broken provider renders honestly, never blank -------------
 
-quota_axi_doc "$CLAUDE_EXPIRED" "$CODEX_OK"
+quota_axi_doc "$CLAUDE_EXPIRED" "$CODEX_OK" "$GROK_EXPIRED"
 out=$(FM_HOME="$home" "$ADAPTER" render) || fail "render failed"
 assert_contains "$out" 'Claude: auth expired' "an unauthenticated provider says so"
+assert_contains "$out" 'Grok: auth expired' "an expired grok token says so"
+case "$out" in
+  *'Grok: credits'*) fail "grok must never render a cached figure once its token has expired: $out" ;;
+  *) ;;
+esac
 export FAKE_KIMI_CODE=401
 out=$(FM_HOME="$home" "$ADAPTER" render) || fail "render failed"
 assert_contains "$out" 'Kimi: auth expired' "a rejected Kimi key renders as expired"
@@ -176,14 +194,14 @@ pass "an absent or erroring provider renders its reason and is never blank"
 # --- the topic is written only when the rendered string changed -------------
 
 home=$(new_home apply)
-quota_axi_doc "$CLAUDE_OK" "$CODEX_OK"
+quota_axi_doc "$CLAUDE_OK" "$CODEX_OK" "$GROK_OK"
 kimi_ok
 : > "$FAKE_TOPIC_CALLS"
 out=$(FM_HOME="$home" "$ADAPTER" update) || fail "the first update should set the topic"
 assert_contains "$out" 'set: Claude: session 81%' "the first update reports what it set"
 [ "$(wc -l < "$FAKE_TOPIC_CALLS")" -eq 1 ] || fail "the first update should make one Slack call"
 assert_grep 'conversations.setTopic' "$FAKE_TOPIC_CALLS" "the topic is set through conversations.setTopic"
-[ "$(jq -r .topic "$FAKE_POST_BODY")" = 'Claude: session 81% week 93% // Codex: week 40% // Kimi: session 90% week 65%' ] \
+[ "$(jq -r .topic "$FAKE_POST_BODY")" = 'Claude: session 81% week 93% // Codex: week 40% // Grok: credits 42% // Kimi: session 90% week 65%' ] \
   || fail "the posted topic must be the rendered line"
 [ "$(file_mode "$(topic_file "$home")")" = 600 ] || fail "the applied-topic record must be private"
 
@@ -191,7 +209,7 @@ out=$(FM_HOME="$home" "$ADAPTER" update) || fail "a repeat update should succeed
 assert_contains "$out" 'unchanged:' "an unchanged quota picture reports no change"
 [ "$(wc -l < "$FAKE_TOPIC_CALLS")" -eq 1 ] || fail "an unchanged topic must make no Slack call"
 
-quota_axi_doc "${CLAUDE_OK/81/72}" "$CODEX_OK"
+quota_axi_doc "${CLAUDE_OK/81/72}" "$CODEX_OK" "$GROK_OK"
 out=$(FM_HOME="$home" "$ADAPTER" update) || fail "a changed update should set the topic"
 assert_contains "$out" 'set: Claude: session 72%' "a changed figure is written"
 [ "$(wc -l < "$FAKE_TOPIC_CALLS")" -eq 2 ] || fail "a changed topic makes exactly one more Slack call"
@@ -200,7 +218,7 @@ pass "the topic is written only when the rendered line changed"
 # --- a refused write is retried, never remembered as applied ----------------
 
 home=$(new_home refused)
-quota_axi_doc "$CLAUDE_OK" "$CODEX_OK"
+quota_axi_doc "$CLAUDE_OK" "$CODEX_OK" "$GROK_OK"
 kimi_ok
 printf '{"ok":false,"error":"ratelimited"}\n' > "$FAKE_SLACK_RESPONSE"
 : > "$FAKE_TOPIC_CALLS"
@@ -214,7 +232,7 @@ pass "a transient Slack refusal is retried rather than remembered"
 # --- a healthy run is silent; a fatal Slack error becomes one result --------
 
 home=$(new_home poll)
-quota_axi_doc "$CLAUDE_OK" "$CODEX_OK"
+quota_axi_doc "$CLAUDE_OK" "$CODEX_OK" "$GROK_OK"
 kimi_ok
 rc=0
 FM_HOME="$home" "$ADAPTER" poll "$home" > "$TMP_ROOT/poll.out" 2>/dev/null || rc=$?

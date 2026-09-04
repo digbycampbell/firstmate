@@ -785,9 +785,9 @@ It reads the local, gitignored `config/slack-quota-topic`, one `key=value` per l
 - `channel=<channel id or name>` is required; a name is resolved through `config/slack-channels`.
 - `interval=<seconds>` is optional, default 1200.
 
-The topic is one line, `Claude: session xx% week yy% // Codex: week yy% // Kimi: session xx% week yy%`, using remaining-percentage figures, and is written only when that rendered line changed.
-Codex publishes no session window at all, so it is rendered weekly-only rather than with an invented figure, and a provider that is absent, unauthenticated, or erroring renders its reason instead of a blank.
-Claude and Codex come from `quota-axi --json`; Kimi is read directly from the managed usage endpoint the Kimi CLI itself calls, because quota-axi's Kimi source reads only that CLI's OAuth store and goes dark when it expires.
+The topic is one line, `Claude: session xx% week yy% // Codex: week yy% // Grok: credits xx% // Kimi: session xx% week yy%`, using remaining-percentage figures, and is written only when that rendered line changed.
+Codex publishes no session window at all and Grok publishes only a credits window, so each is rendered with only the figure it actually carries rather than an invented one, and a provider that is absent, unauthenticated, or erroring renders its reason instead of a blank.
+Claude, Codex, and Grok come from `quota-axi --json`; Kimi is read directly from the managed usage endpoint the Kimi CLI itself calls, because quota-axi's Kimi source reads only that CLI's OAuth store and goes dark when it expires.
 That read uses `KIMI_API_QUOTA` from the home's gitignored `.env`, handled exactly like `SLACK_BOT_TOKEN`.
 A healthy run produces no wake at all; only a fatal Slack error becomes a captured result.
 Threshold-crossing quota alerts remain ordinary messages and are unaffected by this source.
