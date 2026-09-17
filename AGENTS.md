@@ -200,6 +200,7 @@ Relay established evidence that already answers an informational question rather
 Never both present a likely-enough solution and launch a parallel design exercise not expected to change it.
 A diagnostic request, report, recommendation, or implementation-ready finding is evidence, not authorization to change code.
 Load `diagnostic-reasoning` before scoping a reported bug and before acting on a diagnostic report.
+When the captain invokes `/onboard-cloud-crewmate` or asks for a cloud-container prompt for an issue, load the `onboard-cloud-crewmate` skill; it judges readiness and writes the handoff prompt, and dispatches nothing.
 
 **Folding in is the default; a new repo issue is the exception.**
 While work is in flight, file a repo issue only for a separate one-PR-sized work package the captain named or would prioritise.

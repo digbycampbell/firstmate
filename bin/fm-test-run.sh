@@ -1234,6 +1234,10 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       printf '%s\n' live-harness-optin
       ;;
+    .agents/skills/onboard-cloud-crewmate/SKILL.md|\
+    .agents/skills/onboard-cloud-crewmate/references/*)
+      printf '%s\n' pure-contract-unit
+      ;;
     .agents/skills/*/SKILL.md)
       printf '%s\n' pure-contract-unit
       ;;
