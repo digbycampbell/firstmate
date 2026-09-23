@@ -147,7 +147,15 @@ fm_pr_poll_publish_prepared || {
 # script's own result. See bin/fm-board.sh's own header for its fail-open
 # contract.
 if [ -n "$ISSUE" ]; then
-  "$FM_ROOT/bin/fm-board.sh" move "$ISSUE" "PR ready" >/dev/null 2>&1 || true
+  # Pass the PR's own repo so fm-board resolves the card directly through the
+  # issue's projectItems connection (a couple of GraphQL points) instead of
+  # page-scanning the whole board. The board is GitHub-only, and for GitHub the
+  # parsed PR path IS owner/repo, which is the issue's repo too.
+  board_repo=()
+  if [ "$PROVIDER" = github ] && [ -n "$PROJECT_PATH" ]; then
+    board_repo=(--repo "$PROJECT_PATH")
+  fi
+  "$FM_ROOT/bin/fm-board.sh" move "$ISSUE" "PR ready" "${board_repo[@]+"${board_repo[@]}"}" >/dev/null 2>&1 || true
 fi
 
 printf 'armed: state/%s.check.sh\n' "$ID"

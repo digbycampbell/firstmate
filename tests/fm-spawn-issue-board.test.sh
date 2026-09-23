@@ -6,14 +6,17 @@
 #
 # These drive a real ship spawn to completion with a fake tmux pane and a real
 # isolated git worktree (the same fixture shape as
-# tests/fm-spawn-dispatch-profile.test.sh), and a fake `gh-axi` so the REAL
+# tests/fm-spawn-dispatch-profile.test.sh), and a fake `gh` so the REAL
 # bin/fm-board.sh runs end to end against a mock board instead of a mocked
 # fm-board.sh - this is the actual wiring under test, not a stand-in for it.
+# fm-board resolves cards through `gh api graphql`; the fixture worktree has no
+# GitHub origin, so fm-spawn cannot derive a --repo and fm-board takes its
+# board page-scan path (the mock answers both paths regardless).
 #
 # Matrix:
-#   (a) --issue on a successful ship spawn calls gh-axi through fm-board.sh
-#   (b) omitting --issue makes no gh-axi call at all
-#   (c) a failing gh-axi (board failure) does not fail the spawn
+#   (a) --issue on a successful ship spawn moves the card through fm-board.sh
+#   (b) omitting --issue makes no board call at all
+#   (c) a failing board (graphql error) does not fail the spawn
 #   (d) --issue is refused (exit 1, before any spawn side effect) on --scout,
 #       --secondmate, and batch dispatch
 set -u
@@ -51,45 +54,49 @@ SH
   printf '%s\n' "$fakebin"
 }
 
-# gh-axi mock answering a minimal one-card board (project 2, owner digio-nz,
-# a single "Status" field with Inbox/Building options, one card for issue 42)
-# and logging every invocation. Args: fakebin fail-mode(0/1)
-add_gh_axi_mock() {
+# gh (graphql) mock answering a minimal one-card board (project 2, owner
+# digio-nz, a "Status" field with Inbox/Building options, one card for issue 42
+# in Inbox) and logging every invocation. It answers both fm-board lookup paths
+# (projectItems and the board page-scan) and the move mutation. Any other gh use
+# is a benign exit 0 so it never breaks the spawn. Args: fakebin fail-mode(0/1)
+add_gh_mock() {
   local fakebin=$1 fail=$2
-  cat > "$fakebin/gh-axi" <<SH
+  cat > "$fakebin/gh" <<SH
 #!/usr/bin/env bash
 log="\${FM_TEST_GH_AXI_LOG:-/dev/null}"
-printf '%s\n' "\$*" >> "\$log"
-if [ "$fail" = 1 ]; then
-  echo "error: simulated gh-axi failure" >&2
-  exit 1
-fi
-case "\$1 \$2" in
-  "project view") printf 'project:\n  id: PVT_TEST\n'; exit 0 ;;
-  "project field-list")
-    cat <<'EOF'
-count: 1 of 1 total
-fields[1]:
-  - id: PVTSSF_STATUS
-    name: Status
-    type: ProjectV2SingleSelectField
-    options: "Inbox:opt-inbox,Building:opt-building"
-EOF
-    exit 0 ;;
-  "project item-list")
-    cat <<'EOF'
-count: 1 of 1 total
-items[1]{id,title,type,number,repository,status}:
-  ITEM-42,"Test card",Issue,42,digio-nz/fcdispatch,Inbox
-help[2]:
-  Run \`gh-axi project item-add 2 --url <issue-or-pr-url> --owner digio-nz\` to add an item
-EOF
-    exit 0 ;;
-  "project item-edit") exit 0 ;;
-esac
-exit 9
+printf 'gh %s\n' "\$*" >> "\$log"
+fail=$fail
 SH
-  chmod +x "$fakebin/gh-axi"
+  cat >> "$fakebin/gh" <<'SH'
+[ "$1 $2" = "api graphql" ] || exit 0
+[ "$fail" != 1 ] || { echo "error: simulated gh failure" >&2; exit 1; }
+q=''; num=''
+for a in "$@"; do
+  case "$a" in query=*) q=$a ;; number=*) num=${a#number=} ;; esac
+done
+tab=$'\t'
+case "$q" in
+  *updateProjectV2ItemFieldValue*) exit 0 ;;
+  *projectItems*)
+    case "$num" in
+      42) printf 'item=ITEM-42%sPVT_TEST%sInbox\ncost=1\n' "$tab" "$tab" ;;
+      *)  printf 'cost=1\n' ;;
+    esac
+    exit 0 ;;
+  *"items(first:100"*)
+    printf 'page=false%s\n' "$tab"
+    printf 'item=ITEM-42%sIssue%s42%sdigio-nz/fcdispatch%sInbox\n' "$tab" "$tab" "$tab" "$tab"
+    printf 'cost=1\n'
+    exit 0 ;;
+  *)
+    printf 'project=PVT_TEST\nfield=PVTSSF_STATUS\n'
+    printf 'option=Inbox%sopt-inbox\n' "$tab"
+    printf 'option=Building%sopt-building\n' "$tab"
+    printf 'cost=1\n'
+    exit 0 ;;
+esac
+SH
+  chmod +x "$fakebin/gh"
 }
 
 make_spawn_case() {
@@ -130,20 +137,20 @@ run_ship_spawn() {
   run_spawn "$@" --mode no-mistakes --yolo off
 }
 
-# --- (a) --issue on a successful spawn calls gh-axi through fm-board.sh -----
+# --- (a) --issue on a successful spawn moves the card through fm-board.sh ---
 id=issue-yes-z1
 rec=$(make_spawn_case issue-yes "$id")
 read_case_record "$rec"
-add_gh_axi_mock "$FAKEBIN_DIR" 0
+add_gh_mock "$FAKEBIN_DIR" 0
 gh_log="$CASE_DIR/gh-axi.log"
 out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$gh_log" "$id" "$PROJ_DIR" --issue 42)
 status=$?
 expect_code 0 "$status" "issue-yes: spawn should succeed"
 assert_contains "$out" "spawned $id harness=claude" "issue-yes: spawn did not report success"
-[ -s "$gh_log" ] || fail "issue-yes: --issue did not trigger any gh-axi call"
-assert_grep "project item-edit --id ITEM-42" "$gh_log" \
-  "issue-yes: fm-board.sh did not move the discovered card"
-assert_grep "single-select-option-id opt-building" "$gh_log" \
+[ -s "$gh_log" ] || fail "issue-yes: --issue did not trigger any board call"
+assert_grep "updateProjectV2ItemFieldValue" "$gh_log" \
+  "issue-yes: fm-board.sh did not issue a move mutation"
+assert_grep "option=opt-building" "$gh_log" \
   "issue-yes: fm-board.sh did not target the Building option"
 pass "fm-spawn --issue triggers a real fm-board.sh move to Building on a successful ship spawn"
 
@@ -155,13 +162,14 @@ pass "fm-spawn --issue persists issue=<n> onto state/<id>.meta"
 id=issue-no-z1
 rec=$(make_spawn_case issue-no "$id")
 read_case_record "$rec"
-add_gh_axi_mock "$FAKEBIN_DIR" 0
+add_gh_mock "$FAKEBIN_DIR" 0
 gh_log="$CASE_DIR/gh-axi.log"
 out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$gh_log" "$id" "$PROJ_DIR")
 status=$?
 expect_code 0 "$status" "issue-no: spawn should succeed"
 assert_contains "$out" "spawned $id harness=claude" "issue-no: spawn did not report success"
-[ ! -s "$gh_log" ] || fail "issue-no: omitting --issue still called gh-axi (got: $(cat "$gh_log"))"
+[ -f "$gh_log" ] || : > "$gh_log"
+assert_no_grep "api graphql" "$gh_log" "issue-no: omitting --issue still made a board call"
 assert_no_grep "issue=" "$HOME_DIR/state/$id.meta" \
   "issue-no: omitting --issue still wrote an issue= line onto the task meta"
 pass "fm-spawn without --issue makes no board call and persists no issue= line"
@@ -170,7 +178,7 @@ pass "fm-spawn without --issue makes no board call and persists no issue= line"
 id=issue-fails-z1
 rec=$(make_spawn_case issue-fails "$id")
 read_case_record "$rec"
-add_gh_axi_mock "$FAKEBIN_DIR" 1
+add_gh_mock "$FAKEBIN_DIR" 1
 gh_log="$CASE_DIR/gh-axi.log"
 out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$gh_log" "$id" "$PROJ_DIR" --issue 42)
 status=$?

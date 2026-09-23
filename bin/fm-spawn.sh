@@ -3217,5 +3217,19 @@ echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW
 # unrecognized project - can never turn this spawn into a failure. See
 # bin/fm-board.sh's own header for its fail-open contract.
 if [ "$ISSUE_SET" -eq 1 ]; then
-  "$FM_ROOT/bin/fm-board.sh" move "$ISSUE_ARG" Building >/dev/null 2>&1 || true
+  # Pass the project's repo so fm-board resolves the card directly through the
+  # issue's projectItems connection instead of page-scanning the whole board.
+  # Derived read-only from the task worktree's origin; if it cannot be parsed to
+  # a single owner/name (empty WT, a GitLab subgroup path, an odd remote), the
+  # flag is simply omitted and fm-board falls back to its board scan.
+  board_repo=()
+  if [ -n "${WT:-}" ]; then
+    board_repo_slug=$(git -C "$WT" remote get-url origin 2>/dev/null \
+      | sed -E 's#^(git@[^:]+:|ssh://[^/]+/|https?://[^/]+/)##; s#\.git$##')
+    case "$board_repo_slug" in
+      */*/*|'') : ;;
+      */*) board_repo=(--repo "$board_repo_slug") ;;
+    esac
+  fi
+  "$FM_ROOT/bin/fm-board.sh" move "$ISSUE_ARG" Building "${board_repo[@]+"${board_repo[@]}"}" >/dev/null 2>&1 || true
 fi
