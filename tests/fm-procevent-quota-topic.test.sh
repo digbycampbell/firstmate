@@ -100,7 +100,7 @@ CODEX_OK='{"provider":"codex","state":{"status":"fresh"},"windows":[
   {"id":"weekly","kind":"weekly","percentRemaining":40}]}'
 CLAUDE_EXPIRED='{"provider":"claude","state":{"status":"auth_required"},"windows":[]}'
 GROK_OK='{"provider":"grok","state":{"status":"fresh"},"windows":[
-  {"id":"credits","kind":"credits","percentRemaining":42},
+  {"id":"credits","label":"week","kind":"weekly","percentRemaining":42},
   {"id":"product:grok_build","kind":"credits","percentRemaining":42}]}'
 # An observed shape: quota-axi keeps serving grok's last-known credits figure
 # even once its token has expired, so this fixture pins the case that matters -

@@ -169,7 +169,7 @@ quota_axi_rows() {  # <json-file>
         ($prov.windows // []) as $w
         | (pct($w | map(select(.kind == "session")) | first)) as $session
         | (pct($w | map(select(.kind == "weekly")) | first)) as $week
-        | (pct($w | map(select(.kind == "credits" and .id == "credits")) | first)) as $credits
+        | (pct($w | map(select(.id == "credits")) | first)) as $credits
         | ($prov.state.status // "") as $status
         | ($prov.state.authStatus // "") as $authStatus
         | "\($p) \($session) \($week) \($credits) " +
