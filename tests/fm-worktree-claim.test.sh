@@ -15,8 +15,8 @@
 # worktree in this home.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
@@ -61,8 +61,7 @@ make_case() {
 
 seed_brief() {
   local id=$1
-  mkdir -p "$CASE_HOME/data/$id"
-  printf 'brief for %s\n' "$id" > "$CASE_HOME/data/$id/brief.md"
+  fm_test_spawn_brief "$CASE_HOME" "$id"
 }
 
 run_spawn() {

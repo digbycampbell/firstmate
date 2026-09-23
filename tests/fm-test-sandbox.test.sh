@@ -38,6 +38,9 @@ build_world() {
   mkdir -p "$PRIMARY"
   cp -R "$ROOT/bin" "$PRIMARY/bin"
   cp "$ROOT/AGENTS.md" "$PRIMARY/AGENTS.md"
+  # The runner sources this per suite for fixture Git isolation.
+  mkdir -p "$PRIMARY/tests"
+  cp "$ROOT/tests/git-config-helpers.sh" "$PRIMARY/tests/git-config-helpers.sh"
   git -C "$PRIMARY" init -q
   git -C "$PRIMARY" config user.email fm-test@example.invalid
   git -C "$PRIMARY" config user.name 'fm test'
