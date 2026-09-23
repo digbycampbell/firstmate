@@ -238,8 +238,12 @@ add_gh_mock_outcome_read_fails() {
 # and answers its own view state from FM_TEST_GH_MERGE_STATE (default open, so a
 # case must arrange REST to prove the outcome; the last-resort gh-axi view can
 # only prove a landed merge). Args: case_dir head_sha
+# The GraphQL budget runs out between the pre-merge live-head read and the
+# post-merge queue-aware read: the live-head gate still reads the pull request,
+# and only the outcome read that the REST fallback stands behind is rate limited.
 add_gh_mocks_graphql_down() {
   local case_dir=$1 head=$2
+  write_github_live_json "$case_dir" "$head"
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
@@ -259,6 +263,7 @@ cdir=\$(dirname "\$FM_TEST_GH_LOG")
 case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
+      *statusCheckRollup*) cat "\$FM_TEST_GH_VIEW_JSON"; exit 0 ;;
       *headRefOid*) printf '%s\n' '$head'; exit 0 ;;
     esac
     ;;
@@ -1002,7 +1007,7 @@ SH
   expect_code 1 "$rc" "github-unmerged-fallback: an unproved merge must fail"
   assert_grep 'pr view 73 --repo example/repo' "$case_dir/gh-axi.log" \
     "github-unmerged-fallback: the fallback view was not consulted"
-  assert_grep 'the gh read failed and the gh-axi view could not prove the outcome either' \
+  assert_grep 'the gh read failed, the REST read could not prove a landed or queued outcome, and the gh-axi view could not prove the outcome either' \
     "$case_dir/stderr" \
     "github-unmerged-fallback: an unmerged fallback was treated as a readable outcome"
   assert_no_grep 'GitHub merge outcome was not successful' "$case_dir/stderr" \
@@ -1287,7 +1292,7 @@ test_github_rest_fallback_proves_enqueue_when_graphql_rate_limited() {
   : > "$case_dir/gh.log"
 
   set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/59 -- --auto --merge \
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/59 --attended-override -- --auto --merge \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e

@@ -207,10 +207,7 @@ init_primary_and_linked_worktree() {
   fm_git_init_commit "$repo"
   git -C "$repo" worktree add --quiet -b linked-probe "$linked"
   for tree in "$repo" "$linked"; do
-    mkdir -p "$tree/bin" "$tree/tests"
-    cp "$RUNNER" "$tree/bin/fm-test-run.sh"
-    cp "$ROOT/tests/git-config-helpers.sh" "$tree/tests/"
-    chmod +x "$tree/bin/fm-test-run.sh"
+    install_runner "$tree/bin"
     cat >"$tree/tests/probe.test.sh" <<PROBE
 #!/usr/bin/env bash
 echo "ok - probe suite"
@@ -684,10 +681,8 @@ test_family_proofs_run_in_separate_concurrent_phases() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-family-phases.XXXXXX")
   repo="$tmp/repo"
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
-  cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
+  install_runner "$repo/bin"
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
-  chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-calm-pi-extension.test.sh fm-vendor-auth-probe.test.sh \
     fm-pr-check-security.test.sh fm-teardown.test.sh; do
@@ -1312,9 +1307,7 @@ test_unmapped_new_test_never_inherits_family_concurrency() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-unmapped.XXXXXX")
   repo="$tmp/repo"
   mkdir -p "$repo/bin" "$repo/tests"
-  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
-  cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
-  chmod +x "$repo/bin/fm-test-run.sh"
+  install_runner "$repo/bin"
   # Two members of the proven residual family, plus a test basename the family
   # map has never seen - the shape of any test added tomorrow.
   for script in fm-procevent.test.sh fm-quota-choose.test.sh fm-zz-unmapped-fixture.test.sh; do
