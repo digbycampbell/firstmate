@@ -25,7 +25,9 @@ test_git_config_isolation() (
   git init -q "$dir/caller"
   git -C "$dir/caller" config commit.gpgsign false
   cd "$dir/caller" || exit 1
-  cp "$ROOT/bin/fm-test-run.sh" "$ROOT/bin/fm-timeout-lib.sh" "$dir/runner/bin/"
+  # The runner refuses to run without its containment boundary libraries.
+  cp "$ROOT/bin/fm-test-run.sh" "$ROOT/bin/fm-timeout-lib.sh" "$ROOT/bin/fm-test-sandbox-lib.sh" \
+    "$ROOT/bin/fm-home-guard-lib.sh" "$dir/runner/bin/"
   cp "$ROOT/tests/git-config-helpers.sh" "$dir/runner/tests/"
   fakebin=$(fm_fakebin "$dir/standalone")
   fm_fake_exit0 "$fakebin" pi
@@ -52,9 +54,13 @@ git -C "$repo" config user.email runner@example.invalid
 git -C "$repo" commit -q --allow-empty -m initial
 [ "$(git -C "$repo" log -1 --format='%s:%an:%ae')" = 'initial:Runner Fixture:runner@example.invalid' ]
 [ "$(git -C "$repo" config --get fixture.input)" = preserved ]
-[ "$(GIT_CONFIG_GLOBAL="$FM_TEST_GIT_CONFIG" git config --global --get commit.gpgsign)" = true ]
+[ "$(GIT_CONFIG_GLOBAL="$(cat tests/global-config-path)" git config --global --get commit.gpgsign)" = true ]
 SH
   chmod +x "$dir/runner/tests/fm-test-run.test.sh"
+  # The runner clears every FM_* variable at its containment boundary
+  # (bin/fm-test-sandbox-lib.sh), so the caller's global config path reaches
+  # the suite through a file beside it, read from the runner's own root.
+  printf '%s\n' "$dir/global" > "$dir/runner/tests/global-config-path"
   export GIT_CONFIG_GLOBAL="$dir/global" GIT_CONFIG_SYSTEM="$dir/system"
   export GIT_CONFIG_NOSYSTEM=0
   unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
@@ -121,7 +127,6 @@ SH
   for jobs in 1 2; do
     for timeout in 0 30; do
       GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=fixture.input GIT_CONFIG_VALUE_0=preserved \
-        FM_TEST_GIT_CONFIG="$dir/global" \
         "$dir/runner/bin/fm-test-run.sh" --jobs "$jobs" --per-script-timeout-secs "$timeout" \
         tests/fm-test-run.test.sh > "$dir/runner.log" 2>&1 \
         || fail "runner inherited global config (jobs=$jobs, timeout=$timeout): $(cat "$dir/runner.log")"
