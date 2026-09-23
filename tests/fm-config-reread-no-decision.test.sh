@@ -71,7 +71,11 @@ case "${1:-}" in
       printf 'earlier output\nmore output\n╭────────────────────────────╮\n│                            │\n╰────────────────────────────╯\n'
     fi
     exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # The mates' windows must exist: fm-send skips the doorbell for an agent the
+    # backend positively reads as exited, and an empty listing reads that way.
+    printf '%s\n' fm-sm1 fm-sm2 fm-sm3 fm-sm4
+    exit 0 ;;
 esac
 exit 0
 SH
