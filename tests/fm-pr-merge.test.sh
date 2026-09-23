@@ -209,6 +209,60 @@ SH
   chmod +x "$case_dir/fakebin/gh"
 }
 
+# gh mocks for the REST outcome-read fallback: the queue-aware GraphQL read
+# fails as if the shared GraphQL point budget were exhausted, while the separate
+# core REST quota still answers `GET repos/{owner}/{repo}/pulls/{n}` from the
+# case's github-pulls file and the branch rules from github-rules. gh-axi merges
+# and answers its own view state from FM_TEST_GH_MERGE_STATE (default open, so a
+# case must arrange REST to prove the outcome; the last-resort gh-axi view can
+# only prove a landed merge). Args: case_dir head_sha
+add_gh_mocks_graphql_down() {
+  local case_dir=$1 head=$2
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+case "${1:-} ${2:-}" in
+  "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
+  "pr view")
+    [ "$#" -eq 5 ] && [ "${4:-}" = --repo ] || exit 2
+    printf 'pull_request:\n  number: %s\n  state: %s\n' "$3" "${FM_TEST_GH_MERGE_STATE:-open}"
+    ;;
+esac
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$FM_TEST_GH_LOG"
+cdir=\$(dirname "\$FM_TEST_GH_LOG")
+case "\${1:-} \${2:-}" in
+  "pr view")
+    case " \$* " in
+      *headRefOid*) printf '%s\n' '$head'; exit 0 ;;
+    esac
+    ;;
+  "api graphql")
+    echo 'error: API rate limit exceeded for the GraphQL resource' >&2
+    exit 1
+    ;;
+  api\ *)
+    case " \$* " in
+      *pulls/*) cat "\$cdir/github-pulls"; exit 0 ;;
+      *rules/branches/*) cat "\$FM_TEST_GH_RULES"; exit 0 ;;
+    esac
+    exit 0
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+# The post-jq lines fm-pr-merge's REST fallback reads from `gh api .../pulls/N`.
+# Args: case_dir state merged base automerge
+write_github_pulls() {
+  printf '%s\n' "state=$2" "merged=$3" "base=$4" "automerge=$5" > "$1/github-pulls"
+}
+
 # gh-axi mock that merges but cannot answer its own view, so a case can prove
 # what happens when neither reader can establish the outcome. Args: case_dir
 add_gh_axi_mock_view_fails() {
@@ -555,8 +609,8 @@ test_github_unreadable_outcome_keeps_pr_bookkeeping() {
   expect_code 1 "$rc" "github-outcome-read-fails: an unreadable outcome must fail"
   assert_grep 'could not read the GitHub pull request outcome after the merge attempt' \
     "$case_dir/stderr" "github-outcome-read-fails: the unreadable outcome was not reported"
-  assert_grep 'the gh read failed and the gh-axi view could not prove the outcome either' \
-    "$case_dir/stderr" "github-outcome-read-fails: the refusal did not name both failed reads"
+  assert_grep 'the gh read failed, the REST read could not prove a landed or queued outcome, and the gh-axi view could not prove the outcome either' \
+    "$case_dir/stderr" "github-outcome-read-fails: the refusal did not name all three failed reads"
   assert_no_grep 'verified: ' "$case_dir/stdout" \
     "github-outcome-read-fails: an unproved merge was reported as verified"
   # The merge call itself returned success, so the pull request may well have
@@ -1156,6 +1210,96 @@ test_github_queued_outcome_is_verified() {
   assert_grep 'pr=https://github.com/example/repo/pull/53' "$case_dir/state/task-x1.meta" \
     "github-verified-queued: the queued PR was not recorded for teardown"
   pass "fm-pr-merge accepts and accurately reports a GitHub merge-queue entry"
+}
+
+test_github_rest_fallback_proves_merge_when_graphql_rate_limited() {
+  local case_dir rc
+  case_dir=$(make_case github-rest-proves-merge)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks_graphql_down "$case_dir" 4040404040404040404040404040404040404040
+  # GraphQL read is rate-limited; REST proves the merge landed.
+  write_github_pulls "$case_dir" closed true main false
+  : > "$case_dir/github-rules"
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/58 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "rest-proves-merge: a REST-proven merge should succeed when GraphQL is rate limited"
+  assert_grep 'verified: https://github.com/example/repo/pull/58 is merged' \
+    "$case_dir/stdout" "rest-proves-merge: a REST-proven merge was not reported as verified"
+  assert_grep 'api graphql' "$case_dir/gh.log" \
+    "rest-proves-merge: the queue-aware GraphQL read was not even attempted first"
+  assert_grep 'pulls/58' "$case_dir/gh.log" \
+    "rest-proves-merge: the REST pull read was never made after the GraphQL read failed"
+  assert_no_grep 'could not read the GitHub pull request outcome' "$case_dir/stderr" \
+    "rest-proves-merge: a REST-proven merge still reported the outcome as unreadable"
+  pass "fm-pr-merge proves a landed merge via REST when the GraphQL read is rate limited"
+}
+
+test_github_rest_fallback_proves_enqueue_when_graphql_rate_limited() {
+  local case_dir rc
+  case_dir=$(make_case github-rest-proves-queue)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks_graphql_down "$case_dir" 4141414141414141414141414141414141414141
+  # GraphQL read is rate-limited; the PR is open with auto-merge armed on a base
+  # branch a merge_queue rule governs, which REST can prove is an enqueue.
+  write_github_pulls "$case_dir" open false main true
+  printf 'merge_method=MERGE\n' > "$case_dir/github-rules"
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/59 -- --auto --merge \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "rest-proves-queue: a REST-proven enqueue should succeed when GraphQL is rate limited"
+  assert_grep 'verified: https://github.com/example/repo/pull/59 is queued' \
+    "$case_dir/stdout" "rest-proves-queue: a REST-proven enqueue was not reported as queued"
+  assert_grep 'pulls/59' "$case_dir/gh.log" \
+    "rest-proves-queue: the REST pull read was never made"
+  assert_grep 'rules/branches/' "$case_dir/gh.log" \
+    "rest-proves-queue: the base branch's merge_queue rule was never checked"
+  pass "fm-pr-merge proves an auto-merge enqueue via REST when the GraphQL read is rate limited"
+}
+
+test_github_rest_fallback_still_refuses_when_neither_read_proves_it() {
+  local case_dir rc
+  case_dir=$(make_case github-rest-cannot-prove)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks_graphql_down "$case_dir" 4242424242424242424242424242424242424242
+  # GraphQL rate-limited; the PR is open, not merged, with NO auto-merge armed
+  # (the direct-queue-add shape, where REST cannot prove the enqueue). gh-axi's
+  # own view is open too, so nothing can prove a landed or queued outcome.
+  write_github_pulls "$case_dir" open false main false
+  printf 'merge_method=MERGE\n' > "$case_dir/github-rules"
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
+
+  set +e
+  FM_TEST_GH_MERGE_STATE=open run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/60 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "rest-cannot-prove: an unprovable outcome must still fail"
+  assert_grep 'could not read the GitHub pull request outcome after the merge attempt' \
+    "$case_dir/stderr" "rest-cannot-prove: the unreadable outcome was not reported"
+  assert_grep 'the REST read could not prove a landed or queued outcome' \
+    "$case_dir/stderr" "rest-cannot-prove: the refusal did not name the failed REST read"
+  assert_no_grep 'verified: ' "$case_dir/stdout" \
+    "rest-cannot-prove: an unprovable outcome was reported as verified"
+  assert_grep 'pr=https://github.com/example/repo/pull/60' "$case_dir/state/task-x1.meta" \
+    "rest-cannot-prove: the attempted merge lost its PR reference"
+  assert_present "$case_dir/state/task-x1.check.sh" \
+    "rest-cannot-prove: the attempted merge did not leave its poll armed"
+  pass "fm-pr-merge still refuses fail-closed when neither the GraphQL nor the REST read can prove the outcome"
 }
 
 test_github_queue_required_refusal_names_retry_flags() {
@@ -2099,6 +2243,9 @@ test_github_without_gh_failed_read_keeps_bookkeeping
 test_github_merged_outcome_is_verified
 test_github_verified_merge_requires_poll_recording
 test_github_queued_outcome_is_verified
+test_github_rest_fallback_proves_merge_when_graphql_rate_limited
+test_github_rest_fallback_proves_enqueue_when_graphql_rate_limited
+test_github_rest_fallback_still_refuses_when_neither_read_proves_it
 test_github_queue_required_refusal_names_retry_flags
 test_extra_merge_args_forwarded
 test_missing_meta_refuses_before_merge

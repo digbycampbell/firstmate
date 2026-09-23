@@ -12,10 +12,16 @@
 # follows it never becomes a prerequisite for reaching that abstraction. After
 # gh-axi returns success, GitHub's live state is read back and accepted only
 # when the pull request is merged or in the merge queue. gh's GraphQL API
-# supplies that queue-aware read when gh is on PATH; when gh is absent or its
-# read fails, gh-axi's own view still proves a landed merge, and every outcome
-# it cannot prove refuses, reporting the single failed read when gh is absent
-# and naming both failed reads when gh is present and its own read failed.
+# supplies that queue-aware read (isInMergeQueue, the exact fact) when gh is on
+# PATH; when that GraphQL read fails - most often because the shared GraphQL
+# point budget is exhausted while the separate core REST budget is not - a REST
+# read of the pull request falls in behind it and can still prove a landed merge
+# (.merged) or an auto-merge enqueue (.auto_merge on an open pull request whose
+# base branch a merge_queue rule governs). REST has no isInMergeQueue field, so
+# a pull request queued directly (auto_merge null) is one it cannot prove, and
+# that stays a fail-closed refusal. When gh is absent altogether, gh-axi's own
+# view still proves a landed merge, and every outcome none of these can prove
+# refuses, naming the reads that failed.
 # If the pull request remains open and the base branch has an effective
 # merge_queue rule, the refusal names the queue's configured merge method and
 # the exact -- --auto --<method> retry flags, unless the caller already passed
@@ -395,6 +401,76 @@ github_read_outcome_with_gh_axi() {
   FM_PR_GITHUB_QUEUE_OBSERVED=false
 }
 
+# A REST read on the core quota, used only after the queue-aware GraphQL read
+# has failed - the exact case GraphQL rate-limiting creates, where the core REST
+# quota is typically still healthy because it is a SEPARATE budget. REST has no
+# isInMergeQueue field, so what it can prove is bounded:
+#   - a landed merge, from `.merged == true` (a definite terminal outcome); and
+#   - an ENQUEUE, but only when `.auto_merge` is non-null on an open pull request
+#     whose base branch is governed by a merge_queue rule (github_read_queue_method).
+# A pull request added to the merge queue DIRECTLY reads `.auto_merge == null`
+# here while GraphQL's isInMergeQueue is true (verified live against a real
+# queued PR), so REST cannot prove that enqueue. Per the fail-closed contract
+# this returns 1 (outcome unproved) in that case rather than guess, and the
+# caller refuses instead of reporting an unproved merge. State globals are set
+# only on a proven-outcome (return 0) path, never on the unproved path.
+github_read_outcome_with_rest() {
+  command -v gh >/dev/null 2>&1 || return 1
+  local fields line state='' merged='' base='' automerge=''
+  local total=0 named=0
+  if ! fields=$(gh api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
+    --jq '"state=" + (.state // ""), "merged=" + (.merged | tostring), "base=" + (.base.ref // ""), "automerge=" + (if .auto_merge == null then "false" else "true" end)' \
+    2>/dev/null) || [ -z "$fields" ]; then
+    return 1
+  fi
+  while IFS= read -r line; do
+    total=$((total + 1))
+    case "$line" in
+      state=*) state=${line#state=} ;;
+      merged=*) merged=${line#merged=} ;;
+      base=*) base=${line#base=} ;;
+      automerge=*) automerge=${line#automerge=} ;;
+      *) continue ;;
+    esac
+    named=$((named + 1))
+  done <<FIELDS
+$fields
+FIELDS
+  if [ "$named" -ne 4 ] || [ "$total" -ne 4 ] || [ -z "$state" ] || [ -z "$base" ] \
+    || { [ "$merged" != true ] && [ "$merged" != false ]; } \
+    || { [ "$automerge" != true ] && [ "$automerge" != false ]; }; then
+    return 1
+  fi
+
+  if [ "$merged" = true ]; then
+    FM_PR_GITHUB_STATE=$state
+    FM_PR_GITHUB_MERGED=true
+    FM_PR_GITHUB_QUEUED=false
+    FM_PR_GITHUB_BASE=$base
+    FM_PR_GITHUB_QUEUE_OBSERVED=true
+    return 0
+  fi
+
+  # Not merged: the only enqueue REST can PROVE is an armed auto-merge on an open
+  # pull request whose base branch a merge_queue rule governs.
+  case "$state" in [oO][pP][eE][nN]) ;; *) return 1 ;; esac
+  [ "$automerge" = true ] || return 1
+  local saved_base=$FM_PR_GITHUB_BASE
+  FM_PR_GITHUB_BASE=$base
+  github_read_queue_method
+  case "$FM_PR_GITHUB_QUEUE_STATUS" in
+    single|conflicting|unrecognised)
+      FM_PR_GITHUB_STATE=$state
+      FM_PR_GITHUB_MERGED=false
+      FM_PR_GITHUB_QUEUED=true
+      FM_PR_GITHUB_QUEUE_OBSERVED=true
+      return 0
+      ;;
+  esac
+  FM_PR_GITHUB_BASE=$saved_base
+  return 1
+}
+
 github_read_outcome() {
   if ! command -v gh >/dev/null 2>&1; then
     github_read_outcome_with_gh_axi && return 0
@@ -403,13 +479,17 @@ github_read_outcome() {
   fi
   # Only a failed gh read falls back. A gh read that completes and reports the
   # pull request as neither merged nor queued is a concrete outcome, not a
-  # missing one, so it keeps its own refusal. The gh-axi view cannot observe the
-  # merge queue, so it can only turn this into a proved merge or into a refusal.
+  # missing one, so it keeps its own refusal. When the queue-aware GraphQL read
+  # fails (typically GraphQL rate-limited), a REST read on the separate core
+  # quota can still prove a landed merge or an auto-merge enqueue; the gh-axi
+  # view, which cannot observe the merge queue, is the last resort and can only
+  # turn this into a proved merge or into a refusal.
   github_read_outcome_with_gh && return 0
+  github_read_outcome_with_rest && return 0
   if github_read_outcome_with_gh_axi && [ "$FM_PR_GITHUB_MERGED" = true ]; then
     return 0
   fi
-  echo "error: could not read the GitHub pull request outcome after the merge attempt: the gh read failed and the gh-axi view could not prove the outcome either; PR metadata and merge poll remain recorded" >&2
+  echo "error: could not read the GitHub pull request outcome after the merge attempt: the gh read failed, the REST read could not prove a landed or queued outcome, and the gh-axi view could not prove the outcome either; PR metadata and merge poll remain recorded" >&2
   return 1
 }
 
