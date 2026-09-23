@@ -892,6 +892,9 @@ test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot() {
     "window=firstmate:fm-$id" "endpoint_task_id=$id" \
     "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
   claim_pool_slot "$dir" "$other" "$dir/other-home"
+  "$ROOT/bin/fm-git-identity.sh" apply-worktree "$dir/worktree" \
+    --hooks-dir "$dir/other-home-githooks" >/dev/null \
+    || fail "precondition: could not arm the claimant's per-worktree git identity"
   # Staged in this shell, not a command substitution: a background child of a
   # $(...) subshell does not outlive it, and the point of this worker is to be
   # alive in the slot while teardown runs.
@@ -909,6 +912,11 @@ test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot() {
   assert_reassigned_slot_left_alone "$dir" "$id" "$other" "dirty reassigned slot with --force"
   assert_contains "$(cat "$dir/stderr")" "$dir/other-home" \
     "the warning should name the claimant's home"
+  assert_contains "$(git -C "$dir/worktree" config --worktree --get user.email 2>/dev/null || true)" \
+    "crew@digio.nz" \
+    "dirty reassigned slot with --force: teardown stripped the claimant's per-worktree git identity"
+  assert_present "$dir/other-home-githooks" \
+    "dirty reassigned slot with --force: teardown removed the claimant's own hooks directory"
   kill "$worker" 2>/dev/null || true
   wait "$worker" 2>/dev/null || true
 

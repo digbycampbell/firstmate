@@ -3652,8 +3652,13 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # directory, which git treats as "no hooks at all" - the commit guard would be
 # silently absent, which is exactly the fail-open state it exists to prevent.
 if [ "$KIND" != secondmate ]; then
-  "$SCRIPT_DIR/fm-git-identity.sh" disarm-worktree "$WT" \
-    --hooks-dir "$STATE/$ID.githooks" || exit 1
+  if teardown_owns_worktree; then
+    "$SCRIPT_DIR/fm-git-identity.sh" disarm-worktree "$WT" \
+      --hooks-dir "$STATE/$ID.githooks" || exit 1
+  else
+    "$SCRIPT_DIR/fm-git-identity.sh" disarm-worktree \
+      --hooks-dir "$STATE/$ID.githooks" || exit 1
+  fi
 fi
 # Retire only this Firstmate home's launch namespace. Its never-reused per-spawn
 # files leave the equal task-id namespace of every other home untouched.

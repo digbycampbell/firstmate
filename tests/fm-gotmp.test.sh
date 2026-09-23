@@ -93,8 +93,8 @@ SH
   # fm-worktree-claim-lib.sh: teardown sources it for the double-allocation
   # refusal it runs before any cleanup step.
   ln -s "$ROOT/bin/fm-worktree-claim-lib.sh" "$fake/bin/fm-worktree-claim-lib.sh"
-  # fm-git-identity.sh: teardown calls disarm-worktree on it unconditionally
-  # for non-secondmate kinds; symlink the real script so the call succeeds.
+  # fm-git-identity.sh: teardown calls disarm-worktree on it for non-secondmate
+  # kinds when it owns the worktree; symlink the real script so the call succeeds.
   ln -s "$ROOT/bin/fm-git-identity.sh" "$fake/bin/fm-git-identity.sh"
   # Ordinary teardown reports any final ledger outcome before removing records.
   ln -s "$ROOT/bin/fm-inactive-reconcile.sh" "$fake/bin/fm-inactive-reconcile.sh"
@@ -198,8 +198,8 @@ SH
   # fm-worktree-claim-lib.sh: teardown sources it for the double-allocation
   # refusal it runs before any cleanup step.
   ln -s "$ROOT/bin/fm-worktree-claim-lib.sh" "$fake/bin/fm-worktree-claim-lib.sh"
-  # fm-git-identity.sh: teardown calls disarm-worktree on it unconditionally
-  # for non-secondmate kinds; symlink the real script so the call succeeds.
+  # fm-git-identity.sh: teardown calls disarm-worktree on it for non-secondmate
+  # kinds when it owns the worktree; symlink the real script so the call succeeds.
   ln -s "$ROOT/bin/fm-git-identity.sh" "$fake/bin/fm-git-identity.sh"
   # Ordinary teardown reports any final ledger outcome before removing records.
   ln -s "$ROOT/bin/fm-inactive-reconcile.sh" "$fake/bin/fm-inactive-reconcile.sh"
