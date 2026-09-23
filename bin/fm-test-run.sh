@@ -2320,8 +2320,6 @@ fi
 # shellcheck source=bin/fm-test-sandbox-lib.sh
 . "$ROOT/bin/fm-test-sandbox-lib.sh"
 
-RUN_STARTED_ISO=$(now_iso)
-RUN_STARTED_MS=$(now_ms)
 RUN_ID="fm-test-run-${RUN_STARTED_MS}-$$"
 TOTAL=0
 FAILED=0
