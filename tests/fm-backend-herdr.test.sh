@@ -5492,5 +5492,29 @@ test_presentation_lock_still_refuses_a_stuck_holder() {
   pass "presentation lock: still refuses a holder that never finishes, naming it"
 }
 
+test_presentation_lock_explicit_cap_overrides_a_large_wait_secs() {
+  local lock="$TMP_ROOT/pres-capped.lock" rc out began elapsed
+  presentation_lock_start_holder "$lock" 120
+  began=$(date +%s)
+  set +e
+  out=$( . "$ROOT/bin/backends/herdr.sh"
+    FM_BACKEND_HERDR_ROOT="$ROOT" FM_HERDR_PRESENTATION_LOCK_WAIT_SECS=300 \
+      fm_backend_herdr_presentation_order_lock_wait "$lock" 2
+    printf 'rc=%s refusal=%s' "$?" "$FM_HERDR_PRESENTATION_LOCK_REFUSAL" )
+  rc=$?
+  set -e
+  elapsed=$(( $(date +%s) - began ))
+  kill "$PRES_HOLDER_PID" 2>/dev/null || true
+  wait "$PRES_HOLDER_PID" 2>/dev/null || true
+  case "$out" in
+    "rc=1 refusal=pid "*"still held it after 2s") ;;
+    *) fail "an explicit small cap must refuse and name the holder even under a large FM_HERDR_PRESENTATION_LOCK_WAIT_SECS, got '$out'" ;;
+  esac
+  [ "$elapsed" -lt 10 ] \
+    || fail "the explicit cap did not bound the wait; returned after ${elapsed}s"
+  pass "presentation lock: an explicit cap refuses within itself even when FM_HERDR_PRESENTATION_LOCK_WAIT_SECS is large"
+}
+
 test_presentation_lock_serializes_behind_a_slow_holder
 test_presentation_lock_still_refuses_a_stuck_holder
+test_presentation_lock_explicit_cap_overrides_a_large_wait_secs

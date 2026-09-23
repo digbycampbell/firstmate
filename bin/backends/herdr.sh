@@ -3373,8 +3373,9 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
   fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane" || true
 }
 
-# fm_backend_herdr_presentation_order_lock_wait <lock-path>: serialize behind
-# whoever currently holds the presentation-order section, then take it.
+# fm_backend_herdr_presentation_order_lock_wait <lock-path> [<cap-secs>]:
+# serialize behind whoever currently holds the presentation-order section,
+# then take it.
 #
 # The invariant is SERIALIZATION - one spawn at a time projects into the named
 # session - not a wall-clock budget. The earlier bounded 50 x 0.1s spin encoded
@@ -3388,20 +3389,23 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
 #   - the section cannot be taken and NO live process holds it. fm_lock_try_acquire
 #     reclaims a dead holder itself (bin/fm-wake-lib.sh), so reaching here means
 #     the section is unusable rather than merely busy.
-#   - a live holder never finishes, bounded by
-#     FM_HERDR_PRESENTATION_LOCK_WAIT_SECS (default 300) so a deadlock surfaces
-#     as a named refusal instead of hanging forever.
+#   - a live holder never finishes, bounded by <cap-secs> if given, else
+#     FM_HERDR_PRESENTATION_LOCK_WAIT_SECS (default 300), so a deadlock or a
+#     merely busy holder surfaces as a named refusal instead of hanging
+#     forever. A caller that can fall back to the flat layout on refusal
+#     should pass a short <cap-secs> rather than waiting out the deadlock
+#     budget: only the one call site with no fallback needs to wait that long.
 # shellcheck disable=SC2034 # Read by sourcing callers after the wait returns:
 # bin/fm-spawn.sh prints it in its refusal, and tests assert on it.
 FM_HERDR_PRESENTATION_LOCK_REFUSAL=
-fm_backend_herdr_presentation_order_lock_wait() {  # <lock-path>
-  local lock=$1 cap started now
+fm_backend_herdr_presentation_order_lock_wait() {  # <lock-path> [<cap-secs>]
+  local lock=$1 cap=${2:-} started now
   [ -n "$lock" ] || return 1
   if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
     # shellcheck source=bin/fm-wake-lib.sh
     . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh"
   fi
-  cap=${FM_HERDR_PRESENTATION_LOCK_WAIT_SECS:-300}
+  case "$cap" in ''|*[!0-9]*) cap=${FM_HERDR_PRESENTATION_LOCK_WAIT_SECS:-300} ;; esac
   case "$cap" in ''|*[!0-9]*) cap=300 ;; esac
   FM_HERDR_PRESENTATION_LOCK_REFUSAL=
   started=$(date +%s)

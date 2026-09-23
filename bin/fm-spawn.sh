@@ -1208,7 +1208,10 @@ spawn_abort_cleanup() {
   fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] &&
     [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" != 1 ]; then
-    if ! spawn_herdr_presentation_order_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}"; then
+    # Retains the journal on refusal rather than waiting out the full deadlock
+    # budget, so a merely busy holder does not stall this cleanup path.
+    if ! spawn_herdr_presentation_order_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}" \
+      "${FM_HERDR_PRESENTATION_FALLBACK_WAIT_SECS:-15}"; then
       echo "warning: herdr presentation focus lock unavailable; retaining the projection journal and refusing concurrent abort cleanup" >&2
       HERDR_PROJECTION_ABORT_CLEANUP=0
     fi
@@ -1317,14 +1320,19 @@ trap spawn_abort_cleanup EXIT
 # One bounded lock per live Herdr session/socket, shared across all homes.
 # <session> is required so secondmate and primary spawns serialize against the
 # same session without writing any other home's state directory.
+# <cap-secs>, if given, bounds the wait; omit it only at the one call site
+# (presentation recovery/resume) that has no flat-layout fallback and so must
+# wait out the full deadlock budget. Every other call site can fall back, so
+# it passes a short cap instead of stalling a real spawn behind a merely busy
+# holder.
 # Serialization is owned by bin/backends/herdr.sh; this wrapper only binds the
 # session's lock path to the spawn's own held-state bookkeeping.
 spawn_herdr_presentation_order_lock_acquire() {
-  local session=${1:-} lock_path
+  local session=${1:-} cap=${2:-} lock_path
   [ -n "$session" ] || session=$(fm_backend_herdr_session)
   lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 1
   HERDR_PRESENTATION_ORDER_LOCK="$lock_path"
-  fm_backend_herdr_presentation_order_lock_wait "$HERDR_PRESENTATION_ORDER_LOCK" || return 1
+  fm_backend_herdr_presentation_order_lock_wait "$HERDR_PRESENTATION_ORDER_LOCK" "$cap" || return 1
   HERDR_PRESENTATION_ORDER_LOCK_HELD=1
   return 0
 }
@@ -3330,6 +3338,10 @@ else
           echo "error: herdr presentation recovery could not ensure its exact named session" >&2
           exit 1
         }
+        # No flat-layout fallback exists once a journal is already published, so
+        # this is the one call site that waits out the full
+        # FM_HERDR_PRESENTATION_LOCK_WAIT_SECS deadlock budget instead of the
+        # short fallback cap.
         spawn_herdr_presentation_order_lock_acquire "$HERDR_SES" || {
           echo "error: herdr presentation recovery could not acquire its session lock: ${FM_HERDR_PRESENTATION_LOCK_REFUSAL:-unknown reason}" >&2
           exit 1
@@ -3375,7 +3387,8 @@ else
         elif [ "${FM_BACKEND_HERDR_PRESENTATION_PREFERENCE:-default}" = default ] &&
           ! fm_backend_herdr_presentation_default_supported "$STATE" "$HERDR_SES"; then
           :
-        elif spawn_herdr_presentation_order_lock_acquire "$HERDR_SES"; then
+        elif spawn_herdr_presentation_order_lock_acquire "$HERDR_SES" \
+          "${FM_HERDR_PRESENTATION_FALLBACK_WAIT_SECS:-15}"; then
           # The projected child is placed and bound UNDER this launcher's exact
           # parent workspace. Its own herdr pane identity names that workspace
           # directly; the label lookup is only the fallback for a launcher with
