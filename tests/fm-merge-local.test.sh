@@ -13,7 +13,7 @@ make_case() {
   local name=$1 case_dir repo
   case_dir="$TMP_ROOT/$name"
   repo="$case_dir/project"
-  mkdir -p "$case_dir/state"
+  mkdir -p "$case_dir/state" "$case_dir/data"
   fm_git_init_commit "$repo"
   git -C "$repo" branch -M main
   printf '%s\n' "$case_dir"

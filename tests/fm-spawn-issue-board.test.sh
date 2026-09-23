@@ -21,8 +21,8 @@
 #       --secondmate, and batch dispatch
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-issue-board)
@@ -110,8 +110,7 @@ make_spawn_case() {
   printf '%s\n' claude > "$home/config/crew-harness"
   fm_git_worktree "$proj" "$wt" "wt-$name"
   touch "$home/state/.last-watcher-beat"
-  mkdir -p "$home/data/$id"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  fm_test_spawn_brief "$home" "$id"
   printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin"
 }
 

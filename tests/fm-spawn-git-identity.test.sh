@@ -8,8 +8,8 @@
 # reach the shared clone config the captain's own commits read from.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-git-identity)
@@ -64,8 +64,7 @@ make_case() {  # <name> <id>
   fm_git_worktree "$PROJ_DIR" "$WT_DIR" "wt-$name"
   git -C "$PROJ_DIR" config user.email "$CAPTAIN_EMAIL"
   git -C "$PROJ_DIR" config user.name "$CAPTAIN_NAME"
-  mkdir -p "$HOME_DIR/data/$id"
-  printf 'brief for %s\n' "$id" > "$HOME_DIR/data/$id/brief.md"
+  fm_test_spawn_brief "$HOME_DIR" "$id"
   touch "$HOME_DIR/state/.last-watcher-beat"
 }
 

@@ -6,9 +6,10 @@
 # yet every marked from-firstmate send armed a parent pending-reply expectation.
 # An expectation that nothing will ever satisfy decays into
 #   blocked [key=pending-reply-<id>]: pending-reply-missed: ...
-# and, because `pending-reply-` is a reserved decision-key namespace, no answer
-# can close it (see tests/fm-send-resolve-key.test.sh). Seven of these piled up
-# in a single day, every one noise.
+# and, because nothing was ever promised against it, it ages into a blocked
+# decision about a report nobody owes, which then needs a manual close (see
+# tests/fm-send-resolve-key.test.sh). Seven of these piled up in a single day,
+# every one noise.
 #
 # Two layers were wrong and both are covered here:
 #   1. Expectation creation. A request that asks for no report must arm no
@@ -71,7 +72,11 @@ case "${1:-}" in
       printf 'earlier output\nmore output\n╭────────────────────────────╮\n│                            │\n╰────────────────────────────╯\n'
     fi
     exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # The mates' windows must exist: fm-send skips the doorbell for an agent the
+    # backend positively reads as exited, and an empty listing reads that way.
+    printf '%s\n' fm-sm1 fm-sm2 fm-sm3 fm-sm4
+    exit 0 ;;
 esac
 exit 0
 SH

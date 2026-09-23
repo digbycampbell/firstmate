@@ -15,13 +15,11 @@
 # test.
 set -u
 
-if [ "${FM_SLACK_MIRROR_LIVE_E2E:-0}" != 1 ]; then
-  echo "skip: set FM_SLACK_MIRROR_LIVE_E2E=1 to run the live Slack-mirror guard"
-  exit 0
-fi
-
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+# It submits a real prompt, so it stays opt-in (fm_live_gate owns the policy).
+fm_live_gate opt-in FM_SLACK_MIRROR_LIVE_E2E jq
 
 TMP_ROOT=$(fm_test_tmproot fm-slack-mirror-live)
 trap fm_test_cleanup EXIT
