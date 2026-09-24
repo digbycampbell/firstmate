@@ -14,10 +14,11 @@ You are an autonomous engineer working alone in this container on the [repo] rep
 - [submodules]; [runtime version source]; [install command].
 - [database engine and version and the script that starts it]; [browser install].
 - [slot-lease or sandbox tooling and the rule that a bare value is refused].
-- Confirm the setup by running [the CI-equivalent suite] once on untouched main; record counts and wall time as your flake baseline. If a lane cannot run here, write down which and why; it goes in every PR body.
+- Confirm the setup by running [the focused suite from "## CI, before the PR"] once on untouched main. If a lane cannot run here, write down which and why; it goes in every PR body. [Optional: also record counts and wall time as a flake baseline.]
 
 ## Ground rules
-- Branch [naming rule] from origin/main. Never push to main, never merge, never force-push; sync by merging origin/main in.
+- Branch and stacking convention: see "## Pull request" below; never push to main, never merge, never force-push a branch another PR bases on.
+- The only channel to the project owner, firstmate, or any other agent is a comment on this PR: ask a question, report a blocker, hand over, and post your closing summary there; nothing else reaches anyone, and nobody reads any other channel.
 - Commit messages: [convention].
 - [Retired vocabulary rule, if the project has one].
 - [User-facing string rule, if the project has one].
@@ -28,24 +29,27 @@ You are an autonomous engineer working alone in this container on the [repo] rep
 ## This issue
 [Readiness notes from step 2, each as an instruction: stale owners and where they moved; decisions the issue leaves open and the default to take; dependencies and how to detect them.]
 
-## CI inside the container, before the PR
-Run all of it and put real counts in the PR body:
+## CI, before the PR
+The forge re-runs the full lanes on your PR, so your local run is not the proof of record: run the focused specs covering your change plus the running-app check, and put real counts in the PR body.
 1. [typecheck]; [lint]; [format check].
-2. [unit suite as CI shards it].
-3. [database suite through the lease].
-4. [CI-shaped e2e suite on a production build, in full].
-5. [any phase-specific harness].
-6. Do not dispatch the forge's workflows to substitute for a local run; [exception, if the issue names one].
+2. [the focused unit/integration specs covering this change].
+3. Start the app and exercise the change running, not only in specs; say what you checked.
+4. Do not dispatch the forge's workflows to substitute for a local run.
+5. Run [the full local suite / CI-shaped e2e suite] instead only if this prompt says the forge is skipping lanes for this task, and say why here.
+A flaky test unrelated to your change: quarantine it quickly through [the repo's flake-quarantine lane, if it has one] rather than fixing or waiting on it, and note it under "## Findings not fixed".
 
 ## Pull request
-- `gh pr create --repo [owner/repo] --base main`. Body: `Closes #[n]`, "## Summary", "## Testing" (every command above with counts, wall time, and any lane this container could not run), "## Findings not fixed", "## Lessons" if anything surprised you.
+- Branch: `fm-issue-[n]` for issue [n]. A standalone issue, or a phase whose predecessor has already merged, branches from and targets `main`. A phase whose predecessor is still an open PR branches from that phase's PR head branch `fm-issue-[m]` and opens with `--base fm-issue-[m]`, so this PR's diff shows only its own layer; the bottom PR of a stack always targets `main`. Never rebase or force-push a branch another PR bases on; merge the base branch forward into yours instead when it moves. [If this repository has GitHub stacked pull requests (public preview) enabled: link this PR into the stack with `gh stack link` instead of hand-setting `--base`, and let the platform rebase the rest of the stack when the bottom PR merges.]
+- `gh pr create --repo [owner/repo] --base [main, or fm-issue-[m] per the branch convention above]`.
+- Body: fill the repository's `.github/pull_request_template.md` section by section. Write a plain-English "## What" a non-engineer can read. Include the closing keyword (`Closes #[n]`). Add `user-docs: none - [reason]` when it applies. Add `shipped-via: cloud container ([model], [effort])`.
+- Apply the route label ([Task / Bug / the phase's plan kind]) with `gh issue edit` or `gh pr edit --add-label` when you can; otherwise name it in the closing PR comment.
 - [Docs rule: help content or the exact waiver line].
-- [Label rule: which label the gate expects and how to add it].
-- Read checks with `gh pr checks <n> --repo [owner/repo] --watch`; a non-zero exit means a check is not green, not that the command failed. [CI budget note: which jobs the forge skips, so the Testing section is the proof.]
+- Read checks with `gh pr checks <n> --repo [owner/repo] --watch`; a non-zero exit means a check is not green, not that the command failed.
 - Finish with a PR comment summarising results.
 
 ## Stop conditions
 [Each thing the agent cannot do alone, and what it does instead: stop and write a closing summary naming the branch, the PR, what is delivered, what is open, and what the container could not run.]
+Post that closing summary as a PR comment - it is the only way firstmate or the project owner ever sees it.
 
 Report the model and effort level you ran on at the end of the PR body.
 ```
