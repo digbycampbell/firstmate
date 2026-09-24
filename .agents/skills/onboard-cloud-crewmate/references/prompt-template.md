@@ -18,7 +18,7 @@ You are an autonomous engineer working alone in this container on the [repo] rep
 
 ## Ground rules
 - Branch and stacking convention: see "## Pull request" below; never push to main, never merge, never force-push a branch another PR bases on.
-- The only channel to the project owner, firstmate, or any other agent is a comment on this PR: ask a question, report a blocker, hand over, and post your closing summary there; nothing else reaches anyone, and nobody reads any other channel.
+- Durable feedback and reporting go in a comment on this PR: ask a question, report a blocker, hand over, and post your closing summary there, so firstmate, the project owner, and any later agent can read them; anything not on the PR is not durable.
 - Commit messages: [convention].
 - [Retired vocabulary rule, if the project has one].
 - [User-facing string rule, if the project has one].
@@ -49,7 +49,7 @@ A flaky test unrelated to your change: quarantine it quickly through [the repo's
 
 ## Stop conditions
 [Each thing the agent cannot do alone, and what it does instead: stop and write a closing summary naming the branch, the PR, what is delivered, what is open, and what the container could not run.]
-Post that closing summary as a PR comment - it is the only way firstmate or the project owner ever sees it.
+Post that closing summary as a PR comment - it is the durable record firstmate and the project owner read.
 
 Report the model and effort level you ran on at the end of the PR body.
 ```
