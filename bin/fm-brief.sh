@@ -52,12 +52,11 @@
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
-# Every ship definition of done also carries a standing verification clause, in the
-# same words for all three modes: exercise the change in the real running
-# application, under realistic latency where timing could plausibly matter, with a
-# before/after reproduction for a defect fix and both widths for UI work.
-# It is a standard rather than a hard gate, so it is deliberately pitched softer
-# than the isolation assertion and is never per-task text a brief author must remember.
+# Every ship definition of done points local verification to the project's own
+# AGENTS.md testing standard and defers browser or e2e evidence to CI when that
+# standard does, while retaining defect reproduction and a verification summary.
+# The same reference appears in all three modes, so it is never per-task text a
+# brief author must remember.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is

@@ -255,11 +255,10 @@ EOF
 }
 
 IFS= read -r -d '' FM_DOD_VERIFY <<'FM_DOD_VERIFY_EOF' || true
-Where the change has a user-facing surface, exercise it in the real running application before calling this done, not only in tests, and say what you exercised.
-A passing unit or integration suite is not evidence the behavior is right.
-Where the change could plausibly be timing-sensitive, exercise it under realistic latency rather than only on a fast local machine, and say what you used; this is a prompt to think about timing, not a hard gate on every trivial change.
+Follow the project's own AGENTS.md testing standard for local verification.
+If that standard assigns browser or e2e evidence to CI, run no local server, browser, or e2e suite; cite the CI lanes and any branch-slot deploy as the evidence.
 Where you are fixing a defect, reproduce it before the fix and prove it gone after, stating the method.
-For UI work, check a realistic desktop width and a narrow one, and be picky about alignment and fit.
+State what you verified.
 FM_DOD_VERIFY_EOF
 FM_DOD_VERIFY=${FM_DOD_VERIFY%$'\n'}
 
