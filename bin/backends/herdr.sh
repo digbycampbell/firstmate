@@ -3604,7 +3604,10 @@ fm_backend_herdr_presentation_order_lock_wait() {  # <lock-path> [<cap-secs>]
   local lock=$1 cap=${2:-} started now
   [ -n "$lock" ] || return 1
   if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
-    # shellcheck source=bin/fm-wake-lib.sh
+    # shellcheck source=/dev/null
+    # fm-wake-lib.sh is already linted as its own root via fm_backend_herdr_kill's
+    # source directive above; a second followed source here doubles shellcheck's
+    # peak memory for every file that sources herdr.sh.
     . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh"
   fi
   case "$cap" in ''|*[!0-9]*) cap=${FM_HERDR_PRESENTATION_LOCK_WAIT_SECS:-300} ;; esac
