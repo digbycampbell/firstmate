@@ -332,9 +332,13 @@ case "\${1:-} \${2:-}" in
     exit 1
     ;;
   api\ *)
+    # The pre-merge required-check reads (branch protection and unfiltered
+    # rules) answer as add_gh_mocks does; only GraphQL is down.
     case " \$* " in
       *pulls/*) cat "\$cdir/github-pulls"; exit 0 ;;
-      *rules/branches/*) cat "\$FM_TEST_GH_RULES"; exit 0 ;;
+      *rules/branches/*merge_queue*) cat "\$FM_TEST_GH_RULES"; exit 0 ;;
+      *rules/branches/*) cat "\$FM_TEST_GH_REQUIRED_RULES"; exit 0 ;;
+      *" repos/"*"/branches/"*) cat "\$FM_TEST_GH_BRANCH"; exit 0 ;;
     esac
     exit 0
     ;;

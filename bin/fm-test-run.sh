@@ -701,6 +701,7 @@ tests/fm-bearings-board-lavish-live-e2e.test.sh 48
 tests/fm-bearings-board-render.test.sh 12591
 tests/fm-bearings-board.test.sh 36490
 tests/fm-bearings-snapshot.test.sh 171176
+tests/fm-board.test.sh 2687
 tests/fm-bootstrap-network-parallel.test.sh 9539
 tests/fm-bootstrap.test.sh 46634
 tests/fm-branch-supervision.test.sh 8915
@@ -722,6 +723,7 @@ tests/fm-codex-continuity-live-e2e.test.sh 71
 tests/fm-codex-hook-layer-live-e2e.test.sh 47
 tests/fm-composer-codex-idle-live-e2e.test.sh 229
 tests/fm-composer-matrix-live-e2e.test.sh 47
+tests/fm-config-reread-no-decision.test.sh 3273
 tests/fm-contributions.test.sh 35676
 tests/fm-control-relaunch.test.sh 137013
 tests/fm-control.test.sh 39524
@@ -738,6 +740,7 @@ tests/fm-fleet-sync.test.sh 35983
 tests/fm-forge-detect.test.sh 160
 tests/fm-gate-refuse.test.sh 5328
 tests/fm-gemini-harness.test.sh 938
+tests/fm-git-identity.test.sh 1376
 tests/fm-gitignore-config.test.sh 58
 tests/fm-gotmp.test.sh 1320
 tests/fm-grok-continuity-live-e2e.test.sh 45
@@ -753,11 +756,14 @@ tests/fm-herdr-submit-confirm-live-e2e.test.sh 46
 tests/fm-herdr-version-floor-live-e2e.test.sh 72
 tests/fm-home-summary-refresh.test.sh 37264
 tests/fm-inactive-reconcile.test.sh 53178
+tests/fm-inbox.test.sh 6155
 tests/fm-kimi-harness.test.sh 19151
+tests/fm-launch-prompt-signals-live-e2e.test.sh 66
 tests/fm-lint-workflows.test.sh 785
 tests/fm-live-gate.test.sh 1755
 tests/fm-mail-check.test.sh 9162
 tests/fm-mail.test.sh 9703
+tests/fm-merge-local.test.sh 1368
 tests/fm-muse-harness.test.sh 40970
 tests/fm-muse-signals-live-e2e.test.sh 77
 tests/fm-nm-test-contract.test.sh 128
@@ -776,11 +782,15 @@ tests/fm-pi-codex-native.test.sh 46
 tests/fm-pi-primary-live-e2e.test.sh 47
 tests/fm-pi-watch-extension.test.sh 50637
 tests/fm-pi-windows-shell-invocation.test.sh 5121
+tests/fm-pr-check-board.test.sh 3405
 tests/fm-pr-check-security.test.sh 226546
 tests/fm-pr-reviewers.test.sh 273
 tests/fm-pr-state-live-e2e.test.sh 45
 tests/fm-pr-state.test.sh 531
+tests/fm-procevent-github-assigned.test.sh 1880
+tests/fm-procevent-quota-topic.test.sh 6927
 tests/fm-procevent-quota.test.sh 1900
+tests/fm-procevent-slack-captain.test.sh 6735
 tests/fm-procevent-when.test.sh 23805
 tests/fm-procevent.test.sh 221745
 tests/fm-project-origin.test.sh 136
@@ -820,7 +830,14 @@ tests/fm-sessionstart-hook-live-e2e.test.sh 97
 tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh 46
 tests/fm-sessionstart-nudge.test.sh 66247
 tests/fm-shared-captain-inheritance.test.sh 5687
+tests/fm-slack-mirror-live-e2e.test.sh 57
+tests/fm-slack-mirror.test.sh 10359
+tests/fm-slack-post.test.sh 2854
+tests/fm-spawn-compact-adviser-disable-remote.test.sh 33890
+tests/fm-spawn-compact-adviser-disable.test.sh 21365
 tests/fm-spawn-dispatch-profile.test.sh 138433
+tests/fm-spawn-git-identity.test.sh 6775
+tests/fm-spawn-issue-board.test.sh 14724
 tests/fm-spawn-pool-base-freshen.test.sh 62249
 tests/fm-spawn-worktree-settle.test.sh 8482
 tests/fm-startup-memory-budget.test.sh 7392
@@ -840,6 +857,7 @@ tests/fm-teardown.test.sh 145174
 tests/fm-test-fixture-cleanup.test.sh 937
 tests/fm-test-fixtures.test.sh 1562
 tests/fm-test-isolation-proof.test.sh 2692
+tests/fm-test-sandbox.test.sh 4011
 tests/fm-timeout-lib.test.sh 8541
 tests/fm-tmux-agent-liveness.test.sh 1953
 tests/fm-tool-update-check.test.sh 13832
@@ -861,6 +879,7 @@ tests/fm-watch-checkpoint.test.sh 6076
 tests/fm-watch-recovery-loop.test.sh 58946
 tests/fm-watch-triage.test.sh 697969
 tests/fm-watcher-lock.test.sh 108940
+tests/fm-worktree-claim.test.sh 4887
 EOF
 }
 

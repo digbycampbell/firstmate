@@ -222,7 +222,7 @@ test_ship_modes_generate_clean_briefs() {
 }
 
 test_issue_based_branch_names() {
-  local home issue_brief fallback_brief
+  local home issue_brief fallback_brief out
   home="$TMP_ROOT/issue-branch-home"
   mkdir -p "$home/data"
 
@@ -230,10 +230,21 @@ test_issue_based_branch_names() {
     issue-branch-a1 firstmate --mode no-mistakes --issue 512 >/dev/null 2>&1 \
     || fail "fm-brief.sh should scaffold an issue-linked ship brief"
   issue_brief="$home/data/issue-branch-a1/brief.md"
-  grep -Fx "1. First action: create your branch: \`git checkout -b fm-issue-512\`" "$issue_brief" >/dev/null \
+  grep -Fx "1. First action: create your branch: \`git checkout -b fm-issue-512 --\`" "$issue_brief" >/dev/null \
     || fail "issue-linked brief did not use the exact slugless issue branch in checkout"
   grep -Fx "1. Never push to the default branch (push only your \`fm-issue-512\` branch). Never merge a PR." "$issue_brief" >/dev/null \
     || fail "issue-linked brief did not use the exact slugless issue branch in its push rule"
+  # bin/fm-spawn.sh refuses a ship whose selected branch disagrees with this line,
+  # and selects fm-issue-<n> from the same --issue.
+  grep -Fx "Ship branch: fm-issue-512" "$issue_brief" >/dev/null \
+    || fail "issue-linked brief did not record the issue branch as its machine-readable ship branch"
+
+  # The issue names the whole branch, so a prefix cannot also apply.
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
+    issue-branch-a3 firstmate --mode no-mistakes --issue 513 --branch-prefix fix/ 2>&1) \
+    && fail "fm-brief.sh accepted --issue together with --branch-prefix"
+  assert_contains "$out" "drop --branch-prefix" "the --issue/--branch-prefix refusal did not name the fix"
+  assert_absent "$home/data/issue-branch-a3/brief.md" "a refused --issue/--branch-prefix scaffold still wrote a brief"
 
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
     no-issue-branch-a2 firstmate --mode no-mistakes >/dev/null 2>&1 \
@@ -248,18 +259,18 @@ test_issue_based_branch_names() {
 
 # The project-owned verification reference must be structural, not something a brief
 # author has to remember: every ship mode carries it, it sits inside the definition
-# of done right after the machine-readable contract line, and the scout contract is
-# untouched.
+# of done right after the machine-readable contract and ship-branch lines, and the
+# scout contract is untouched.
 #
 # Placement and exact ownership are the two properties the clause exists for, so this
-# asserts the WHOLE ORDERED BLOCK sitting immediately below the contract line
+# asserts the WHOLE ORDERED BLOCK sitting immediately below those two lines
 # rather than five phrases found anywhere in the brief. Scattered-phrase checks
 # would stay green if a future edit moved the clause below the mode-specific
 # completion mechanics, split the obligations apart, or duplicated one phrase
 # elsewhere - each of which breaks "state it early". Every line is pinned whole so
 # a rewording cannot silently restore a competing local verification standard.
 test_ship_dod_carries_project_verification_reference() {
-  local home id mode brief dod expected actual
+  local home id mode forge contract rest brief dod expected actual
   home="$TMP_ROOT/verify-clause-home"
   write_registry "$home"
 
@@ -274,27 +285,36 @@ State what you verified.
 CLAUSE
   expected=${expected%$'\n'}
 
-  for id_mode in "brief-verify-b1:no-mistakes" "brief-verify-b2:direct-PR" "brief-verify-b3:local-only"; do
+  for id_mode in "brief-verify-b1:no-mistakes:none" "brief-verify-b2:direct-PR:none" \
+    "brief-verify-b3:local-only:none" "brief-verify-b5:no-mistakes:gerrit" \
+    "brief-verify-b6:direct-PR:gerrit"; do
     id=${id_mode%%:*}
-    mode=${id_mode##*:}
-    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1 \
-      || fail "$id: --mode $mode should scaffold"
+    rest=${id_mode#*:}
+    mode=${rest%%:*}
+    forge=${rest##*:}
+    contract="Delivery contract: mode=$mode"
+    [ "$forge" = none ] || contract="$contract forge=$forge shape=squash"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" --forge "$forge" >/dev/null 2>&1 \
+      || fail "$id: --mode $mode --forge $forge should scaffold"
     brief="$home/data/$id/brief.md"
 
-    # The contract line must stay the first line under the heading so fm-spawn.sh's
-    # check is unaffected, and the clause must be what immediately follows it.
+    # The contract and ship-branch lines must stay the first two lines under the
+    # heading so fm-spawn.sh's checks are unaffected, and the clause must be what
+    # immediately follows them.
     dod=$(awk '/^# Definition of done$/{f=1} f' "$brief")
-    [ "$(printf '%s\n' "$dod" | sed -n 2p)" = "Delivery contract: mode=$mode" ] \
+    [ "$(printf '%s\n' "$dod" | sed -n 2p)" = "$contract" ] \
       || fail "$id: the delivery contract line no longer leads the definition of done"
-    actual=$(printf '%s\n' "$dod" | sed -n '3,6p')
-    [ "$actual" = "$expected" ] || fail "$id: the verification clause is not the ordered block directly below the delivery contract line.
+    [ "$(printf '%s\n' "$dod" | sed -n 3p)" = "Ship branch: fm/$id" ] \
+      || fail "$id: the ship branch line no longer follows the delivery contract line"
+    actual=$(printf '%s\n' "$dod" | sed -n '4,7p')
+    [ "$actual" = "$expected" ] || fail "$id: the verification clause is not the ordered block directly below the ship branch line.
 --- expected ---
 $expected
 --- actual ---
 $actual"
 
     # Stating it early is the point: nothing mode-specific may precede it.
-    [ "$(printf '%s\n' "$dod" | sed -n 7p)" = "" ] \
+    [ "$(printf '%s\n' "$dod" | sed -n 8p)" = "" ] \
       || fail "$id: the clause must be separated from the mode-specific mechanics that follow it"
   done
 
