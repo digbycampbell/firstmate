@@ -2348,6 +2348,14 @@ declare -a WORKER_SCRIPTS=()
 # Invoked indirectly by the EXIT trap below.
 # shellcheck disable=SC2329
 cleanup_run() {
+  # A sandboxed script's own read-only git-hooks strip directory
+  # (state/<id>.git-hooks, bin/fm-teardown.sh) is removed by that script's own
+  # exit trap (tests/lib.sh fm_test_remove_tree); a script killed by the
+  # per-script timeout skips that trap and leaves it behind mode-0555, which a
+  # plain `rm -rf` cannot unlink. Restore write/search before removing, the
+  # same idiom fm_test_remove_tree uses, so one killed script cannot fail the
+  # whole run's cleanup.
+  find "$RUN_TMP" -type d -exec chmod u+rwx {} + 2>/dev/null || true
   rm -rf "$RUN_TMP"
 }
 

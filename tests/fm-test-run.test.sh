@@ -1490,6 +1490,8 @@ test_changed_bound_gives_slow_watcher_suites_headroom() {
   script=tests/fm-watch-triage.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
   cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/bin/fm-test-sandbox-lib.sh" "$repo/bin/fm-test-sandbox-lib.sh"
+  cp "$ROOT/bin/fm-home-guard-lib.sh" "$repo/bin/fm-home-guard-lib.sh"
   cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
   cat >"$repo/bin/fm-timeout-lib.sh" <<'SH'
 fm_run_timed() {
