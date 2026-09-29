@@ -25,6 +25,7 @@ set -u
 
 PR_CHECK="$ROOT/bin/fm-pr-check.sh"
 TMP_ROOT=$(fm_test_tmproot fm-pr-check-board)
+fm_git_identity
 
 # gh mock: answers fm-pr-check's own `gh pr view` head read with a miss (exit 1,
 # so no PR head is recorded), and answers fm-board's `gh api graphql` board
@@ -78,6 +79,11 @@ make_case() {
   home="$case_dir/home"
   fakebin=$(fm_fakebin "$case_dir")
   mkdir -p "$home/state" "$home/data" "$home/config" "$case_dir/wt" "$case_dir/project"
+  # fm-pr-check.sh accepts a ship's PR only when the worker copy's head is
+  # already on a remote-tracking ref, never only in that disposable copy.
+  git -C "$case_dir/wt" init -q
+  git -C "$case_dir/wt" commit -q --allow-empty -m init
+  git -C "$case_dir/wt" update-ref refs/remotes/origin/main "$(git -C "$case_dir/wt" rev-parse HEAD)"
   if [ "$with_issue" = 1 ]; then
     fm_write_meta "$home/state/$id.meta" \
       "window=firstmate:fm-$id" \

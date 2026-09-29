@@ -140,6 +140,8 @@ run_ship_spawn() {
 id=issue-yes-z1
 rec=$(make_spawn_case issue-yes "$id")
 read_case_record "$rec"
+# bin/fm-brief.sh --issue 42 records this line; the spawn must select the same branch.
+printf 'Ship branch: fm-issue-42\n' >> "$HOME_DIR/data/$id/brief.md"
 add_gh_mock "$FAKEBIN_DIR" 0
 gh_log="$CASE_DIR/gh-axi.log"
 out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$gh_log" "$id" "$PROJ_DIR" --issue 42)
@@ -155,7 +157,31 @@ pass "fm-spawn --issue triggers a real fm-board.sh move to Building on a success
 
 assert_grep "issue=42" "$HOME_DIR/state/$id.meta" \
   "issue-yes: --issue was not persisted onto the task meta"
-pass "fm-spawn --issue persists issue=<n> onto state/<id>.meta"
+grep -qx "branch=fm-issue-42" "$HOME_DIR/state/$id.meta" \
+  || fail "issue-yes: --issue did not select and record the fm-issue-<n> ship branch"
+pass "fm-spawn --issue persists issue=<n> and branch=fm-issue-<n> onto state/<id>.meta"
+
+# --- (a2) a brief scaffolded without the issue names a different branch -----
+id=issue-mismatch-z1
+rec=$(make_spawn_case issue-mismatch "$id")
+read_case_record "$rec"
+printf 'Ship branch: fm/%s\n' "$id" >> "$HOME_DIR/data/$id/brief.md"
+out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" /dev/null "$id" "$PROJ_DIR" --issue 42)
+status=$?
+[ "$status" -ne 0 ] || fail "issue-mismatch: a brief naming fm/<id> must not launch as fm-issue-42"
+assert_contains "$out" "branch mismatch for $id" "issue-mismatch: wrong/missing refusal message"
+assert_absent "$HOME_DIR/state/$id.meta" "issue-mismatch: a refused spawn still recorded the task"
+pass "fm-spawn refuses --issue when the brief names a different ship branch"
+
+# --- (a3) --issue names the whole branch, so --branch-prefix is refused -----
+id=issue-prefix-z1
+rec=$(make_spawn_case issue-prefix "$id")
+read_case_record "$rec"
+out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" /dev/null "$id" "$PROJ_DIR" --issue 42 --branch-prefix fix/)
+status=$?
+[ "$status" -ne 0 ] || fail "issue-prefix: --issue with --branch-prefix should be refused"
+assert_contains "$out" "drop --branch-prefix" "issue-prefix: wrong/missing refusal message"
+pass "fm-spawn refuses --issue together with --branch-prefix"
 
 # --- (b) omitting --issue makes no gh-axi call at all, and no meta line ----
 id=issue-no-z1
@@ -177,6 +203,7 @@ pass "fm-spawn without --issue makes no board call and persists no issue= line"
 id=issue-fails-z1
 rec=$(make_spawn_case issue-fails "$id")
 read_case_record "$rec"
+printf 'Ship branch: fm-issue-42\n' >> "$HOME_DIR/data/$id/brief.md"
 add_gh_mock "$FAKEBIN_DIR" 1
 gh_log="$CASE_DIR/gh-axi.log"
 out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$gh_log" "$id" "$PROJ_DIR" --issue 42)
