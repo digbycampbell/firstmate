@@ -9,7 +9,11 @@
 # below owns why.
 #
 # Merge method on GitHub defaults to --squash when the caller passes none of
-# --squash, --merge, --rebase, or --method after the optional -- separator.
+# --squash, --merge, --rebase, or --method after the optional -- separator,
+# except where the base branch has a merge_queue rule: there the queue sets the
+# method, so an attended merge with no caller method is enqueued with --auto and
+# no method flag instead. A caller-named method is always passed through as
+# given, which is how a true-merge project keeps its merge commits.
 # A GitHub merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the pull request
 # is open, not a draft, mergeable, free of conflicts, every unwaived check
@@ -62,7 +66,8 @@
 # refuses, naming the reads that failed.
 # If the pull request remains open and the base branch has an effective
 # merge_queue rule, an attended refusal names the queue's configured merge
-# method and exact --attended-override -- --auto --<method> retry flags. While
+# method and the exact --attended-override -- --auto retry flags, which name no
+# method because the queue sets it. While
 # the away-posture record exists, asynchronous merge requests are refused and
 # queue retry flags are not offered because they would outlive away authority.
 # An attended caller that already passed the configured method with --auto is
@@ -134,7 +139,9 @@
 # --remove-source-branch) are refused by default; --attended-override, parsed
 # before the optional -- separator, re-enables those forge flags for an
 # explicit captain instruction and never skips the live green check, the
-# away-record read, or a captain hold.
+# away-record read, or a captain hold. The --auto this script adds itself to
+# enqueue on a merge-queue base is not a caller request and needs no override:
+# every pre-merge condition above has already held at the bound head.
 #
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [--attended-override] [--allow-red <check-name>] [--allow-missing <check-name>] [-- <extra forge merge args>]
 #
@@ -1321,11 +1328,11 @@ github_report_queue_rules() {
       esac
       if github_merge_command_succeeded \
         && [ "$FM_PR_GITHUB_AUTO_REQUESTED" = true ] \
-        && github_caller_method_is "$queue_method"; then
-        printf 'error: this run refuses even though the request for %s was accepted with the exact flags base branch %s requires (--auto --%s): the pull request has still not entered the merge queue, so no landed or queued outcome is proven; re-check the pull request'"'"'s merge queue state before retrying\n' \
+        && { [ -z "$FM_PR_GITHUB_CALLER_METHOD" ] || github_caller_method_is "$queue_method"; }; then
+        printf 'error: this run refuses even though the request for %s was accepted with the exact flags base branch %s requires (--auto, queue method %s): the pull request has still not entered the merge queue, so no landed or queued outcome is proven; re-check the pull request'"'"'s merge queue state before retrying\n' \
           "$URL" "$FM_PR_GITHUB_BASE" "$queue_method" >&2
       else
-        printf 'error: base branch %s requires the merge queue; retry with: %s %s %s --attended-override -- --auto --%s\n' \
+        printf 'error: base branch %s requires the merge queue; retry with: %s %s %s --attended-override -- --auto (the queue applies its configured %s method)\n' \
           "$FM_PR_GITHUB_BASE" "$0" "$ID" "$URL" "$queue_method" >&2
       fi
       ;;
@@ -1410,11 +1417,26 @@ case "$PROVIDER" in
   github)
     merge_output=
     merge_args=()
-    if ! caller_has_merge_method "$@"; then
-      merge_args=(--squash)
-    fi
     FM_PR_GITHUB_CALLER_METHOD=$(caller_merge_method "$@")
     github_verify_mergeable || exit 1
+    # The base branch is known only after the verified read. A queue sets the
+    # method itself, so an attended merge with no caller method is enqueued with
+    # --auto alone; while away the queue is refused below instead.
+    if ! caller_has_merge_method "$@"; then
+      merge_args=(--squash)
+      if [ "$FM_PR_AWAY_POSTURE" != true ]; then
+        github_read_queue_method
+        case "$FM_PR_GITHUB_QUEUE_STATUS" in
+          single|conflicting|unrecognised)
+            merge_args=()
+            if [ "$FM_PR_GITHUB_AUTO_REQUESTED" != true ]; then
+              merge_args=(--auto)
+              FM_PR_GITHUB_AUTO_REQUESTED=true
+            fi
+            ;;
+        esac
+      fi
+    fi
     # The away record is locked first, so this last presence and authority read
     # and the forge command below share one live-owner critical section.
     hold_away_record_for_merge || exit 1

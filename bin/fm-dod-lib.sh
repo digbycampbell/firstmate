@@ -6,13 +6,20 @@
 # receives. Both paths must hand the worker the same contract: a promoted
 # no-mistakes worker that never received the ask-user escalation rule or the
 # `--yes` ban is the exact delivery hole this single owner exists to close.
-# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> [branch] [<forge>]
+# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> <branch> [<forge>] [<process>]
 # prints the block on stdout with no trailing blank line. The caller validates the
 # mode; an unknown mode is refused rather than silently rendered as the pipeline
 # contract.
-# The optional third argument is the task's full ship-branch name (a project's
-# registered prefix may replace the legacy `fm/` one); it defaults to `fm/<task-id>`
-# and is the immutable task branch rendered in every delivery contract.
+# The required third argument is the task's full ship-branch name, which
+# bin/fm-ship-branch-lib.sh names; it is the immutable task branch rendered in
+# every delivery contract.
+# process is none|fleet and defaults to none; fleet is the +fleet-process
+# registry token (bin/fm-project-mode.sh). Its block appends " process=fleet" to
+# the Delivery contract line and tells the worker to make its PR with
+# scripts/work/work.ts, never to type a branch name, title, body, or label, and
+# to leave the PR the draft it opens as: only a passing Review by someone other
+# than its author makes it ready. fm_process_valid refuses it on local-only, on
+# a Gerrit forge, and on a branch the organisation ruleset would refuse.
 # Every block also carries the verification reference FM_DOD_VERIFY, in the same
 # words, directly under its "Ship branch:" line: local verification follows the
 # project's own AGENTS.md testing standard rather than a competing rule here, so
@@ -65,10 +72,12 @@
 # changes is refused until it can be watched by its membership pinned when its
 # watch is armed, because the merge poll watches one change. No contract here
 # lets a worker submit, vote on, or abandon a change.
-# The two PR-based blocks require a non-draft pull request before the done
-# report, read back from the forge; a lane that deliberately holds a draft
-# declares a paused wait instead. bin/fm-pr-check.sh refuses to arm merge
-# monitoring on a draft through the same reading bin/fm-pr-merge.sh uses.
+# Outside the fleet process, the two PR-based blocks require a non-draft pull
+# request before the done report, read back from the forge; a lane that
+# deliberately holds a draft declares a paused wait instead. bin/fm-pr-check.sh
+# refuses to arm merge monitoring on such a draft through the same reading
+# bin/fm-pr-merge.sh uses. A fleet-process done names a draft awaiting its
+# Review, which bin/fm-pr-check.sh accepts for a task recorded process=fleet.
 # This file is the one owner of the no-mistakes `--intent` contract: only the
 # brief's `## Captain's intent` subsection plus later captain words, never
 # `## Firstmate spec` and never the worker's own tradeoffs.
@@ -111,6 +120,8 @@
 . "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-nm-run-lib.sh"
 # shellcheck source=bin/fm-brief-heading-lib.sh
 . "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-brief-heading-lib.sh"
+# shellcheck source=bin/fm-ship-branch-lib.sh
+. "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-ship-branch-lib.sh"
 
 fm_brief_worker_role() {  # <state-dir> <task-id>
   local state=$1 task_id=$2
@@ -147,9 +158,34 @@ fm_forge_valid_for_mode() {  # <forge> <mode> <caller>
   return 0
 }
 
-fm_ship_rule_one() {  # <no-mistakes|direct-PR|local-only> <task-id> [branch] [<forge>]
+# Closed-set gate for the fleet process (bin/fm-project-mode.sh owns the
+# +fleet-process registry token). It needs a pull request on GitHub, so it is
+# refused on local-only and on a Gerrit forge, and its organisation ruleset
+# accepts only an issue or chore branch (bin/fm-ship-branch-lib.sh).
+fm_process_valid() {  # <process> <mode> <forge> <branch> <caller>
+  local process=$1 mode=$2 forge=$3 branch=$4 caller=$5
+  case "$process" in
+    none) return 0 ;;
+    fleet) ;;
+    *)
+      echo "error: $caller: unknown process '$process' (expected none or fleet)" >&2
+      return 1 ;;
+  esac
+  if [ "$mode" = local-only ] || [ "$forge" != none ]; then
+    echo "error: $caller: the fleet process ships a GitHub pull request, so it composes only with mode=no-mistakes or direct-PR on forge=none (got mode=$mode forge=$forge)" >&2
+    return 1
+  fi
+  case "$branch" in
+    fm-issue-*|fm-chore-*) fm_ship_branch_org_allowed "$branch" && return 0 ;;
+  esac
+  echo "error: $caller: the fleet process needs an fm-issue-<n> or fm-chore-<slug> ship branch (got '$branch'); pass --issue <n> or --chore <slug>" >&2
+  return 1
+}
+
+fm_ship_rule_one() {  # <no-mistakes|direct-PR|local-only> <task-id> <branch> [<forge>]
   local mode=$1 id=$2 forge=${4:-none}
-  local branch=${3:-fm/$id}
+  local branch=${3:-}
+  [ -n "$branch" ] || { echo "error: fm_ship_rule_one: task $id needs its ship branch" >&2; return 1; }
   fm_forge_valid_for_mode "$forge" "$mode" fm_ship_rule_one || return 1
   if [ "$forge" = gerrit ]; then
     printf '%s\n' "1. Never push with git and never create a change except through the one \`gerrit-axi publish --squash\` your Definition of done names. Never run \`gerrit-axi submit\`, never vote or review a change by any path, including \`gerrit review\` or a label option on a push, and never abandon one: a human reviewer approves and submits it on the server."
@@ -342,6 +378,59 @@ There is no pull request, no \`gh-axi\` call, and no forge CI result to report: 
 EOF
 }
 
+# The command a fleet-process worker runs work.ts with. The repo's own copy wins;
+# until a process deploy lands it there, the factory copy runs against the repo
+# named by GITHUB_REPOSITORY. FM_WORK_TS_FALLBACK overrides the factory path.
+fm_fleet_work_ts_lines() {
+  local fallback=${FM_WORK_TS_FALLBACK:-$HOME/devs/digio-factory/process/payload/scripts/work/work.ts}
+  cat <<EOF
+Run work.ts from this repository as \`node --experimental-strip-types scripts/work/work.ts <command> ...\`.
+Until this repository carries \`scripts/work/work.ts\`, run \`GITHUB_REPOSITORY=<owner>/<repo> node --experimental-strip-types $fallback <command> ...\` instead, with the \`<owner>/<repo>\` of your \`origin\` remote.
+EOF
+}
+
+# The branch-creation step for a fleet-process ship, keyed by the ship branch's
+# shape (bin/fm-ship-branch-lib.sh owns the shapes). A retry suffix is outside
+# what work.ts names, so that one case confirms the issue through work.ts and
+# creates the exact recorded branch from the same base work.ts uses.
+fm_fleet_branch_step() {  # <branch>
+  local branch=$1 n rest
+  case "$branch" in
+    fm-issue-*)
+      rest=${branch#fm-issue-}
+      n=${rest%%[!0-9]*}
+      if [ "$rest" = "$n" ]; then
+        printf '%s\n' "create your branch with work.ts, never by hand: \`work.ts branch $n --builder fm --create\` checks that issue #$n is open and switches to \`$branch\` from \`origin/main\`; \`work.ts\` is the command your Definition of done names."
+      else
+        printf '%s\n' "confirm issue #$n is open with \`work.ts branch $n --builder fm\`, then create this retry branch from the same base: \`git fetch origin && git switch -c $branch origin/main\`; \`work.ts\` is the command your Definition of done names."
+      fi
+      ;;
+    fm-chore-*)
+      printf '%s\n' "create your branch with work.ts, never by hand: \`work.ts chore ${branch#fm-chore-} --builder fm --create\` switches to \`$branch\` from \`origin/main\`; \`work.ts\` is the command your Definition of done names."
+      ;;
+    *)
+      echo "error: fm_fleet_branch_step: '$branch' is not an issue or chore branch" >&2
+      return 1
+      ;;
+  esac
+}
+
+# What the fleet process changes for a worker that publishes a pull request. The
+# server half is digio-factory's Discipline and Review Gate workflows: it drafts
+# every new PR, sets the title's leading plan ref and copies the route label
+# from the issue, and marks the draft ready only when a passing Review lands on
+# its exact head.
+fm_fleet_pr_rules() {
+  fm_fleet_work_ts_lines
+  cat <<EOF
+Never type a branch name, PR title, PR body, or PR label by hand: work.ts derives them from the issue, and \`work.ts pr ... --dry-run\` prints the title, labels, and body without creating anything.
+The server sets the title's leading plan ref (\`P<n>.<m>\`, \`P<n>\`, or \`#<n>\`) and copies the issue's route label; never edit either.
+Every PR opens as a draft, and only a passing Review by someone other than its author makes it ready.
+You are its author: never mark it ready and never record a Review on it.
+A draft awaiting review is the expected state when you report done.
+EOF
+}
+
 IFS= read -r -d '' FM_DOD_VERIFY <<'FM_DOD_VERIFY_EOF' || true
 Follow the project's own AGENTS.md testing standard for local verification.
 If that standard assigns browser or e2e evidence to CI, run no local server, browser, or e2e suite; cite the CI lanes and any branch-slot deploy as the evidence.
@@ -350,12 +439,55 @@ State what you verified.
 FM_DOD_VERIFY_EOF
 FM_DOD_VERIFY=${FM_DOD_VERIFY%$'\n'}
 
-fm_dod_block() {  # <mode> <task-id> [branch] [<forge>]
-  local mode=$1 id=$2 forge=${4:-none}
-  local branch=${3:-fm/$id}
+fm_dod_block() {  # <mode> <task-id> <branch> [<forge>] [<process>]
+  local mode=$1 id=$2 forge=${4:-none} process=${5:-none}
+  local branch=${3:-}
+  [ -n "$branch" ] || { echo "error: fm_dod_block: task $id needs its ship branch" >&2; return 1; }
   fm_forge_valid_for_mode "$forge" "$mode" fm_dod_block || return 1
-  case "$mode:$forge" in
-    direct-PR:gerrit)
+  fm_process_valid "$process" "$mode" "$forge" "$branch" fm_dod_block || return 1
+  case "$mode:$forge:$process" in
+    direct-PR:none:fleet)
+      cat <<EOF
+# Definition of done
+Delivery contract: mode=direct-PR process=fleet
+Ship branch: $branch
+$FM_DOD_VERIFY
+
+This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
+EOF
+      fm_fleet_pr_rules
+      cat <<EOF
+The task is complete only when committed on your branch.
+When it is implemented and committed, push with \`git push -u origin HEAD\`, then open the PR with \`work.ts pr --type <type> [--scope <scope>] [--summary "<summary>"] --body-file <file>\`, where the file holds the plain-English \`## What\` a non-engineer can read; it prints the PR URL.
+Then append \`done [at=<epoch>]: PR {url}\` to the status file and stop.
+That \`done:\` is accepted only when this copy's HEAD - your latest commit - is pushed to your PR branch; the check tests that commit, not merely that a branch moved.
+Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR once it is reviewed; firstmate relays the outcome.
+EOF
+      ;;
+    no-mistakes:none:fleet)
+      cat <<EOF
+# Definition of done
+Delivery contract: mode=no-mistakes process=fleet
+Ship branch: $branch
+$FM_DOD_VERIFY
+
+The task is complete only when committed on your branch.
+When you believe it is complete, append \`done [at=<epoch>]: {summary}\` to the status file and stop.
+Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
+That first \`done:\` is the handoff that starts the pipeline, which owns the push and opens the PR; it is not a request to push from this copy.
+
+EOF
+      fm_nm_driving_block "$forge"
+      printf '\n'
+      fm_fleet_pr_rules
+      cat <<EOF
+After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), read the PR body back with \`gh-axi pr view <number> --full\`, where <number> is the PR number from your PR URL.
+When it does not follow this repository's \`.github/pull_request_template.md\` with its closing keyword, rewrite it into the template: render it with \`work.ts pr --type <type> [--scope <scope>] --body-file <file> --dry-run\`, where the file holds the plain-English \`## What\`, and set the PR body to the text after that output's \`---\` line with \`gh-axi pr edit <number> --body-file <rendered file>\`; a body edit does not move the head.
+Then append \`done [at=<epoch>]: PR {url} checks green\` and stop. You are finished.
+That CI-ready \`done:\` is accepted only when this copy's HEAD - your latest commit - is one the /no-mistakes run pushed, so commit nothing after the run; the check tests that commit, not merely that a branch moved.
+EOF
+      ;;
+    direct-PR:gerrit:*)
       cat <<EOF
 # Definition of done
 Delivery contract: mode=direct-PR forge=gerrit shape=squash
@@ -372,7 +504,7 @@ EOF
 Do NOT run /no-mistakes.
 EOF
       ;;
-    no-mistakes:gerrit)
+    no-mistakes:gerrit:*)
       cat <<EOF
 # Definition of done
 Delivery contract: mode=no-mistakes forge=gerrit shape=squash

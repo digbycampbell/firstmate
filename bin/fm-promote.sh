@@ -35,7 +35,13 @@
 # its value against the registry; bin/fm-project-mode.sh's header owns the
 # binding and bin/fm-dod-lib.sh owns what it changes for the worker, including
 # the refusal of a forge on local-only.
-# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>]
+# The project's +fleet-process binding is read from the registry the same way
+# (bin/fm-project-mode.sh owns it): promotion there renders the fleet-process
+# contract and refuses a ship branch the organisation ruleset would refuse to
+# create, so such a promotion takes --issue <n> [--issue-suffix <s>] or
+# --chore <slug> instead of a prefix (bin/fm-ship-branch-lib.sh owns the names).
+# The issue and process are recorded as issue= and process=fleet.
+# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix> | --issue <n> [--issue-suffix <s>] | --chore <slug>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,6 +70,11 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 MODE=
 YOLO=
 BRANCH_PREFIX=fm/
+BRANCH_PREFIX_SET=0
+ISSUE=
+ISSUE_SUFFIX=
+CHORE=
+PROCESS=none
 MODE_SET=0
 YOLO_SET=0
 FORGE=none
@@ -77,7 +88,10 @@ for a in "$@"; do
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
-      branch-prefix) BRANCH_PREFIX=$a ;;
+      branch-prefix) BRANCH_PREFIX=$a; BRANCH_PREFIX_SET=1 ;;
+      issue) ISSUE=$a ;;
+      issue-suffix) ISSUE_SUFFIX=$a ;;
+      chore) CHORE=$a ;;
     esac
     want_value=
     continue
@@ -88,7 +102,13 @@ for a in "$@"; do
     --yolo) want_value=yolo ;;
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --branch-prefix) want_value="branch-prefix" ;;
-    --branch-prefix=*) BRANCH_PREFIX=${a#--branch-prefix=} ;;
+    --branch-prefix=*) BRANCH_PREFIX=${a#--branch-prefix=}; BRANCH_PREFIX_SET=1 ;;
+    --issue) want_value=issue ;;
+    --issue=*) ISSUE=${a#--issue=} ;;
+    --issue-suffix) want_value="issue-suffix" ;;
+    --issue-suffix=*) ISSUE_SUFFIX=${a#--issue-suffix=} ;;
+    --chore) want_value=chore ;;
+    --chore=*) CHORE=${a#--chore=} ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -132,11 +152,7 @@ refuse_impossible_forge_posture || exit 1
 
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
-BRANCH="$BRANCH_PREFIX$ID"
-if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
-  echo "error: --branch-prefix and task id must form a valid git branch (got '$BRANCH')" >&2
-  exit 1
-fi
+BRANCH=$(fm_ship_branch_resolve "$ID" "$ISSUE" "$ISSUE_SUFFIX" "$CHORE" "$BRANCH_PREFIX" "$BRANCH_PREFIX_SET") || exit 1
 printf -v BRANCH_Q '%q' "$BRANCH"
 CONTROL_LOCK="$STATE/.control-$ID.lock"
 CONTROL_LOCK_HELD=0
@@ -194,10 +210,22 @@ if [ -n "$PROMOTE_PROJECT" ]; then
   fi
   FORGE=${PROMOTE_STANDING_FORGE:-none}
   refuse_impossible_forge_posture || exit 1
+  if [ "$("$FM_ROOT/bin/fm-project-mode.sh" --fleet-process "$PROMOTE_PROJECT_NAME" 2>/dev/null)" = on ] \
+    && [ "$MODE" != local-only ]; then
+    fm_ship_branch_require_org_shape fm-promote.sh "$PROMOTE_PROJECT_NAME" "$BRANCH" || exit 1
+    PROCESS=fleet
+    fm_process_valid "$PROCESS" "$MODE" "$FORGE" "$BRANCH" fm-promote.sh || exit 1
+  fi
+fi
+if [ "$PROCESS" = fleet ]; then
+  PROMOTE_BRANCH_STEP="Return to a clean default-branch base, then $(fm_fleet_branch_step "$BRANCH")" || exit 1
+else
+  PROMOTE_BRANCH_STEP="Return to a clean default-branch base, then create your branch: \`git checkout -b $BRANCH_Q --\`."
 fi
 # An unbound project keeps the exact wording it always had.
 PROMOTE_FORGE_WORDS=
 [ "$FORGE" = none ] || PROMOTE_FORGE_WORDS=" forge=$FORGE"
+[ "$PROCESS" = none ] || PROMOTE_FORGE_WORDS="$PROMOTE_FORGE_WORDS process=$PROCESS"
 
 SCOUT_BRIEF="$DATA/$ID/brief.md"
 if fm_brief_task_placeholders_present "$SCOUT_BRIEF"; then
@@ -237,7 +265,7 @@ IFS= read -r -d '' PROMOTION_SHIP_SPEC <<EOF || true
 If these promotion steps were already completed before a relaunch, preserve the existing \`$BRANCH_Q\` branch and continue from its current state; do not repeat them destructively.
 1. **Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from. If either does not resolve to the worktree you were launched in, stop and escalate to firstmate.
 2. Inventory this worktree's scratch state with \`git status\` and \`git log\` before changing anything.
-3. Return to a clean default-branch base, then create your branch: \`git checkout -b $BRANCH_Q --\`.
+3. $PROMOTE_BRANCH_STEP
 4. Carry over only the intended fix changes. Leave scratch commits, debug edits, and experiment files behind.
 5. If you reproduced a bug, turn that reproduction into a regression test.
 6. Treat the scout-time Firstmate spec and any unmarked legacy \`# Task\` text as investigation context, not captain intent or current ship-time instructions.
@@ -260,7 +288,7 @@ EOF
     printf '%s\n' "$PROMOTION_ASK_USER_BLOCK"
   fi
   printf '\n'
-  fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE"
+  fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$PROCESS"
 }
 mkdir -p "$DATA/$ID"
 [ ! -d "$INSTRUCTIONS" ] || { echo "error: ship instructions path is a directory: $INSTRUCTIONS" >&2; exit 1; }
@@ -313,12 +341,14 @@ fi
 BRIEF_REPLACEMENT=
 
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
-grep -v -e '^kind=' -e '^mode=' -e '^yolo=' -e '^branch=' "$META" > "$TMP"
+grep -v -e '^kind=' -e '^mode=' -e '^yolo=' -e '^branch=' -e '^issue=' -e '^process=' "$META" > "$TMP"
 {
   echo "kind=ship"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
   echo "branch=$BRANCH"
+  [ -z "$ISSUE" ] || echo "issue=$ISSUE"
+  [ "$PROCESS" = none ] || echo "process=$PROCESS"
 } >> "$TMP"
 if ! fm_backlog_atomic_transition publish "$TMP" "$META" "task record" "$STATE"; then
   rm -f -- "$TMP"

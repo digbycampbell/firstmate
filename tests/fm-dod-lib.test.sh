@@ -373,13 +373,87 @@ test_pr_based_dod_draft_check_uses_gh_axi() {
   local mode out
   for mode in direct-PR no-mistakes; do
     out="$TMP_ROOT/dod-$mode.md"
-    fm_dod_block "$mode" dod-draft-task > "$out"
+    fm_dod_block "$mode" dod-draft-task fm/dod-draft-task > "$out"
     assert_no_grep 'gh pr view' "$out" "$mode: DoD must not document a raw gh draft check"
     # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
     assert_grep 'confirm it is not a draft (`gh-axi pr view <number>` must print `draft: no`' "$out" \
       "$mode: DoD must read the draft state through gh-axi"
   done
   pass "PR-based DoD draft check uses gh-axi"
+}
+
+# The ship branch has no fm/<task-id> default: a caller that forgets it is
+# refused rather than handed a branch a fleet-process ruleset refuses at push.
+test_dod_block_requires_the_ship_branch() {
+  local out
+  if out=$(fm_dod_block no-mistakes dod-nobranch 2>&1); then
+    fail "fm_dod_block rendered a contract with no ship branch"
+  fi
+  assert_contains "$out" "needs its ship branch" "the missing-branch refusal did not name the branch"
+  assert_not_contains "$out" "fm/dod-nobranch" "a missing branch fell back to fm/<task-id>"
+  if out=$(fm_ship_rule_one no-mistakes dod-nobranch 2>&1); then
+    fail "fm_ship_rule_one rendered a rule with no ship branch"
+  fi
+  pass "the delivery contract names no fm/<task-id> default branch"
+}
+
+# A fleet-process PR opens as a draft that only another party's Review makes
+# ready, and its branch, title, body, and labels come from work.ts, so the
+# contract must neither tell the author to mark it ready nor to type them.
+test_fleet_process_dod_uses_work_ts_and_leaves_the_draft() {
+  local mode out
+  for mode in direct-PR no-mistakes; do
+    out="$TMP_ROOT/dod-fleet-$mode.md"
+    fm_dod_block "$mode" dod-fleet fm-issue-1596 none fleet > "$out" \
+      || fail "$mode: a fleet-process contract did not render"
+    assert_grep "Delivery contract: mode=$mode process=fleet" "$out" "$mode: the contract line lost process=fleet"
+    assert_grep 'Ship branch: fm-issue-1596' "$out" "$mode: the ship branch was not rendered"
+    assert_grep 'scripts/work/work.ts' "$out" "$mode: the contract did not name work.ts"
+    assert_grep 'process/payload/scripts/work/work.ts' "$out" "$mode: the factory fallback was not named"
+    assert_grep 'never mark it ready and never record a Review on it' "$out" \
+      "$mode: the author was not told to leave the review to someone else"
+    assert_no_grep 'gh-axi pr ready' "$out" "$mode: the author was told to mark its own draft ready"
+    assert_no_grep 'draft: no' "$out" "$mode: the author was told a non-draft PR is required"
+  done
+  assert_grep 'work.ts pr --type <type>' "$TMP_ROOT/dod-fleet-direct-PR.md" \
+    "direct-PR: the PR was not opened with work.ts pr"
+  assert_grep 'pr --type <type> [--scope <scope>] --body-file <file> --dry-run' "$TMP_ROOT/dod-fleet-no-mistakes.md" \
+    "no-mistakes: a pipeline body was not rewritten through work.ts"
+  pass "a fleet-process contract uses work.ts and leaves the draft for its reviewer"
+}
+
+test_fleet_process_is_refused_where_it_cannot_apply() {
+  local out
+  if out=$(fm_dod_block no-mistakes dod-fleet fm/dod-fleet none fleet 2>&1); then
+    fail "a fleet-process contract rendered on an fm/<task-id> branch"
+  fi
+  assert_contains "$out" "needs an fm-issue-<n> or fm-chore-<slug> ship branch" \
+    "the fm/ refusal did not name the branches the ruleset accepts"
+  if out=$(fm_dod_block local-only dod-fleet fm-issue-7 none fleet 2>&1); then
+    fail "a fleet-process contract rendered on local-only"
+  fi
+  if out=$(fm_dod_block no-mistakes dod-fleet fm-issue-7 gerrit fleet 2>&1); then
+    fail "a fleet-process contract rendered on a Gerrit forge"
+  fi
+  if out=$(fm_dod_block no-mistakes dod-fleet fm-issue-7 none wobble 2>&1); then
+    fail "an unknown process rendered"
+  fi
+  pass "the fleet process is refused off GitHub pull requests and off issue or chore branches"
+}
+
+test_fleet_branch_step_names_the_work_ts_command() {
+  local out
+  out=$(fm_fleet_branch_step fm-issue-1596)
+  assert_contains "$out" 'work.ts branch 1596 --builder fm --create' "an issue branch was not made by work.ts"
+  out=$(fm_fleet_branch_step fm-chore-bump-node)
+  assert_contains "$out" 'work.ts chore bump-node --builder fm --create' "a chore branch was not made by work.ts"
+  out=$(fm_fleet_branch_step fm-issue-1596-r2)
+  assert_contains "$out" 'work.ts branch 1596 --builder fm`' "a retry did not confirm its issue through work.ts"
+  assert_contains "$out" 'git switch -c fm-issue-1596-r2 origin/main' "a retry did not create its exact branch"
+  if fm_fleet_branch_step fm/legacy >/dev/null 2>&1; then
+    fail "a legacy branch got a fleet-process creation step"
+  fi
+  pass "the fleet-process setup step creates each branch shape through work.ts"
 }
 
 test_scout_done_is_not_gated
@@ -400,5 +474,9 @@ test_standalone_local_only_needs_project_ref
 test_non_done_lines_are_not_gated
 test_fenced_and_indented_captain_lines_are_not_intent
 test_pr_based_dod_draft_check_uses_gh_axi
+test_dod_block_requires_the_ship_branch
+test_fleet_process_dod_uses_work_ts_and_leaves_the_draft
+test_fleet_process_is_refused_where_it_cannot_apply
+test_fleet_branch_step_names_the_work_ts_command
 
 echo "all fm-dod-lib tests passed"

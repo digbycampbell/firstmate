@@ -22,6 +22,12 @@
 # draft state does not refuse, matching how the head read below is optional.
 # bin/fm-pr-merge.sh records through this script with FM_PR_CHECK_MERGE=1 and
 # skips this refusal, because its own merge-time draft refusal is authoritative.
+# A task recorded process=fleet (bin/fm-spawn.sh, bin/fm-promote.sh) is exempt:
+# its PR opens as a draft by rule and becomes ready only when a Review by
+# someone other than its author lands on its exact head, which the server marks
+# (bin/fm-dod-lib.sh owns that contract). Its poll is armed on the draft and
+# waits for the merge exactly as for any PR; merging still waits for that Review
+# and green checks, because bin/fm-pr-merge.sh refuses a draft.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
@@ -105,7 +111,9 @@ fi
 
 # The draft state is read before anything is recorded or armed. Only a positive
 # draft reading refuses, because an unreadable one must not block arming.
-if [ "$PROVIDER" = github ] && [ "${FM_PR_CHECK_MERGE:-}" != 1 ] && command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+PROCESS=$(grep '^process=' "$META" | tail -1 | cut -d= -f2- || true)
+if [ "$PROVIDER" = github ] && [ "${FM_PR_CHECK_MERGE:-}" != 1 ] && [ "$PROCESS" != fleet ] \
+  && command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
   DRAFT_JSON=$(gh pr view "$URL" --json isDraft 2>/dev/null || true)
   if [ "$(fm_pr_json_draft_state "$DRAFT_JSON")" = true ]; then
     echo "error: $URL is a draft pull request; a draft cannot be merged, so merge monitoring would wait for an event that cannot occur - mark it ready for review and arm again, or declare a wait instead of done if the draft is deliberate" >&2
