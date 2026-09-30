@@ -1612,6 +1612,164 @@ EOF
   pass "fm-project-mode: --branch-prefix resolves order-independently and defaults to the legacy fm/ prefix"
 }
 
+# +fleet-process is its own order-independent token: it reports only through
+# --fleet-process and never changes the default "<mode> <yolo>" output.
+test_project_mode_reports_the_fleet_process() {
+  local home out
+  home="$TMP_ROOT/project-mode-fleet/home"
+  mkdir -p "$home/data"
+  printf '%s\n' \
+    '- fleetproj [no-mistakes-prod-only +fleet-process] - fixture (added 2026-01-01)' \
+    '- firstproj [+fleet-process direct-PR +yolo] - fixture (added 2026-01-01)' \
+    '- plainproj [no-mistakes] - fixture (added 2026-01-01)' > "$home/data/projects.md"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --fleet-process fleetproj 2>/dev/null)
+  [ "$out" = on ] || fail "a +fleet-process project did not report on (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" fleetproj 2>/dev/null)
+  [ "$out" = "no-mistakes off" ] || fail "+fleet-process changed the default posture output (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" firstproj 2>/dev/null)
+  [ "$out" = "direct-PR on" ] || fail "a leading +fleet-process token was read as the mode (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --fleet-process plainproj 2>/dev/null)
+  [ "$out" = off ] || fail "a project without the token reported the fleet process (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --fleet-process missingproj 2>/dev/null)
+  [ "$out" = off ] || fail "an unregistered project reported the fleet process (got '$out')"
+  out=$(FM_HOME="$TMP_ROOT/project-mode-fleet/no-registry" "$PROJECT_MODE" --fleet-process anyproj 2>/dev/null)
+  [ "$out" = off ] || fail "an absent registry reported the fleet process (got '$out')"
+  pass "fm-project-mode: +fleet-process binds from its own token and reports only through --fleet-process"
+}
+
+# A fleet-process brief creates its branch and PR with work.ts and names an
+# issue or chore branch; the flag is refused wherever that cannot hold.
+test_brief_renders_the_fleet_process() {
+  local home out brief
+  home="$TMP_ROOT/brief-fleet/home"
+  mkdir -p "$home/data" "$home/state"
+  FM_HOME="$home" "$BRIEF" fleet-b1 proj --mode no-mistakes --fleet-process --issue 1596 >/dev/null \
+    || fail "an issue-linked fleet-process brief should scaffold"
+  brief="$home/data/fleet-b1/brief.md"
+  assert_grep 'Delivery contract: mode=no-mistakes process=fleet' "$brief" "the brief did not record process=fleet"
+  assert_grep 'Ship branch: fm-issue-1596' "$brief" "the brief did not name the issue branch"
+  assert_grep 'work.ts branch 1596 --builder fm --create' "$brief" "the setup step did not create the branch with work.ts"
+  assert_no_grep 'git checkout -b' "$brief" "the setup step still typed the branch by hand"
+  assert_no_grep 'gh-axi pr ready' "$brief" "the author was told to mark its own draft ready"
+
+  FM_HOME="$home" "$BRIEF" fleet-b2 proj --mode direct-PR --fleet-process --chore bump-node >/dev/null \
+    || fail "a chore fleet-process brief should scaffold"
+  brief="$home/data/fleet-b2/brief.md"
+  assert_grep 'Ship branch: fm-chore-bump-node' "$brief" "the brief did not name the chore branch"
+  assert_grep 'work.ts chore bump-node --builder fm --create' "$brief" "the chore branch was not made by work.ts"
+  assert_grep 'work.ts pr --type <type>' "$brief" "the direct-PR brief did not open its PR with work.ts"
+
+  FM_HOME="$home" "$BRIEF" fleet-b3 proj --mode no-mistakes --fleet-process --issue 1596 --issue-suffix -r2 >/dev/null \
+    || fail "a retry fleet-process brief should scaffold"
+  assert_grep 'Ship branch: fm-issue-1596-r2' "$home/data/fleet-b3/brief.md" "the retry suffix did not reach the branch"
+
+  out=$(FM_HOME="$home" "$BRIEF" fleet-b4 proj --mode no-mistakes --fleet-process 2>&1) \
+    && fail "a fleet-process brief with no issue or chore scaffolded"
+  assert_contains "$out" "needs an fm-issue-<n> or fm-chore-<slug> ship branch" "the refusal did not name the accepted branches"
+  assert_absent "$home/data/fleet-b4/brief.md" "a refused fleet-process brief was still written"
+  out=$(FM_HOME="$home" "$BRIEF" fleet-b5 proj --mode local-only --fleet-process --issue 3 2>&1) \
+    && fail "a local-only fleet-process brief scaffolded"
+  out=$(FM_HOME="$home" "$BRIEF" fleet-b6 proj --scout --chore tidy 2>&1) \
+    && fail "a scout brief accepted --chore"
+  pass "fm-brief: a fleet-process brief makes its branch and PR with work.ts on an issue or chore branch"
+}
+
+# The ruleset refuses fm/<task-id> at push with no bypass, so the spawn refuses
+# it first, and a brief must carry the project's registered process as it must
+# carry its forge. A relaunch keeps its original branch, which still pushes.
+test_spawn_enforces_the_fleet_process() {
+  local rec home proj fakebin out status
+  rec=$(make_home fleet-spawn "- proj [no-mistakes-prod-only +fleet-process] - fixture (added 2026-01-01)")
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  FM_HOME="$home" "$BRIEF" fleet-s1 proj --mode no-mistakes >/dev/null || fail "a legacy brief should scaffold"
+  fill_brief_subsections "$home/data/fleet-s1/brief.md" "Fix the thing." "Ship it."
+  out=$(run_spawn "$home" "$fakebin" fleet-s1 "$proj" claude --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "an fm/<task-id> ship launched on a fleet-process project"
+  assert_contains "$out" "refuses to create branch 'fm/fleet-s1'" "the refusal did not name the refused branch"
+  assert_contains "$out" "open a Task issue first" "the refusal did not name the Task-issue path"
+  assert_absent "$home/state/fleet-s1.meta" "the refused spawn still recorded a task"
+
+  FM_HOME="$home" "$BRIEF" fleet-s2 proj --mode no-mistakes --issue 41 >/dev/null || fail "an issue brief should scaffold"
+  fill_brief_subsections "$home/data/fleet-s2/brief.md" "Fix the thing." "Ship it."
+  out=$(run_spawn "$home" "$fakebin" fleet-s2 "$proj" claude --mode no-mistakes --yolo off --issue 41)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a brief without process=fleet launched on a fleet-process project"
+  assert_contains "$out" "process mismatch for fleet-s2" "the refusal did not name the process drift"
+  assert_absent "$home/state/fleet-s2.meta" "the refused spawn still recorded a task"
+
+  FM_HOME="$home" "$BRIEF" fleet-s3 proj --mode no-mistakes --fleet-process --issue 42 >/dev/null \
+    || fail "a fleet-process brief should scaffold"
+  fill_brief_subsections "$home/data/fleet-s3/brief.md" "Fix the thing." "Ship it."
+  out=$(run_spawn "$home" "$fakebin" fleet-s3 "$proj" claude --mode no-mistakes --yolo off --issue 42)
+  assert_not_contains "$out" "process mismatch" "an agreeing brief and registry were reported as drift"
+  assert_not_contains "$out" "refuses to create branch" "an issue branch was refused"
+
+  FM_HOME="$home" "$BRIEF" fleet-s4 proj --mode direct-PR --fleet-process --chore tidy-docs >/dev/null \
+    || fail "a chore fleet-process brief should scaffold"
+  fill_brief_subsections "$home/data/fleet-s4/brief.md" "Tidy the docs." "Ship it."
+  out=$(run_spawn "$home" "$fakebin" fleet-s4 "$proj" claude --mode direct-PR --yolo off --chore tidy-docs)
+  assert_not_contains "$out" "process mismatch" "an agreeing chore brief was reported as drift"
+  assert_not_contains "$out" "refuses to create branch" "a chore branch was refused"
+  assert_not_contains "$out" "registers the ship-branch prefix" "a chore branch drew the prefix-deviation notice"
+
+  FM_HOME="$home" "$BRIEF" fleet-s5 proj --mode local-only >/dev/null || fail "a local-only brief should scaffold"
+  fill_brief_subsections "$home/data/fleet-s5/brief.md" "Land it locally." "Stop at a ready branch."
+  out=$(run_spawn "$home" "$fakebin" fleet-s5 "$proj" claude --mode local-only --yolo off)
+  assert_not_contains "$out" "refuses to create branch" "a local-only branch, which is never pushed, was refused"
+
+  out=$(run_spawn "$home" "$fakebin" fleet-s6 "$proj" claude --relaunch --chore tidy)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a relaunch accepted --chore"
+  assert_contains "$out" "--issue-suffix and --chore cannot override it" "the relaunch refusal did not name the flags"
+
+  rec=$(make_home fleet-spawn-unbound "- proj [no-mistakes] - fixture (added 2026-01-01)")
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  FM_HOME="$home" "$BRIEF" fleet-s7 proj --mode no-mistakes --fleet-process --issue 43 >/dev/null \
+    || fail "a fleet-process brief should scaffold"
+  fill_brief_subsections "$home/data/fleet-s7/brief.md" "Fix the thing." "Ship it."
+  out=$(run_spawn "$home" "$fakebin" fleet-s7 "$proj" claude --mode no-mistakes --yolo off --issue 43)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a fleet-process brief launched on a project not registered +fleet-process"
+  assert_contains "$out" "process mismatch for fleet-s7" "the unbound refusal did not name the drift"
+  pass "fm-spawn: a fleet-process project ships only issue or chore branches on a matching brief"
+}
+
+# Promotion reads the fleet process from the registry like the forge, so a
+# promoted worker gets the same contract a briefed one does.
+test_promotion_carries_the_fleet_process() {
+  local home meta out id instructions
+  home="$TMP_ROOT/fleet-promote/home"
+  mkdir -p "$home/state" "$home/data" "$home/projects/proj"
+  printf '%s\n' '- proj [no-mistakes-prod-only +fleet-process] - fixture (added 2026-01-01)' > "$home/data/projects.md"
+  id=fleet-promote-p1
+  meta="$home/state/$id.meta"
+  printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\nproject=%s\n' "$id" "$home/projects/proj" > "$meta"
+  FM_HOME="$home" "$BRIEF" "$id" proj --scout >/dev/null 2>&1 || fail "scout brief generation should succeed"
+  fill_brief_subsections "$home/data/$id/brief.md" "Fix what the investigation found." "Carry over only the fix."
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode no-mistakes --yolo off 2>&1) \
+    && fail "a fleet-process promotion onto fm/<task-id> succeeded"
+  assert_contains "$out" "refuses to create branch 'fm/$id'" "the promotion refusal did not name the refused branch"
+  assert_grep 'kind=scout' "$meta" "a refused promotion changed the task record"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode no-mistakes --yolo off --issue 77 2>&1) \
+    || fail "an issue-linked fleet-process promotion should succeed: $out"
+  instructions="$home/data/$id/ship-instructions.md"
+  assert_grep 'branch=fm-issue-77' "$meta" "promotion did not record the issue branch"
+  assert_grep 'issue=77' "$meta" "promotion did not record the issue"
+  assert_grep 'process=fleet' "$meta" "promotion did not record the fleet process"
+  assert_grep 'Delivery contract: mode=no-mistakes process=fleet' "$instructions" \
+    "the promoted worker did not receive the fleet-process contract"
+  assert_grep 'work.ts branch 77 --builder fm --create' "$instructions" \
+    "the promoted worker was not told to create its branch with work.ts"
+  pass "fm-promote: a fleet-process project promotes onto an issue branch with the work.ts contract"
+}
+
 test_ship_spawn_requires_a_valid_delivery_contract
 test_scout_and_secondmate_refuse_delivery_flags
 test_spawn_refuses_a_brief_mode_mismatch
@@ -1637,4 +1795,8 @@ test_spawn_refuses_a_registry_forge_it_cannot_read
 test_promotion_carries_the_forge_binding
 test_spawn_and_promote_require_filled_task_subsections
 test_project_mode_resolves_branch_prefix
+test_project_mode_reports_the_fleet_process
+test_brief_renders_the_fleet_process
+test_spawn_enforces_the_fleet_process
+test_promotion_carries_the_fleet_process
 echo "# all fm-task-delivery tests passed"
