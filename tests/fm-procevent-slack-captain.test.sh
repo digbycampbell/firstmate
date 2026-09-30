@@ -232,6 +232,107 @@ sed -i.bak '/^allowed_user=/d' "$home/config/slack-captain"
 assert_grep 'untrusted=2' "$TMP_ROOT/noallow.out" "trust is granted only by configuration"
 pass "no configured captain means no trusted author"
 
+# --- a configured peer bot is captured, always untrusted --------------------
+# Only ids named in peer_bots= pass the bot_id filter. The bot's own user and
+# every unlisted bot stay dropped, so a mirrored reply can never loop back.
+
+PEER=U0PEERBOT1
+PEER2=U0PEERBOT2
+home=$(new_home peerbots)
+printf 'peer_bots=%s,%s\n' "$PEER" "$PEER2" >> "$home/config/slack-captain"
+slack_response "$(ok_body '[
+  {"type":"message","user":"'"$CAPTAIN"'","ts":"420.000420","text":"owner says"},
+  {"type":"message","bot_id":"B900","user":"'"$PEER"'","ts":"421.000421","text":"peer says"},
+  {"type":"message","bot_id":"B901","user":"'"$BOT"'","ts":"422.000422","text":"own mirror"},
+  {"type":"message","bot_id":"B902","user":"'"$STRANGER"'","ts":"423.000423","text":"unlisted bot"},
+  {"type":"message","bot_id":"B903","ts":"424.000424","text":"botless user field"}
+]')"
+"$ADAPTER" poll "$home" "$CHANNEL" > "$TMP_ROOT/peer.out" 2>/dev/null   || fail "a poll seeing an owner and a peer bot message should succeed"
+assert_grep 'count=2' "$TMP_ROOT/peer.out" "only the owner and the listed peer bot are captured"
+assert_grep '"text":"owner says"' "$TMP_ROOT/peer.out" "the owner message is captured"
+assert_grep '"text":"peer says"' "$TMP_ROOT/peer.out" "the peer bot message is captured"
+assert_no_grep 'own mirror' "$TMP_ROOT/peer.out" "the bot's own post stays dropped even with peer_bots set"
+assert_no_grep 'unlisted bot' "$TMP_ROOT/peer.out" "an unlisted bot stays dropped"
+assert_no_grep 'botless user field' "$TMP_ROOT/peer.out" "a bot message with no user id stays dropped"
+assert_grep '"user":"'"$PEER"'","trusted":false' "$TMP_ROOT/peer.out" \
+  "a peer bot message is untrusted and names its bot user"
+assert_grep '"user":"'"$CAPTAIN"'","trusted":true' "$TMP_ROOT/peer.out" "the owner stays trusted"
+assert_grep 'untrusted=1' "$TMP_ROOT/peer.out" "the peer bot message is counted untrusted"
+[ "$("$ADAPTER" classify "$TMP_ROOT/peer.out")" = untrusted-messages ] \
+  || fail "a result carrying a peer bot message classifies as untrusted-messages"
+pass "a listed peer bot is captured untrusted; own and unlisted bots stay dropped"
+
+# A peer bot that is also the configured owner or the firstmate bot changes nothing.
+home=$(new_home peerbotself)
+printf 'peer_bots=%s,%s\n' "$BOT" "$CAPTAIN" >> "$home/config/slack-captain"
+slack_response "$(ok_body '[
+  {"type":"message","bot_id":"B901","user":"'"$BOT"'","ts":"430.000430","text":"own mirror"}
+]')"
+rc=0
+"$ADAPTER" poll "$home" "$CHANNEL" > "$TMP_ROOT/peerself.out" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || [ ! -s "$TMP_ROOT/peerself.out" ] \
+  || fail "listing firstmate's own bot as a peer must not let its posts loop back"
+pass "the bot's own user can never be a peer bot"
+
+# An invalid peer id is a configuration refusal, not a silent widening.
+home=$(new_home peerbotbad)
+printf 'peer_bots=%s,bad id!\n' "$PEER" >> "$home/config/slack-captain"
+rc=0
+"$ADAPTER" poll "$home" "$CHANNEL" > "$TMP_ROOT/peerbad.out" 2>"$TMP_ROOT/peerbad.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "an invalid peer_bots id must be refused"
+assert_grep 'peer_bots' "$TMP_ROOT/peerbad.err" "the refusal names the offending key"
+pass "an invalid peer_bots id is refused"
+
+# The same filter covers thread replies.
+home=$(new_home peerthread)
+printf 'peer_bots=%s\n' "$PEER" >> "$home/config/slack-captain"
+FM_HOME="$home" "$ADAPTER" track-thread "$CHANNEL" 440.000440 >/dev/null \
+  || fail "registering a thread must succeed"
+slack_response "$(ok_body '[]')"
+cat > "$FAKE_SLACK_REPLIES" <<JSON
+{"ok":true,"messages":[
+  {"type":"message","user":"$BOT","ts":"440.000440","thread_ts":"440.000440","text":"root"},
+  {"type":"message","bot_id":"B900","user":"$PEER","ts":"441.000441","thread_ts":"440.000440","text":"peer in thread"},
+  {"type":"message","bot_id":"B902","user":"$STRANGER","ts":"442.000442","thread_ts":"440.000440","text":"unlisted in thread"}
+]}
+JSON
+"$ADAPTER" poll "$home" "$CHANNEL" > "$TMP_ROOT/peerthread.out" 2>/dev/null \
+  || fail "a peer bot reply in a tracked thread must produce a result"
+assert_grep 'count=1' "$TMP_ROOT/peerthread.out" "only the peer bot thread reply is captured"
+assert_grep '"text":"peer in thread"' "$TMP_ROOT/peerthread.out" "the peer bot thread reply is captured"
+assert_no_grep 'unlisted in thread' "$TMP_ROOT/peerthread.out" "an unlisted bot in a thread stays dropped"
+assert_grep '"trusted":false' "$TMP_ROOT/peerthread.out" "the peer bot thread reply is untrusted"
+pass "a peer bot reply inside a tracked thread is captured untrusted"
+
+# --- a peer bot never steals the mirror's reply target ----------------------
+# The newest captured message names the reply thread. A peer bot posting after
+# the owner must not redirect the reply, unless it is the only message.
+
+mirror_inbound() { cat "$1/state/slack-captain/mirror.inbound" 2>/dev/null; }
+home=$(new_home peertarget)
+printf 'peer_bots=%s\n' "$PEER" >> "$home/config/slack-captain"
+slack_response "$(ok_body '[
+  {"type":"message","user":"'"$CAPTAIN"'","ts":"450.000450","text":"owner first"},
+  {"type":"message","bot_id":"B900","user":"'"$PEER"'","ts":"451.000451","text":"peer later"}
+]')"
+"$ADAPTER" poll "$home" "$CHANNEL" > "$TMP_ROOT/peertarget.out" 2>/dev/null \
+  || fail "poll for the reply-target case should succeed"
+FM_HOME="$home" "$ADAPTER" autohandle "$SID" 7 "$TMP_ROOT/peertarget.out" >/dev/null 2>&1 || true
+assert_grep 'ts=450.000450' <(mirror_inbound "$home") \
+  "the owner's message, not the later peer bot message, is the reply target"
+
+home=$(new_home peeronly)
+printf 'peer_bots=%s\n' "$PEER" >> "$home/config/slack-captain"
+slack_response "$(ok_body '[
+  {"type":"message","bot_id":"B900","user":"'"$PEER"'","ts":"460.000460","text":"peer alone"}
+]')"
+"$ADAPTER" poll "$home" "$CHANNEL" > "$TMP_ROOT/peeronly.out" 2>/dev/null \
+  || fail "poll for the peer-only case should succeed"
+FM_HOME="$home" "$ADAPTER" autohandle "$SID" 8 "$TMP_ROOT/peeronly.out" >/dev/null 2>&1 || true
+assert_grep 'ts=460.000460' <(mirror_inbound "$home") \
+  "a peer bot message that is the only one in the turn is the reply target"
+pass "a peer bot message is a reply target only when nothing else was captured"
+
 # --- a window larger than one page is fetched to exhaustion ------------------
 
 home=$(new_home pagination)
