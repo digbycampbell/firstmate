@@ -32,6 +32,13 @@
 #                               never captured
 #   allowed_user=<user id>      optional, the captain's Slack user; every OTHER
 #                               author is marked untrusted in the result
+#   peer_bots=<id>[,<id>...]    optional, other bots whose posts ARE captured
+#                               despite carrying a `bot_id`. Their messages are
+#                               always untrusted (`trusted:false`), so their text
+#                               is input to read, never authority; `bot_user` and
+#                               every unlisted bot stay dropped, so the mirror
+#                               cannot loop. A peer bot's message is the reply
+#                               target only when nothing else was captured.
 #   quiet_window=<seconds>      optional, the debounce hold below (default 90)
 # Ids are validated as uppercase alphanumerics. An absent `allowed_user` marks
 # every message untrusted, because trust is granted only by configuration.
@@ -164,11 +171,22 @@ config_get() {  # <key>
   sed -n "s/^[[:space:]]*$1=//p" "$file" | tail -n1 | tr -d '[:space:]'
 }
 
-# Sets CFG_CHANNEL, CFG_BOT_USER, CFG_ALLOWED_USER, QUIET_WINDOW.
+# Sets CFG_CHANNEL, CFG_BOT_USER, CFG_ALLOWED_USER, CFG_PEER_BOTS (comma list,
+# validated, never containing the bot_user or allowed_user), QUIET_WINDOW.
 load_config() {
   CFG_CHANNEL=$(config_get channel)
   CFG_BOT_USER=$(config_get bot_user)
   CFG_ALLOWED_USER=$(config_get allowed_user)
+  CFG_PEER_BOTS=
+  local peer peers
+  peers=$(config_get peer_bots)
+  while [ -n "$peers" ]; do
+    peer=${peers%%,*}
+    if [ "$peers" = "$peer" ]; then peers=; else peers=${peers#*,}; fi
+    valid_slack_id "$peer" || die "config/slack-captain has an invalid peer_bots id"
+    [ "$peer" != "$CFG_BOT_USER" ] && [ "$peer" != "$CFG_ALLOWED_USER" ] || continue
+    CFG_PEER_BOTS="${CFG_PEER_BOTS:+$CFG_PEER_BOTS,}$peer"
+  done
   [ -n "$CFG_CHANNEL" ] || die "config/slack-captain has no channel= entry"
   valid_slack_id "$CFG_CHANNEL" || die "config/slack-captain has an invalid channel id"
   [ -z "$CFG_BOT_USER" ] || valid_slack_id "$CFG_BOT_USER" \
@@ -503,17 +521,19 @@ fetch_thread() {  # <channel> <thread-ts> <oldest>
 # rest) is not.
 select_messages() {  # <input-jsonl> <output-jsonl> <thread-ts-or-empty>
   jq -cs --arg bot "${CFG_BOT_USER:-}" --arg allowed "${CFG_ALLOWED_USER:-}" \
-     --arg thread "$3" '
-    map(select(
+     --arg peers "${CFG_PEER_BOTS:-}" --arg thread "$3" '
+    ($peers | split(",") | map(select(. != ""))) as $peerlist
+    | map(select(
         .type == "message"
-        and (has("bot_id") | not)
+        and ((has("bot_id") | not) or ((.user // "") as $u | $peerlist | index($u) != null))
         and ((has("subtype") | not) or .subtype == "file_share")
         and ((.user // "") != "")
         and (.user != $bot)
       ))
     | sort_by(.ts | tonumber)
     | .[]
-    | {ts: .ts, user: .user, trusted: ($allowed != "" and .user == $allowed), text: (.text // "")}
+    | {ts: .ts, user: .user, trusted: ($allowed != "" and .user == $allowed and (has("bot_id") | not)), text: (.text // "")}
+      + (if has("bot_id") then {peer_bot: true} else {} end)
       + (if $thread == "" then {} else {thread_ts: $thread} end)
   ' "$1" > "$2" 2>/dev/null
 }
@@ -752,7 +772,8 @@ record_reply_target() {  # <channel> <result-file> <source-id> <sequence>
   local newest ts thread
   newest=$(LC_ALL=C awk 'body { print } $0 == "" { body = 1 }' "$2" \
     | jq -rs 'map(select(type == "object" and has("ts")))
-              | (max_by(.ts | tonumber) // empty)
+              | ((map(select(.peer_bot | not)) | max_by(.ts | tonumber))
+                 // max_by(.ts | tonumber) // empty)
               | "\(.ts) \(.thread_ts // "")"' 2>/dev/null) || return 0
   [ -n "$newest" ] || return 0
   ts=${newest%% *}

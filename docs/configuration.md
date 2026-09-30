@@ -2209,8 +2209,9 @@ The Slack captain-channel process-event source reads its channel and identities 
 The file is one `key=value` per line, and every id is validated as uppercase alphanumerics:
 
 - `channel=<channel id>` is required and names the channel to watch; it also derives the canonical source id, so one home watches one channel per registration.
-- `bot_user=<user id>` is optional and names Firstmate's own Slack bot user, whose posts are never captured; other bots are already excluded by their `bot_id`.
+- `bot_user=<user id>` is optional and names Firstmate's own Slack bot user, whose posts are never captured; other bots are excluded by their `bot_id` unless listed in `peer_bots`.
 - `allowed_user=<user id>` is optional and names the captain's Slack user; every other author is marked untrusted in the captured result, and an absent key marks every author untrusted because trust is granted only by configuration.
+- `peer_bots=<id>[,<id>...]` is optional and lists other bots (for example a second agent sharing the channel) whose posts are captured despite their `bot_id`; each is validated like the other ids, marked `peer_bot` and always untrusted, so it is input to read and never authority, and it never becomes the reply target unless it is the only captured message. Firstmate's own `bot_user` and every unlisted bot stay excluded.
 - `quiet_window=<seconds>` is optional and sets the debounce hold, default 90: new traffic is held open until a quiet window adds nothing, so a burst of captain messages becomes one capture rather than one wake each.
 
 An absent or invalid file is a refusal at arming time, not a default.
