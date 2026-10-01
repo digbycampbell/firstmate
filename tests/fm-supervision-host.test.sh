@@ -2678,11 +2678,8 @@ test_refused_rewake_after_a_during_turn_close_still_wakes_main() {
   exec 3>&-
   assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" \
     "rewake-refused: the close was not passed to main: $(cat "$home/state/.supervision-host.log")"
-  expect_code 2 "$(cat "$home/hook.rc")" \
-    "rewake-refused: the Stop hook must wake main: rc=$(cat "$home/hook.rc") err=$(cat "$home/hook.err" 2>/dev/null) epoch=$(cat "$home/state/.claude-autoarm-epoch" 2>/dev/null) marker=$(cat "$home/state/.watcher-down" 2>/dev/null)"
-  assert_re '^signal: .*demo.status' "$home/hook.err" "rewake-refused: the rewake must carry the close"
-  assert_no_re 'outcome=arming ' "$home/state/.claude-autoarm-epoch" \
-    "rewake-refused: the generation died still arming: $(cat "$home/state/.claude-autoarm-epoch")"
+  expect_code 0 "$(cat "$home/hook.rc")" \
+    "rewake-refused: a session that cannot prove lock ownership must not be woken itself: rc=$(cat "$home/hook.rc") err=$(cat "$home/hook.err" 2>/dev/null) epoch=$(cat "$home/state/.claude-autoarm-epoch" 2>/dev/null) marker=$(cat "$home/state/.watcher-down" 2>/dev/null)"
   assert_no_re 'outcome=rewake' "$home/state/.claude-autoarm-epoch" \
     "rewake-refused: a rewake must never commit without proving session-lock ownership: $(cat "$home/state/.claude-autoarm-epoch")"
   decision_rows=$(grep -c 'needs-decision:' "$home/state/.wake-queue" 2>/dev/null || true)

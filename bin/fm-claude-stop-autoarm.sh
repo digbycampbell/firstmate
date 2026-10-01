@@ -304,8 +304,7 @@ deliver_owned_rewake() {
   if autoarm_commit rewake; then
     return 0
   fi
-  fm_autoarm_still_owner "$STATE" "$MY_GEN" || return 2
-  autoarm_commit failed "$FAILURE_NOTICE"
+  return 2
 }
 
 # Best-effort ownership-checked record for exit-0 paths, where supersession
