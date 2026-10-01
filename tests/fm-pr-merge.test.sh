@@ -3659,6 +3659,52 @@ test_required_producer_identity() {
   pass "fm-pr-merge enforces required producer identity and named waivers"
 }
 
+# A head with a long check-run history (81 reruns on one real PR) produces
+# producer data past Linux's 128 KB single-argument limit even after projection,
+# so the guard must stream it to jq and still bind the required check to its app.
+test_oversized_check_run_history_keeps_producer_identity() {
+  local case_dir head variant app bytes
+  head=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+  for variant in correct wrong-app; do
+    case_dir=$(make_case "required-producer-oversized-$variant")
+    add_gh_mocks "$case_dir" "$head"
+    write_github_rollup_json "$case_dir" "$head" "$(check_run ci COMPLETED SUCCESS)"
+    write_github_required "$case_dir" classic:ci
+    jq '.protection.required_status_checks.checks[0].app_id = 15368' \
+      "$case_dir/github-branch.json" > "$case_dir/updated.json"
+    mv "$case_dir/updated.json" "$case_dir/github-branch.json"
+    app=15368
+    [ "$variant" != wrong-app ] || app=42
+    jq -n --arg head "$head" --argjson app "$app" '
+      {check_runs: [range(0; 1500) as $i | {
+        name: (if $i == 0 then "ci" else "history-\($i)-" + ("x" * 64) end),
+        app: {id: (if $i == 0 then $app else 42 end), slug: "github-actions",
+          description: ("d" * 512)},
+        head_sha: $head
+      }]}' > "$case_dir/github-runs.json"
+    bytes=$(jq -c '[.check_runs[] | {name, head_sha, app: {id: .app.id}}]' \
+      "$case_dir/github-runs.json" | wc -c)
+    [ "$bytes" -gt 131072 ] \
+      || fail "oversized-producer-$variant: projected producer data is only $bytes bytes"
+
+    run_required_case "$case_dir" 110 --attended-override -- --admin
+    assert_no_grep 'could not be read' "$case_dir/stderr" \
+      "oversized-producer-$variant: the oversized history was not read"
+    if [ "$variant" = correct ]; then
+      expect_code 0 "$RC" "oversized-producer-correct: $(cat "$case_dir/stderr")"
+      assert_grep 'pr merge' "$case_dir/gh.log" \
+        "oversized-producer-correct: a valid app-bound producer did not merge"
+    else
+      expect_code 1 "$RC" "oversized-producer-wrong-app: $(cat "$case_dir/stderr")"
+      assert_grep "required check 'ci' has not reported" "$case_dir/stderr" \
+        "oversized-producer-wrong-app: the app-bound check was accepted"
+      assert_no_grep 'pr merge' "$case_dir/gh.log" \
+        "oversized-producer-wrong-app: a producer from another app reached merge"
+    fi
+  done
+  pass "fm-pr-merge streams oversized check-run history while preserving app binding"
+}
+
 # A commit status carries no app id to compare, so an app-bound required context
 # that arrives as a green status matches by name, while the same context left
 # unreported still refuses.
@@ -4036,5 +4082,6 @@ test_allow_missing_waives_only_the_named_unreported_check
 test_allow_missing_follows_the_allow_red_rules
 
 test_required_producer_identity
+test_oversized_check_run_history_keeps_producer_identity
 test_app_bound_required_status_context_matches_by_name
 test_required_partial_reads_report_all_failures

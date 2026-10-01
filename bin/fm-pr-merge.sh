@@ -707,10 +707,15 @@ github_read_required_contexts() {
   [ -z "$FM_PR_GITHUB_REQUIRED_ERROR" ]
 }
 
+# All three inputs go to jq on stdin: a long check-run history grows producers
+# past Linux's 128 KB single-argument limit, which --argjson cannot carry.
 github_required_checks_missing() {
   local json=$1 required=$2 producers=$3
-  printf '%s' "$json" | jq -r --argjson required "$required" --argjson producers "$producers" '
-    if (.statusCheckRollup | type) != "array" then error("no check rollup") else . end
+  printf '%s\n%s\n%s\n' "$json" "$required" "$producers" | jq -sr '
+    if length == 3 and (.[1] | type) == "array" and (.[2] | type) == "array"
+      then . else error("invalid check inputs") end
+    | .[1] as $required | .[2] as $producers | .[0]
+    | if (.statusCheckRollup | type) != "array" then error("no check rollup") else . end
     | .statusCheckRollup as $reported
     | $required
     | map(. as $requirement
@@ -834,7 +839,7 @@ EOF
       || ! producers=$(printf '%s' "$runs" | jq -sc --arg head "$live_head" '
         [ .[] | if (.check_runs | type) == "array" then .check_runs[] else error("invalid check runs") end
           | if (.name | type) == "string" and (.app.id | type) == "number" and .head_sha == $head
-            then . else error("invalid check producer") end ]' 2>/dev/null); then
+            then {name, head_sha, app: {id: .app.id}} else error("invalid check producer") end ]' 2>/dev/null); then
       producers='[]'
       refusals="$refusals  - required check producers at head $live_head could not be read
 "
