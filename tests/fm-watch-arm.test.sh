@@ -267,6 +267,72 @@ test_attached_arm_still_fails_on_a_wake_it_did_not_deliver() {
   pass "watch-arm: a cycle that delivered no wake of its own still fails loudly"
 }
 
+# The live stall: the arm that owns the watcher has already exited and left a
+# healthy successor, so the attached arm (the supervision host's arm) sees that
+# successor before it reads the delivery ledger. Following the successor
+# swallows the wake. The attached arm must print the ledger reason and exit,
+# and it must leave the successor running.
+test_attached_arm_reports_a_delivered_wake_ahead_of_a_live_successor() {
+  local dir state fakebin out armout successor_out successor status i
+  dir=$(make_case attached-successor-delivery)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  armout="$dir/arm.out"
+  successor_out="$dir/successor.out"
+  start_seed_watcher "$state" "$fakebin" "$out" 1
+  # Longer than this case's wait, so the pre-fix follow cannot fall through to
+  # the no-successor ledger path and pass by accident.
+  start_attached_arm "$state" "$fakebin" "$armout" 30
+
+  printf 'needs-decision: successor already running\n' > "$state/follow.status"
+  wait_for_pid_gone "$SEED_PID" 200 \
+    || fail "seed watcher did not exit on the signal: $(cat "$out")"
+  grep -q '^signal:' "$out" \
+    || fail "seed watcher did not publish a signal: $(cat "$out")"
+
+  # The orphan path starts this next watcher as a handling successor, which
+  # stays in the poll loop instead of spending the queued wake on rearm-resurface.
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_WATCH_HANDLING_SUCCESSOR=1 \
+    "$WATCH" > "$successor_out" &
+  successor=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$successor" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" != "$successor" ]; then
+    kill -TERM "$successor" 2>/dev/null || true
+    wait "$successor" 2>/dev/null || true
+    fail "successor watcher did not take the lock: $(cat "$successor_out")"
+  fi
+
+  # 12s. The confirm window above is 30s, so a follower that waits out "no
+  # successor" is still inside that window when this returns 124.
+  wait_for_exit "$ARM_PID" 120
+  status=$?
+  if ! is_live_non_zombie "$successor"; then
+    wait "$successor" 2>/dev/null || true
+    fail "fixture: the successor exited before the attached arm decided: $(cat "$successor_out")"
+  fi
+  kill -TERM "$successor" 2>/dev/null || true
+  wait "$successor" 2>/dev/null || true
+
+  [ "$status" -ne 124 ] \
+    || fail "attached arm followed the live successor instead of reporting the delivered wake: $(cat "$armout")"
+  expect_code 0 "$status" "an attached arm must exit 0 with the delivered wake even when a successor is already up"
+  grep -q '^signal:' "$armout" \
+    || fail "attached arm did not report the delivered signal: $(cat "$armout")"
+  grep -q $'\treason=attached-delivered-wake\t' "$state/.watch-cycle-exits.log" \
+    || fail "the close was not classified as a delivered wake: $(cat "$state/.watch-cycle-exits.log")"
+  grep -q $'\tsuccessor=attached:'"$successor"$'\n' "$state/.watch-cycle-exits.log" \
+    || grep -q $'\tsuccessor=attached:'"$successor"'$' "$state/.watch-cycle-exits.log" \
+    || fail "the delivered close did not name the live successor, so the no-successor path ran instead: $(cat "$state/.watch-cycle-exits.log")"
+  pass "watch-arm: an attached arm reports a delivered wake even when a successor is already running"
+}
+
 # A slow cycle is not an ended cycle. The holder is frozen past the grace plus
 # the successor confirmation window, which is where an attached arm used to
 # declare the cycle over and fail while the holder was alive and still held the
@@ -1325,6 +1391,7 @@ test_watcher_exits_when_its_state_directory_is_removed
 test_watcher_exits_when_its_home_is_removed
 test_reaper_stops_a_tracked_watcher
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
+test_attached_arm_reports_a_delivered_wake_ahead_of_a_live_successor
 test_attached_arm_follows_a_slow_live_holder
 test_attached_arm_hands_a_stalled_holder_to_its_replacement
 test_rearm_resurfaces_durable_queue_and_remote_open_decision

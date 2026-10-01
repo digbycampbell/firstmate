@@ -23,6 +23,9 @@
 # An attach to a live watcher with a non-empty queue under a downtime or
 # acknowledged marker prints check: rearm-resurface and exits without waiting,
 # leaving that watcher running, while a handling marker still waits.
+# An attached arm reports the ended cycle's ledger delivery and exits even
+# when a successor is already healthy, and it leaves that successor running.
+# It follows a successor only when the ended cycle published no delivery.
 # On a harness with a PreToolUse-equivalent hook, bin/fm-arm-pretool-check.sh
 # applies the command-position policy before the command runs; see
 # docs/arm-pretool-check.md for the blessed tree and deny reason codes. It is a
@@ -357,17 +360,16 @@ fail_unexplained_cycle() {
   return 1
 }
 
-# Close a cycle whose reason line this arm could not read against the bounded
-# terminal-delivery ledger the watcher publishes before releasing its lock.
-close_unobserved_cycle() {
+# The ended cycle's ledger reason on stdout, or nothing when it published none.
+# Returns 1 only when the ledger lock cannot be taken. The watcher writes the
+# row before it releases the singleton, so a successor that already holds the
+# lock cannot hide a delivery that belongs to this cycle.
+lookup_ended_cycle_delivery() {
   local i reason clean_identity record_pid record_identity record_reason
   clean_identity=$(printf '%s' "$cycle_watcher_identity" | tr '\t\r\n' '   ')
   i=0
   while ! fm_lock_try_acquire "$WATCH_DELIVERY_LOCK"; do
-    [ "$i" -lt 20 ] || {
-      fail_unexplained_cycle
-      return 1
-    }
+    [ "$i" -lt 20 ] || return 1
     sleep 0.02
     i=$((i + 1))
   done
@@ -380,6 +382,18 @@ close_unobserved_cycle() {
     done < "$WATCH_DELIVERY_LOG"
   fi
   fm_lock_release "$WATCH_DELIVERY_LOCK"
+  printf '%s\n' "$reason"
+  return 0
+}
+
+# Close a cycle whose reason line this arm could not read against the bounded
+# terminal-delivery ledger the watcher publishes before releasing its lock.
+close_unobserved_cycle() {
+  local reason
+  if ! reason=$(lookup_ended_cycle_delivery); then
+    fail_unexplained_cycle
+    return 1
+  fi
   if [ -n "$reason" ]; then
     printf '%s\n' "$reason"
     return 0
@@ -399,9 +413,11 @@ attached_holder_live() {
   [ "$FM_WATCHER_MATCHED_IDENTITY" = "$cycle_watcher_identity" ]
 }
 
-# Stay alive across identity-matched healthy holders. If one cycle ends, attach
-# to a verified successor. With no successor, report the wake that cycle durably
-# delivered, or fail loudly - never a clean empty completion that an adapter could
+# Stay alive across identity-matched healthy holders. If one cycle ends and its
+# ledger delivery is present, report that wake and exit even when a successor
+# is already healthy, leaving the successor running. Follow a successor only
+# when the ended cycle published no delivery. With no successor and no
+# delivery, fail loudly - never a clean empty completion that an adapter could
 # mistake for a no-op.
 # A stale beacon alone does not end the followed cycle: while the holder is alive
 # and the lock still names it under the same identity, it is a slow cycle, which
@@ -409,7 +425,7 @@ attached_holder_live() {
 # Only at the stall bound, where the watcher's own re-arm evicts a live holder,
 # does it fail with the typed stalled-holder line so its owner's retry replaces it.
 attach_and_wait() {
-  local attached_pid=$1 age
+  local attached_pid=$1 age successor_pid delivery
   while :; do
     if healthy_watcher; then
       if [ "$HEALTHY_PID" != "$attached_pid" ] || [ "$HEALTHY_IDENTITY" != "$cycle_watcher_identity" ]; then
@@ -432,8 +448,18 @@ attach_and_wait() {
       return 1
     fi
     if wait_for_healthy_successor; then
-      cycle_log_append unknown unknown attached-cycle-ended "attached:$HEALTHY_PID"
-      attached_pid=$HEALTHY_PID
+      successor_pid=$HEALTHY_PID
+      if ! delivery=$(lookup_ended_cycle_delivery); then
+        fail_unexplained_cycle
+        return 1
+      fi
+      if [ -n "$delivery" ]; then
+        cycle_log_append unknown unknown attached-delivered-wake "attached:$successor_pid"
+        printf '%s\n' "$delivery"
+        return 0
+      fi
+      cycle_log_append unknown unknown attached-cycle-ended "attached:$successor_pid"
+      attached_pid=$successor_pid
       cycle_begin "$attached_pid" attached "$HEALTHY_IDENTITY"
       report_attached
       continue
