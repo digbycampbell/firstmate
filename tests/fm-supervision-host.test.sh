@@ -2683,13 +2683,15 @@ test_refused_rewake_after_a_during_turn_close_still_wakes_main() {
   assert_re '^signal: .*demo.status' "$home/hook.err" "rewake-refused: the rewake must carry the close"
   assert_no_re 'outcome=arming ' "$home/state/.claude-autoarm-epoch" \
     "rewake-refused: the generation died still arming: $(cat "$home/state/.claude-autoarm-epoch")"
+  assert_no_re 'outcome=rewake' "$home/state/.claude-autoarm-epoch" \
+    "rewake-refused: a rewake must never commit without proving session-lock ownership: $(cat "$home/state/.claude-autoarm-epoch")"
   decision_rows=$(grep -c 'needs-decision:' "$home/state/.wake-queue" 2>/dev/null || true)
   [ "${decision_rows:-0}" -ge 1 ] \
-    || fail "rewake-refused: the decision must stay queued: $(cat "$home/state/.wake-queue" 2>/dev/null)"
+    || fail "rewake-refused: the decision must stay queued for the next owned cycle to re-deliver: $(cat "$home/state/.wake-queue" 2>/dev/null)"
   watcher_live "$home" || fail "rewake-refused: the pass-through left no watcher: $(cat "$home/state/.supervision-host.log")"
   : > "$home/session.stop"
   stop_home_processes "$home"
-  pass "host+hook: a refused rewake commit still wakes main and does not leave the generation arming"
+  pass "host+hook: a refused rewake commit never bypasses the session-lock proof, and the wake stays queued for the next owned cycle"
 }
 
 test_report_surface_enforces_actor_turn_and_scope

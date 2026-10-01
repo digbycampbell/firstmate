@@ -290,9 +290,12 @@ autoarm_commit() {  # <outcome> [marker-file]
 # outcome=arming under a process that is about to die, and Claude never
 # delivers the banner. Restore downtime and bind the rewake while this
 # process still owns the generation. A superseded generation stays silent.
+# The session-lock proof is never bypassed: a session that cannot prove it
+# owns the lock is never recorded as having delivered the rewake. When the
+# proof keeps failing, the wake stays durably queued and unacknowledged, and
+# the next owned supervision cycle re-delivers it.
 # Returns 0 when the caller must exit 2, and 2 when it must exit 0.
 deliver_owned_rewake() {
-  local session_pid recovery
   if autoarm_commit rewake; then
     return 0
   fi
@@ -300,21 +303,6 @@ deliver_owned_rewake() {
   fm_recovery_marker_publish "$STATE/.watcher-down" downtime >/dev/null 2>&1 || true
   if autoarm_commit rewake; then
     return 0
-  fi
-  fm_autoarm_still_owner "$STATE" "$MY_GEN" || return 2
-  if fm_recovery_marker_snapshot "$STATE/.watcher-down"; then
-    case "$FM_RECOVERY_MARKER_TOKEN" in
-      pending:downtime:*|announced:downtime:*)
-        session_pid=$(sed -n '1p' "$STATE/.lock" 2>/dev/null || true)
-        case "$session_pid" in
-          ''|*[!0-9]*) session_pid= ;;
-        esac
-        recovery=${FM_RECOVERY_MARKER_TOKEN##*:}
-        if fm_autoarm_write_owned "$STATE" "$MY_GEN" rewake "" "$session_pid" "$recovery"; then
-          return 0
-        fi
-        ;;
-    esac
   fi
   fm_autoarm_still_owner "$STATE" "$MY_GEN" || return 2
   autoarm_commit failed "$FAILURE_NOTICE"
