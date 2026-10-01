@@ -142,6 +142,7 @@ CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
 CYCLE_LOG_KEEP_LINES=${FM_WATCH_CYCLE_LOG_KEEP_LINES:-1000}
 ARM_PID=${BASHPID:-$$}
+ARM_START_PPID=$(ps -o ppid= -p $$ 2>/dev/null | tr -d '[:space:]')
 case "$CYCLE_LOG_MAX_BYTES" in ''|*[!0-9]*|0) CYCLE_LOG_MAX_BYTES=262144 ;; esac
 case "$CYCLE_LOG_KEEP_LINES" in ''|*[!0-9]*|0) CYCLE_LOG_KEEP_LINES=1000 ;; esac
 
@@ -628,12 +629,19 @@ child=$!
 cycle_begin "$child" started "$(fm_pid_identity "$child" 2>/dev/null || true)"
 child_done=0
 
-# True when no parent is left to start the next cycle: reparented to init,
-# already exited, or not a live pid.
+# True when no parent is left to start the next cycle: reparented away from
+# the process that started this arm (to init or any other reaper), already
+# exited, or not a live pid. A reparent target is not necessarily pid 1 - a
+# subreaper between this arm and init adopts it just as well - so the only
+# reliable signal is that the ppid changed from the one recorded at startup.
 arm_parent_gone() {
   local ppid
+  [ -n "$ARM_START_PPID" ] || return 0
   ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d '[:space:]')
-  [ -z "$ppid" ] || [ "$ppid" = 1 ] || ! kill -0 "$ppid" 2>/dev/null
+  if [ "$ppid" = "$ARM_START_PPID" ] && kill -0 "$ARM_START_PPID" 2>/dev/null; then
+    return 1
+  fi
+  return 0
 }
 
 # Leave one handling successor after an orphaned actionable close. Do not
