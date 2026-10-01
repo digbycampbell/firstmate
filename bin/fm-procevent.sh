@@ -731,10 +731,7 @@ extension_source_request_id() {  # <adapter> <source-id> <next-sequence> <regist
 }
 
 next_result_sequence() {  # <source-id>
-  local id=$1 inbox seq=1
-  inbox=$(fm_procevent_inbox_dir "$STATE")
-  while [ -e "$inbox/$id.$seq.result" ]; do seq=$((seq + 1)); done
-  printf '%s\n' "$seq"
+  fm_procevent_sequence_reserve "$STATE" "$1"
 }
 
 register_extension_locks_release() {  # <source-id>
@@ -1243,7 +1240,7 @@ cmd_start() {
       9 8 6 "$id" "$adapter" "$FM_PROCEVENT_EXTENSION_ID" \
       "$FM_PROCEVENT_EXTENSION_VERSION" "$FM_PROCEVENT_EXTENSION_CAPABILITY_VERSION" \
       "$FM_PROCEVENT_EXTENSION_PACKAGE_DIGEST" "$FM_PROCEVENT_EXTENSION_BINDING_DIGEST" \
-      "$CLAIM_TOKEN" "$runner" "$out" "$$" "$(fm_pid_identity "$$")" "$MAX_OUTPUT_BYTES" \
+      "$CLAIM_TOKEN" "$extension_sequence" "$runner" "$out" "$$" "$(fm_pid_identity "$$")" "$MAX_OUTPUT_BYTES" \
       "$launch_ready" -- "${ARGV[@]}" > "$launch_reply" &
     launch_pid=$!
     while [ ! -s "$REG/$launch_ready" ] && kill -0 "$launch_pid" 2>/dev/null; do sleep 0.01; done
