@@ -1672,7 +1672,7 @@ rm "$capture_signal_authority"
 capture_signal=$(perl "$ROOT/bin/fm-procevent-extension-capture.pl" \
   9 8 6 capture-signal-source ext-flow org.example.flow 1.2.3 1 \
   "sha256:$(printf 'a%.0s' {1..64})" "sha256:$(printf 'b%.0s' {1..64})" signal-token \
-  capture-signal-source.runner .capture-signal.output "$$" "$forged_claim_identity" 1024 -- perl -e 'kill "KILL", $$')
+  1 capture-signal-source.runner .capture-signal.output "$$" "$forged_claim_identity" 1024 -- perl -e 'kill "KILL", $$')
 exec 9<&-
 exec 6<&-
 exec 8<&-
@@ -1699,7 +1699,7 @@ ln -s "$TMP_ROOT/capture-swap-outside" "$capture_swap_inbox"
 capture_swap=$(perl "$ROOT/bin/fm-procevent-extension-capture.pl" \
   9 8 6 capture-swap-source ext-flow org.example.flow 1.2.3 1 \
   "sha256:$(printf 'a%.0s' {1..64})" "sha256:$(printf 'b%.0s' {1..64})" swap-token \
-  capture-swap-source.runner .capture-swap.output "$$" "$forged_claim_identity" 1024 -- /bin/printf 'pinned helper result')
+  1 capture-swap-source.runner .capture-swap.output "$$" "$forged_claim_identity" 1024 -- /bin/printf 'pinned helper result')
 exec 9<&-
 exec 6<&-
 exec 8<&-

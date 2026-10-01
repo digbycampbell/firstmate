@@ -272,7 +272,45 @@ mode=$(PATH="${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" bash -c \
 assert_contains "$mode" 600 "the captured result is private"
 assert_grep 'payload one' "$RESULT" "the captured result holds the source output verbatim"
 assert_grep 'lavish' "${RESULT%.result}.adapter" "the captured result retains its immutable adapter"
+capture_identity=$(cat "${RESULT%.result}.capture-id" 2>/dev/null || true)
+case "$capture_identity" in
+  sha256:????????????????????????????????????????????????????????????????)
+    case "${capture_identity#sha256:}" in
+      *[!0-9a-f]*) fail "the captured result has a malformed capture identity: $capture_identity" ;;
+    esac
+    ;;
+  *) fail "the captured result retains no valid capture identity: $capture_identity" ;;
+esac
 assert_absent "${RESULT%.result}.handled" "publication alone never marks a result handled"
+
+# A result sequence is a durable generation identity, not an inbox slot. Old
+# captures may be removed under retention, but that must not let a later result
+# collide with their handled acknowledgement or watcher surfaced marker.
+HSEQ="$TMP_ROOT/hseq"; new_home "$HSEQ"
+SEQ_TRIGGER_ONE="$TMP_ROOT/sequence-trigger-one"
+SEQ_TRIGGER_TWO="$TMP_ROOT/sequence-trigger-two"
+pe_register "$HSEQ" lavish durable-sequence -- "$BLOCKER" "$SEQ_TRIGGER_ONE" "first generation" >/dev/null
+pe "$HSEQ" reconcile >/dev/null
+wait_for "$FM_PROCEVENT_CLAIM_ROOT/durable-sequence.claim" \
+  || fail "the first sequence fixture never claimed its source"
+: > "$SEQ_TRIGGER_ONE"
+wait_capture "$HSEQ" durable-sequence || fail "the first sequence fixture captured no result"
+pe "$HSEQ" handled durable-sequence 1 >/dev/null \
+  || fail "the first sequence fixture could not acknowledge its result"
+pe "$HSEQ" retire durable-sequence >/dev/null \
+  || fail "the first sequence fixture could not retire its source"
+rm -f "$HSEQ/state/procevent-inbox/durable-sequence.1."*
+pe_register "$HSEQ" lavish durable-sequence -- "$BLOCKER" "$SEQ_TRIGGER_TWO" "second generation" >/dev/null
+pe "$HSEQ" reconcile >/dev/null
+wait_for "$FM_PROCEVENT_CLAIM_ROOT/durable-sequence.claim" \
+  || fail "the second sequence fixture never claimed its source"
+: > "$SEQ_TRIGGER_TWO"
+wait_capture "$HSEQ" durable-sequence || fail "the second sequence fixture captured no result"
+assert_present "$HSEQ/state/procevent-inbox/durable-sequence.2.result" \
+  "removing retained results reset the durable source sequence"
+assert_contains "$(wake_payloads "$HSEQ")" "procevent lavish durable-sequence 2" \
+  "the capture after retention removal published a fresh sequence"
+pass "result sequence allocation survives removal of retained captures"
 
 # --- a home spelled through a symlinked ancestor still runs its sources ------
 # Such a home must run process-event sources exactly like a physically spelled
