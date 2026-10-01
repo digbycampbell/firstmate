@@ -5897,6 +5897,42 @@ test_procevent_marker_keys_are_injective() {
   pass "complete process-event queue keys map to distinct seen markers"
 }
 
+test_procevent_recycled_sequence_surfaces_as_a_new_capture() {
+  local dir state out pid marker key inbox
+  dir=$(make_case procevent-recycled-sequence); state="$dir/state"; out="$dir/watch.out"
+  key=procevent:recycled-src:1
+  inbox="$state/procevent-inbox"
+  mkdir -p "$inbox"
+  printf 'first capture\n' > "$inbox/recycled-src.1.result"
+  printf 'lavish\n' > "$inbox/recycled-src.1.adapter"
+  printf 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' \
+    > "$inbox/recycled-src.1.capture-id"
+  chmod 0600 "$inbox/recycled-src.1.result" "$inbox/recycled-src.1.adapter" \
+    "$inbox/recycled-src.1.capture-id"
+  append_wake "$state" check "$key" "check: procevent lavish recycled-src 1"
+  surface_once "$dir" "$out" || fail "the first capture was not surfaced: $(cat "$out")"
+  marker=$(find "$state" -maxdepth 1 -name '.seen-procevent-*' -type f | head -1)
+  [ -n "$marker" ] || fail "the first capture wrote no surfaced marker"
+  ack_stopped_cycle "$state" >/dev/null || fail "the first capture could not be acknowledged"
+
+  rm -f "$inbox/recycled-src.1.result" "$inbox/recycled-src.1.adapter" \
+    "$inbox/recycled-src.1.capture-id"
+  printf 'second capture\n' > "$inbox/recycled-src.1.result"
+  printf 'lavish\n' > "$inbox/recycled-src.1.adapter"
+  printf 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' \
+    > "$inbox/recycled-src.1.capture-id"
+  chmod 0600 "$inbox/recycled-src.1.result" "$inbox/recycled-src.1.adapter" \
+    "$inbox/recycled-src.1.capture-id"
+  append_wake "$state" check "$key" "check: procevent lavish recycled-src 1"
+  : > "$out"
+  procevent_watch_bg "$dir" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a recycled result sequence was suppressed by the earlier capture's marker: $(cat "$out")"
+  grep -F "check: process-event result captured: $key" "$out" >/dev/null \
+    || fail "a recycled result sequence did not surface as a new capture: $(cat "$out")"
+  pass "a surfaced marker from an earlier capture cannot suppress a recycled result sequence"
+}
+
 # The reason line is the headline firstmate reads before the payload. Every
 # procevent:* key used to surface as "process-event result captured", which
 # presents a source that is collecting NOTHING as a healthy capture - the exact
@@ -6736,6 +6772,7 @@ test_triage_log_size_cap_accepts_spaced_wc_counts
 test_procevent_captured_result_surfaces_proactively
 test_procevent_unacknowledged_result_redrains_until_handled
 test_procevent_marker_keys_are_injective
+test_procevent_recycled_sequence_surfaces_as_a_new_capture
 test_procevent_headlines_classify_queue_keys
 test_procevent_launch_failed_episodes_are_each_delivered
 test_procevent_surface_serializes_with_drain
