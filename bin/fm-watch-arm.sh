@@ -15,6 +15,14 @@
 # child is reaped when the call returns, leaving NO watcher running and a false
 # "already running" off the dying process. That exact mistake silently took
 # supervision down for ~30 minutes.
+# An actionable close whose parent has already exited leaves one detached
+# handling successor and does not claim an auto-arm generation, so that close
+# cannot be the last cycle while its wake is still queued. The launch is the
+# Stop hook's detached shape (nohup, its own process group, stdio detached),
+# not a fire-and-forget shell `&`.
+# An attach to a live watcher with a non-empty queue under a downtime or
+# acknowledged marker prints check: rearm-resurface and exits without waiting,
+# leaving that watcher running, while a handling marker still waits.
 # On a harness with a PreToolUse-equivalent hook, bin/fm-arm-pretool-check.sh
 # applies the command-position policy before the command runs; see
 # docs/arm-pretool-check.md for the blessed tree and deny reason codes. It is a
@@ -134,6 +142,7 @@ CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
 CYCLE_LOG_KEEP_LINES=${FM_WATCH_CYCLE_LOG_KEEP_LINES:-1000}
 ARM_PID=${BASHPID:-$$}
+ARM_START_PPID=$(ps -o ppid= -p $$ 2>/dev/null | tr -d '[:space:]')
 case "$CYCLE_LOG_MAX_BYTES" in ''|*[!0-9]*|0) CYCLE_LOG_MAX_BYTES=262144 ;; esac
 case "$CYCLE_LOG_KEEP_LINES" in ''|*[!0-9]*|0) CYCLE_LOG_KEEP_LINES=1000 ;; esac
 
@@ -302,6 +311,30 @@ report_attached() {
   local age
   age=$(fm_path_age "$BEAT")
   echo "watcher: attached pid=$HEALTHY_PID (beacon ${age}s)"
+}
+
+# True when a live watcher is holding a queue the next cycle must re-deliver
+# and will not announce itself. A handling marker is a handoff already in
+# progress, so the arm keeps following that watcher instead.
+queued_downtime_needs_surface() {
+  [ -s "$FM_WAKE_QUEUE" ] || return 1
+  fm_recovery_marker_snapshot "$STATE/.watcher-down" || return 1
+  case "$FM_RECOVERY_MARKER_TOKEN" in
+    pending:downtime:*|announced:downtime:*|acked:*) return 0 ;;
+  esac
+  return 1
+}
+
+# Print the attach line, then either re-deliver a queued downtime wake or
+# follow the watcher. The watcher stays running either way.
+finish_healthy_attach() {
+  report_attached
+  if queued_downtime_needs_surface; then
+    echo "check: rearm-resurface"
+    cycle_log_append 0 none actionable-check "attached:$HEALTHY_PID"
+    return 0
+  fi
+  attach_and_wait "$HEALTHY_PID"
 }
 
 # Give a successor the same bounded confirmation window used for a fresh child.
@@ -525,14 +558,14 @@ if [ "$mode" = stop ]; then
 fi
 
 # If a genuinely live+fresh watcher already holds the lock, do not start a second
-# one - attach to that cycle and wait until it ends so the harness notify fires
-# then, not as an immediate empty wake. (--restart skips this: it just stopped
-# this home's watcher and wants a fresh one.)
+# one. finish_healthy_attach re-delivers a queued downtime wake immediately and
+# otherwise waits until the cycle ends, so the harness notify is not an empty
+# wake. (--restart skips this: it just stopped this home's watcher and wants a
+# fresh one.)
 if [ "$mode" = arm ] && healthy_watcher; then
   cycle_mark_predecessor_successor "attached:$HEALTHY_PID"
   cycle_begin "$HEALTHY_PID" attached "$HEALTHY_IDENTITY"
-  report_attached
-  attach_and_wait "$HEALTHY_PID"
+  finish_healthy_attach
   exit $?
 fi
 
@@ -596,6 +629,62 @@ child=$!
 cycle_begin "$child" started "$(fm_pid_identity "$child" 2>/dev/null || true)"
 child_done=0
 
+# True when no parent is left to start the next cycle: reparented away from
+# the process that started this arm (to init or any other reaper), already
+# exited, or not a live pid. A reparent target is not necessarily pid 1 - a
+# subreaper between this arm and init adopts it just as well - so the only
+# reliable signal is that the ppid changed from the one recorded at startup.
+arm_parent_gone() {
+  local ppid
+  [ -n "$ARM_START_PPID" ] || return 0
+  ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d '[:space:]')
+  if [ "$ppid" = "$ARM_START_PPID" ] && kill -0 "$ARM_START_PPID" 2>/dev/null; then
+    return 1
+  fi
+  return 0
+}
+
+# Leave one handling successor after an orphaned actionable close. Do not
+# record it as $child: cleanup_child would stop it when this arm exits.
+leave_detached_successor() {
+  local out pid deadline budget monitor_was_on=0
+  budget=$CONFIRM_TIMEOUT
+  case "$budget" in ''|*[!0-9]*) budget=10 ;; esac
+  out=$(mktemp "$STATE/.watch-arm-successor.XXXXXX") || return 1
+  case $- in *m*) monitor_was_on=1 ;; esac
+  set -m 2>/dev/null || true
+  FM_WATCH_PREDECESSOR_ARM_PID=$ARM_PID FM_GUARD_GRACE="$GRACE" \
+    nohup "$0" >"$out" 2>&1 </dev/null &
+  pid=$!
+  disown "$pid" 2>/dev/null || true
+  [ "$monitor_was_on" -eq 1 ] || set +m 2>/dev/null || true
+  deadline=$(( $(date +%s) + budget + 2 ))
+  while :; do
+    if grep -Eq '^watcher: (started|attached) pid=[0-9]+' "$out" 2>/dev/null; then
+      rm -f "$out" 2>/dev/null || true
+      return 0
+    fi
+    if grep -q '^watcher: already running' "$out" 2>/dev/null; then
+      rm -f "$out" 2>/dev/null || true
+      return 0
+    fi
+    if grep -q '^watcher: FAILED' "$out" 2>/dev/null; then
+      break
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      if grep -q '^watcher: already running' "$out" 2>/dev/null; then
+        rm -f "$out" 2>/dev/null || true
+        return 0
+      fi
+      break
+    fi
+    [ "$(date +%s)" -ge "$deadline" ] && break
+    sleep 0.2
+  done
+  rm -f "$out" 2>/dev/null || true
+  return 1
+}
+
 owned_child_finished() {
   local rc=$1 signal reason_type status
   signal=$(cycle_signal_name "$rc")
@@ -606,6 +695,9 @@ owned_child_finished() {
     rm -f "$child_out" 2>/dev/null || true
     child=
     child_out=
+    if arm_parent_gone; then
+      leave_detached_successor || true
+    fi
     return 0
   fi
 
@@ -617,8 +709,12 @@ owned_child_finished() {
       child=
       child_out=
       cycle_mark_predecessor_successor "attached:$HEALTHY_PID"
-      report_attached
       cycle_begin "$HEALTHY_PID" attached "$HEALTHY_IDENTITY"
+      if [ "$mode" = arm ]; then
+        finish_healthy_attach
+        return $?
+      fi
+      report_attached
       attach_and_wait "$HEALTHY_PID"
       return $?
     fi

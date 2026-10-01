@@ -2595,6 +2595,114 @@ test_superseded_host_leaves_the_owner_untouched() {
   pass "host: a host under a superseded auto-arm generation stands down without touching the owner"
 }
 
+# The live failure (2026-10-01): a main-only close landed while an engine turn
+# was still running, the host passed it to main, and the Stop hook exited
+# without a rewake. The ledger stayed outcome=arming under a pid that then
+# died, and the successor watcher later closed with no reader, so the home had
+# no supervision cycle until the captain typed.
+test_close_during_an_engine_turn_is_not_stranded_after_the_pass_through() {
+  local home successor next decision_rows
+  home=$(make_primary_home hook-during-turn)
+  ln -s "$ROOT/.agents" "$home/.agents"
+  echo held > "$home/stub-mode"
+  mkfifo "$home/stub-release"
+  start_hook_session "$home"
+  turn_end "$home"
+  wait_until 150 watcher_live "$home" \
+    || fail "during-turn: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  append_status "$home" 'step one'
+  wait_until 450 sh -c '[ -e "$1/engine-call.1" ]' _ "$home" \
+    || fail "during-turn: the engine turn never started: $(cat "$home/state/.supervision-host.log" 2>/dev/null; cat "$home/hook.err" 2>/dev/null)"
+  successor=$(cat "$home/state/.watch.lock/pid")
+  append_status "$home" 'which export format?' needs-decision
+  wait_until 250 bash -c '! kill -0 "$1" 2>/dev/null' _ "$successor" \
+    || fail "during-turn: the successor did not close during the turn: $(cat "$home/state/.watch-cycle-exits.log" 2>/dev/null)"
+  exec 3<>"$home/stub-release"
+  printf 'release\n' >&3
+  wait_until 250 hook_exited "$home" \
+    || fail "during-turn: the Stop hook never closed: $(cat "$home/state/.supervision-host.log" 2>/dev/null; cat "$home/hook.err" 2>/dev/null)"
+  exec 3>&-
+  assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" \
+    "during-turn: the close was not passed to main: $(cat "$home/state/.supervision-host.log")"
+  assert_rewoke_main "$home" "during-turn"
+  assert_re '^signal: .*demo.status' "$home/hook.err" "during-turn: the rewake must carry the close"
+  [ "$(marker_kind "$home")" = downtime ] \
+    || fail "during-turn: the pass-through left the recovery marker as handling: $(cat "$home/state/.watcher-down" 2>/dev/null)"
+  decision_rows=$(grep -c 'needs-decision:' "$home/state/.wake-queue" 2>/dev/null || true)
+  [ "${decision_rows:-0}" -ge 1 ] \
+    || fail "during-turn: the decision must stay queued: $(cat "$home/state/.wake-queue" 2>/dev/null)"
+  watcher_live "$home" || fail "during-turn: the pass-through left no watcher"
+  successor=$(cat "$home/state/.watch.lock/pid")
+  append_status "$home" 'which region?' needs-decision
+  wait_until 250 bash -c '! kill -0 "$1" 2>/dev/null' _ "$successor" \
+    || fail "during-turn: the pass-through successor did not close on the later decision"
+  wait_until 250 bash -c 'pid=$(cat "$1/state/.watch.lock/pid" 2>/dev/null) || exit 1; [ "$pid" != "$2" ] && kill -0 "$pid" 2>/dev/null' _ "$home" "$successor" \
+    || fail "during-turn: the successor's close left no live cycle: $(tail -n 5 "$home/state/.watch-cycle-exits.log" 2>/dev/null)"
+  next=$(cat "$home/state/.watch.lock/pid")
+  [ "$next" != "$successor" ] || fail "during-turn: the same watcher was still recorded after it exited"
+  decision_rows=$(grep -c 'needs-decision:' "$home/state/.wake-queue" 2>/dev/null || true)
+  [ "${decision_rows:-0}" -ge 2 ] \
+    || fail "during-turn: the later decision must stay queued for the next cycle: $(cat "$home/state/.wake-queue" 2>/dev/null)"
+  : > "$home/session.stop"
+  stop_home_processes "$home"
+  pass "host+hook: a main-only close during an engine turn rewakes main and the successor's own close leaves a live cycle"
+}
+
+# Same close, but the session-lock proof fails only after the turn has started,
+# which is when the rewake commit refuses and the hook used to exit 0 with the
+# ledger still outcome=arming.
+test_refused_rewake_after_a_during_turn_close_still_wakes_main() {
+  local home successor decision_rows main_pid
+  home=$(make_primary_home hook-rewake-refused)
+  ln -s "$ROOT/.agents" "$home/.agents"
+  echo held > "$home/stub-mode"
+  mkfifo "$home/stub-release"
+  start_hook_session "$home"
+  turn_end "$home"
+  wait_until 150 watcher_live "$home" \
+    || fail "rewake-refused: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  main_pid=$(cat "$home/claude-pids")
+  append_status "$home" 'step one'
+  wait_until 450 sh -c '[ -e "$1/engine-call.1" ]' _ "$home" \
+    || fail "rewake-refused: the engine turn never started: $(cat "$home/state/.supervision-host.log" 2>/dev/null)"
+  # The turn already passed its ownership check. A lock the hook cannot prove
+  # is this session's makes the rewake commit refuse.
+  printf '%s\n' 1 > "$home/state/.lock"
+  successor=$(cat "$home/state/.watch.lock/pid")
+  append_status "$home" 'which export format?' needs-decision
+  wait_until 250 bash -c '! kill -0 "$1" 2>/dev/null' _ "$successor" \
+    || fail "rewake-refused: the successor did not close during the turn"
+  exec 3<>"$home/stub-release"
+  printf 'release\n' >&3
+  wait_until 250 hook_exited "$home" \
+    || fail "rewake-refused: the Stop hook never closed: $(cat "$home/state/.supervision-host.log" 2>/dev/null; cat "$home/hook.err" 2>/dev/null)"
+  exec 3>&-
+  assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" \
+    "rewake-refused: the close was not passed to main: $(cat "$home/state/.supervision-host.log")"
+  expect_code 0 "$(cat "$home/hook.rc")" \
+    "rewake-refused: a session that cannot prove lock ownership must not be woken itself: rc=$(cat "$home/hook.rc") err=$(cat "$home/hook.err" 2>/dev/null) epoch=$(cat "$home/state/.claude-autoarm-epoch" 2>/dev/null) marker=$(cat "$home/state/.watcher-down" 2>/dev/null)"
+  assert_no_re 'outcome=rewake' "$home/state/.claude-autoarm-epoch" \
+    "rewake-refused: a rewake must never commit without proving session-lock ownership: $(cat "$home/state/.claude-autoarm-epoch")"
+  decision_rows=$(grep -c 'needs-decision:' "$home/state/.wake-queue" 2>/dev/null || true)
+  [ "${decision_rows:-0}" -ge 1 ] \
+    || fail "rewake-refused: the decision must stay queued for the next owned cycle to re-deliver: $(cat "$home/state/.wake-queue" 2>/dev/null)"
+  watcher_live "$home" || fail "rewake-refused: the pass-through left no watcher: $(cat "$home/state/.supervision-host.log")"
+  # Restore the lock this session actually owns, then fire the next Stop
+  # cycle, to show the still-queued decision really gets re-delivered once
+  # ownership can be proven again.
+  printf '%s\n' "$main_pid" > "$home/state/.lock"
+  turn_end "$home"
+  wait_until 250 hook_exited "$home" \
+    || fail "rewake-refused: the next owned Stop never closed: $(cat "$home/state/.supervision-host.log" 2>/dev/null; cat "$home/hook.err" 2>/dev/null)"
+  expect_code 2 "$(cat "$home/hook.rc")" \
+    "rewake-refused: once ownership is provable again the next cycle must deliver the still-queued decision: rc=$(cat "$home/hook.rc") err=$(cat "$home/hook.err" 2>/dev/null)"
+  assert_re 'outcome=rewake' "$home/state/.claude-autoarm-epoch" \
+    "rewake-refused: the next owned cycle must commit the rewake once it can prove the lock: $(cat "$home/state/.claude-autoarm-epoch")"
+  : > "$home/session.stop"
+  stop_home_processes "$home"
+  pass "host+hook: a refused rewake commit never bypasses the session-lock proof, and the next owned cycle re-delivers the still-queued wake"
+}
+
 test_report_surface_enforces_actor_turn_and_scope
 test_report_after_the_return_is_queued_for_main
 test_dispatch_entry_scopes_rows_and_renders_the_away_tail
@@ -2660,3 +2768,5 @@ test_unchanged_held_outcome_reaches_the_captain_once_until_a_new_event
 test_unverified_engine_hands_every_away_wake_to_main
 test_host_outside_the_lock_owner_stands_down
 test_superseded_host_leaves_the_owner_untouched
+test_close_during_an_engine_turn_is_not_stranded_after_the_pass_through
+test_refused_rewake_after_a_during_turn_close_still_wakes_main
