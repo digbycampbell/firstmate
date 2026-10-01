@@ -1,26 +1,23 @@
 #!/usr/bin/env bash
-# fm-install-herdr.sh - install CI's pinned, verified Herdr build.
+# fm-install-herdr.sh - install the latest official Herdr release for CI.
 #
-# Single owner of the exact Herdr version, official release asset URL, and
-# SHA-256 pin used by the required real-Herdr CI lane. Never installs a
-# floating package-manager latest.
+# Resolves GitHub's latest non-prerelease release for ogulcancelik/herdr,
+# selects the official host asset, and verifies GitHub's published SHA-256
+# digest when one is present. The required real-Herdr CI lane follows upstream
+# releases while retaining bounded downloads and the protocol feature floor.
 #
 # Usage:
 #   fm-install-herdr.sh <destination-directory>
 #
-# Pins Herdr v0.7.4 (protocol 16), the suite-verified protocol-16 release.
-# Selects the official GitHub Releases asset for the host OS/arch, downloads
-# with a bounded max size, verifies SHA-256 before install, then refuses to
-# finish unless the binary reports the exact pin version and a client protocol
-# at or above the required floor (16 for the real-Herdr family).
+# Downloads the official GitHub Releases asset for the host OS/arch with a
+# bounded maximum size, verifies any published digest, then refuses to finish
+# unless the binary reports a client protocol at or above 16.
 set -eu
 
-# Exact pin - change only with a re-verified real-Herdr matrix.
-FM_HERDR_CI_VERSION=0.7.4
-FM_HERDR_CI_TAG="v${FM_HERDR_CI_VERSION}"
 FM_HERDR_CI_MIN_PROTOCOL=16
-# Bounded download ceiling (bytes). The largest official 0.7.4 asset is under 20 MiB.
-FM_HERDR_CI_MAX_BYTES=25000000
+# Bounded download ceilings in bytes.
+FM_HERDR_CI_MAX_METADATA_BYTES=1000000
+FM_HERDR_CI_MAX_BYTES=50000000
 FM_HERDR_CI_REPO=ogulcancelik/herdr
 
 die() {
@@ -35,51 +32,91 @@ arch=$(uname -m)
 case "${os}-${arch}" in
   Linux-x86_64)
     ASSET=herdr-linux-x86_64
-    SHA256=bc0fc02d4ba500f9cac2353a43e67fe036785ecca6eb55378e050fac3c103059
     ;;
   Linux-aarch64|Linux-arm64)
     ASSET=herdr-linux-aarch64
-    SHA256=544e0002de42806d1ab64ccdef3a7e7414f24717b0b6b022bc9e57d2eefd26a2
     ;;
   Darwin-arm64)
     ASSET=herdr-macos-aarch64
-    SHA256=24992e1625dbdcb18354a59e299e4b263c312400b31396cdc07cd46ed57f24a7
     ;;
   Darwin-x86_64)
     ASSET=herdr-macos-x86_64
-    SHA256=ddf430133352e1712413d5d865b34a485546f4658893fc89986257d65a7585a8
     ;;
   *)
     die "unsupported platform ${os}-${arch}; official Herdr assets are linux/macos x86_64 and aarch64"
     ;;
 esac
 
-URL="https://github.com/${FM_HERDR_CI_REPO}/releases/download/${FM_HERDR_CI_TAG}/${ASSET}"
 TMP=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fm-herdr.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 
-printf 'fm-install-herdr.sh: downloading %s from %s\n' "$ASSET" "$URL" >&2
-# --fail: HTTP errors; --location: follow redirects; --max-filesize: bound.
+API_URL="https://api.github.com/repos/${FM_HERDR_CI_REPO}/releases/latest"
+printf 'fm-install-herdr.sh: resolving latest release from %s\n' "$API_URL" >&2
+curl -fsSL --max-filesize "$FM_HERDR_CI_MAX_METADATA_BYTES" \
+  -H 'Accept: application/vnd.github+json' \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  "$API_URL" -o "$TMP/release.json" \
+  || die "release lookup failed for $API_URL (bounded at $FM_HERDR_CI_MAX_METADATA_BYTES bytes)"
+
+jq -e '.draft == false and .prerelease == false' "$TMP/release.json" >/dev/null 2>&1 \
+  || die "GitHub's latest release response was not a stable release"
+TAG=$(jq -er '.tag_name | select(type == "string" and length > 0)' "$TMP/release.json" 2>/dev/null) \
+  || die "GitHub's latest release response had no tag"
+ASSET_COUNT=$(jq -r --arg asset "$ASSET" '[.assets[]? | select(.name == $asset)] | length' "$TMP/release.json" 2>/dev/null) \
+  || die "could not read assets from GitHub's latest release response"
+[ "$ASSET_COUNT" = 1 ] \
+  || die "latest Herdr release $TAG has $ASSET_COUNT assets named $ASSET; expected exactly one"
+URL=$(jq -er --arg asset "$ASSET" '.assets[] | select(.name == $asset) | .browser_download_url' "$TMP/release.json" 2>/dev/null) \
+  || die "latest Herdr release $TAG has no download URL for $ASSET"
+ASSET_SIZE=$(jq -er --arg asset "$ASSET" '.assets[] | select(.name == $asset) | .size' "$TMP/release.json" 2>/dev/null) \
+  || die "latest Herdr release $TAG has no size for $ASSET"
+DIGEST=$(jq -r --arg asset "$ASSET" '.assets[] | select(.name == $asset) | .digest // empty' "$TMP/release.json" 2>/dev/null) \
+  || die "could not read the published digest for $ASSET"
+
+case "$URL" in
+  https://github.com/*/releases/download/*/"$ASSET") ;;
+  *) die "latest Herdr release $TAG returned a non-release download URL for $ASSET" ;;
+esac
+case "$ASSET_SIZE" in
+  ''|*[!0-9]*) die "latest Herdr release $TAG returned an invalid size for $ASSET" ;;
+esac
+[ "$ASSET_SIZE" -gt 0 ] && [ "$ASSET_SIZE" -le "$FM_HERDR_CI_MAX_BYTES" ] \
+  || die "latest Herdr release $TAG reports $ASSET at $ASSET_SIZE bytes, outside the 1-$FM_HERDR_CI_MAX_BYTES byte bound"
+
+printf 'fm-install-herdr.sh: downloading %s from Herdr %s\n' "$ASSET" "$TAG" >&2
 curl -fsSL --max-filesize "$FM_HERDR_CI_MAX_BYTES" "$URL" -o "$TMP/$ASSET" \
   || die "download failed for $URL (bounded at $FM_HERDR_CI_MAX_BYTES bytes)"
 
-if command -v sha256sum >/dev/null 2>&1; then
-  ACTUAL_SHA256=$(sha256sum "$TMP/$ASSET" | awk '{print $1}')
-elif command -v shasum >/dev/null 2>&1; then
-  ACTUAL_SHA256=$(shasum -a 256 "$TMP/$ASSET" | awk '{print $1}')
+if [ -n "$DIGEST" ]; then
+  case "$DIGEST" in
+    sha256:*) SHA256=${DIGEST#sha256:} ;;
+    *) die "latest Herdr release $TAG published an unsupported digest for $ASSET: $DIGEST" ;;
+  esac
+  case "$SHA256" in
+    *[!0-9a-f]*|'') die "latest Herdr release $TAG published a malformed SHA-256 digest for $ASSET" ;;
+  esac
+  [ "${#SHA256}" -eq 64 ] \
+    || die "latest Herdr release $TAG published a malformed SHA-256 digest for $ASSET"
+  if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL_SHA256=$(sha256sum "$TMP/$ASSET" | awk '{print $1}')
+  elif command -v shasum >/dev/null 2>&1; then
+    ACTUAL_SHA256=$(shasum -a 256 "$TMP/$ASSET" | awk '{print $1}')
+  else
+    die "need sha256sum or shasum to verify Herdr's published digest"
+  fi
+  [ "$ACTUAL_SHA256" = "$SHA256" ] \
+    || die "checksum mismatch for $ASSET (expected $SHA256, got $ACTUAL_SHA256)"
 else
-  die "need sha256sum or shasum to verify the Herdr asset"
+  printf 'fm-install-herdr.sh: Herdr %s publishes no digest for %s; relying on HTTPS from GitHub Releases\n' \
+    "$TAG" "$ASSET" >&2
 fi
-
-[ "$ACTUAL_SHA256" = "$SHA256" ] || die "checksum mismatch for $ASSET (expected $SHA256, got $ACTUAL_SHA256)"
 
 mkdir -p "$DESTINATION"
 install -m 0755 "$TMP/$ASSET" "$DESTINATION/herdr"
 
-# Post-install version and protocol gates (no floating latest).
+# Post-install protocol gate.
 installed_version=$("$DESTINATION/herdr" --version 2>/dev/null | awk '{print $2; exit}')
-[ "$installed_version" = "$FM_HERDR_CI_VERSION" ] \
-  || die "installed herdr version is '${installed_version:-<empty>}', expected exact pin $FM_HERDR_CI_VERSION"
+[ -n "$installed_version" ] || die "installed herdr did not report a version"
 
 status=$("$DESTINATION/herdr" status --json 2>/dev/null) \
   || die "could not run 'herdr status --json' after install"

@@ -268,7 +268,7 @@ jobs:
           command -v tar >/dev/null || { echo "::error::tar is required"; exit 1; }
           jq --version
           python3 --version
-      - name: Install pinned Herdr
+      - name: Install latest Herdr
         run: |
           set -eu
           bin/fm-install-herdr.sh "$RUNNER_TEMP/bin"
@@ -280,7 +280,7 @@ jobs:
           # worktree acquisition (presentation, workspace-per-home, autodetect).
           bin/fm-install-treehouse.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Assert Herdr pin and protocol floor
+      - name: Assert Herdr protocol floor
         run: |
           set -eu
           command -v herdr >/dev/null || { echo "::error::herdr not on PATH after install"; exit 1; }
@@ -289,12 +289,7 @@ jobs:
           treehouse --version
           status=$(herdr status --json)
           printf '%s\n' "$status"
-          version=$(printf '%s' "$status" | jq -r '.client.version // empty')
           protocol=$(printf '%s' "$status" | jq -r '.client.protocol // empty')
-          [ "$version" = "0.7.4" ] || {
-            echo "::error::expected exact Herdr pin 0.7.4, got ${version:-<empty>}"
-            exit 1
-          }
           case "$protocol" in
             ''|*[!0-9]*) echo "::error::could not read client protocol"; exit 1 ;;
           esac

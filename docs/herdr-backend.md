@@ -61,8 +61,8 @@ An auto-detected Herdr spawn stays silent, matching the verified tmux default pa
 Spawn stops before creating a Herdr container or acquiring a task worktree when `herdr`, `jq`, or the protocol floor is unavailable.
 No separate first-run provisioning is required.
 
-The required CI lane uses the pinned installers in `bin/fm-install-herdr.sh` and `bin/fm-install-treehouse.sh`.
-Those script headers own release assets, checksums, download bounds, and post-install gates.
+The required CI lane uses `bin/fm-install-herdr.sh` to install the latest Herdr release and `bin/fm-install-treehouse.sh` to install its pinned Treehouse build.
+Those script headers own release selection, integrity checks, download bounds, and post-install gates.
 Real harness credential tests remain opt-in rather than part of default CI.
 
 ## Client selection
