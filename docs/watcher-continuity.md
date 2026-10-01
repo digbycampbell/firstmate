@@ -364,7 +364,9 @@ An actionable close whose parent process has already exited also leaves one deta
 `bin/fm-watch-arm.sh` owns that launch.
 An arm that finds that watcher already running, with a non-empty wake queue under a downtime or acknowledged marker, reports `check: rearm-resurface` and exits while leaving the watcher running.
 
-An attached arm follows verified identity-matched successors and resolves the same way when that chain ends without one.
+An attached arm reports the ended cycle's ledger delivery and exits even when a successor watcher is already healthy, and it leaves that successor running.
+It follows a successor only when that cycle published no delivery.
+When the followed chain ends with no successor, it reports that last cycle's ledger delivery or fails loudly.
 It does this because it holds no handle on the watcher's stdout and cannot read the reason line itself.
 
 ### Terminal-delivery ledger
