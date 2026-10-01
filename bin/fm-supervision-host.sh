@@ -654,14 +654,6 @@ leave_successor_for_main() {
   detach_successor
 }
 
-# The re-arm owner delivers a main-only close only while the recovery marker
-# reads downtime. Publish that back when this pass-through confirmed a
-# generation. A failed publish is not a silent pass-through.
-restore_main_downtime() {
-  [ -n "${SUCCESSOR_GENERATION:-}" ] || return 0
-  fm_recovery_marker_publish "$STATE/.watcher-down" downtime >/dev/null 2>&1
-}
-
 # The engine conversation for this turn: the recorded one while it belongs to
 # this main session and has turns left, otherwise a new one. Sets ENGINE_SESSION
 # and ENGINE_MODE (new|resume).
@@ -1040,10 +1032,6 @@ while :; do
       log_line "pass-through	attended	$ATTENDED_WHY	$(printf '%s\n' "$REASON" | head -n 1)"
       if [ "$ATTENDED_WHY" = main-only ]; then
         leave_successor_for_main || true
-        if ! restore_main_downtime; then
-          log_line "pass-through	downtime-unrestored	$(printf '%s\n' "$REASON" | head -n 1)"
-          exit 1
-        fi
       fi
       emit
       exit 0
@@ -1088,8 +1076,10 @@ while :; do
     # it is what left no watcher after a close that became main-only.
     detach_successor
     # Main handles this close after all, so hand back the downtime the handoff
-    # above consumed (restore_main_downtime).
-    if ! restore_main_downtime; then
+    # above consumed: the re-arm owner delivers the close only while the
+    # recovery marker reads downtime (leave_successor_for_main).
+    if [ -n "$SUCCESSOR_GENERATION" ] \
+      && ! fm_recovery_marker_publish "$STATE/.watcher-down" downtime >/dev/null 2>&1; then
       log_line "pass-through	downtime-unrestored	$(printf '%s\n' "$REASON" | head -n 1)"
       exit 1
     fi

@@ -360,10 +360,6 @@ Branch acknowledgement retiring the check-row receipts of exactly its granted se
 | Actionable output | Returns that reason normally. |
 | Zero/empty | Rechecks the home lock and beacon, attaches to a verified healthy successor when one exists, or resolves the close against the watcher's bounded terminal-delivery ledger. |
 
-An actionable close whose parent process has already exited also leaves one detached handling successor, so that close does not end the home's only cycle.
-`bin/fm-watch-arm.sh` owns that launch.
-An arm that finds that watcher already running, with a non-empty wake queue under a downtime or acknowledged marker, reports `check: rearm-resurface` and exits while leaving the watcher running.
-
 An attached arm follows verified identity-matched successors and resolves the same way when that chain ends without one.
 It does this because it holds no handle on the watcher's stdout and cannot read the reason line itself.
 

@@ -83,11 +83,9 @@
 #     the harness delivers the collected stderr only on exit 2, so an owned
 #     terminal commit decides the exit. Markerless outcomes commit with the
 #     ledger write; the failure notice additionally requires its marker write.
-#     A generation this process still owns delivers that rewake even when the
-#     session-lock proof fails at the commit: it restores downtime, binds the
-#     rewake, and exits 2. Only a superseded generation exits 0 silently after
-#     printing. A close that reports no actionable reason is benign when a
-#     live identity-matched watcher still has a fresh beacon.
+#     A refused generation exits 0 silently even after printing. A close that
+#     reports no actionable reason is benign when a live identity-matched
+#     watcher still has a fresh beacon.
 #   - Failure handling: a typed failure is rechecked against the same live,
 #     fresh watcher predicate and retried a bounded number of times in this
 #     hook. Only an exhausted failure with no verified watcher emits one
@@ -262,11 +260,9 @@ MY_GEN=$FM_AUTOARM_MY_GEN
 # this generation. Success means this generation's translation WINS and the
 # caller exits 2 unconditionally. Markerless outcomes commit with the owned
 # ledger write; a notice wins only when its following marker write succeeds in
-# the same hold. Failure means refused or unverifiable. A superseded
-# generation goes silent (cleanup, exit 0): the harness discards the collected
-# stderr on exit 0, so even an already-printed banner is never delivered by a
-# losing generation. A rewake refusal while this generation still owns the
-# ledger is deliver_owned_rewake's to finish, not a silent exit.
+# the same hold. Failure means refused or unverifiable: the caller goes silent
+# (cleanup, exit 0) - the harness discards the collected stderr on exit 0, so
+# even an already-printed banner is never delivered by a losing generation.
 autoarm_commit() {  # <outcome> [marker-file]
   local outcome=$1 marker=${2:-} session_pid recovery
   if [ "$outcome" = rewake ]; then
@@ -283,28 +279,6 @@ autoarm_commit() {  # <outcome> [marker-file]
   else
     fm_autoarm_write_owned "$STATE" "$MY_GEN" "$outcome"
   fi
-}
-
-# The session-lock proof can fail after this generation already claimed the
-# ledger and the host already passed a close to main. Exit 0 then leaves
-# outcome=arming under a process that is about to die, and Claude never
-# delivers the banner. Restore downtime and bind the rewake while this
-# process still owns the generation. A superseded generation stays silent.
-# The session-lock proof is never bypassed: a session that cannot prove it
-# owns the lock is never recorded as having delivered the rewake. When the
-# proof keeps failing, the wake stays durably queued and unacknowledged, and
-# the next owned supervision cycle re-delivers it.
-# Returns 0 when the caller must exit 2, and 2 when it must exit 0.
-deliver_owned_rewake() {
-  if autoarm_commit rewake; then
-    return 0
-  fi
-  fm_autoarm_still_owner "$STATE" "$MY_GEN" || return 2
-  fm_recovery_marker_publish "$STATE/.watcher-down" downtime >/dev/null 2>&1 || true
-  if autoarm_commit rewake; then
-    return 0
-  fi
-  return 2
 }
 
 # Best-effort ownership-checked record for exit-0 paths, where supersession
@@ -559,7 +533,7 @@ if [ "$ACTIONABLE" -eq 1 ]; then
     [ -z "$SUCCESSOR_FAILURE" ] || printf '%s\n' "$SUCCESSOR_FAILURE"
     printf 'Run bin/fm-wake-drain.sh first, handle the wake, then run its exact WAKE_ACK_REQUIRED --ack-through command. Until that post-handling acknowledgement, interruption leaves the wake durable for idempotent re-handling. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.\n'
   } >&2
-  if deliver_owned_rewake; then
+  if autoarm_commit rewake; then
     [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
     exit 2
   fi
