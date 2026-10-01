@@ -2652,7 +2652,7 @@ test_close_during_an_engine_turn_is_not_stranded_after_the_pass_through() {
 # which is when the rewake commit refuses and the hook used to exit 0 with the
 # ledger still outcome=arming.
 test_refused_rewake_after_a_during_turn_close_still_wakes_main() {
-  local home successor decision_rows
+  local home successor decision_rows main_pid
   home=$(make_primary_home hook-rewake-refused)
   ln -s "$ROOT/.agents" "$home/.agents"
   echo held > "$home/stub-mode"
@@ -2661,6 +2661,7 @@ test_refused_rewake_after_a_during_turn_close_still_wakes_main() {
   turn_end "$home"
   wait_until 150 watcher_live "$home" \
     || fail "rewake-refused: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  main_pid=$(cat "$home/claude-pids")
   append_status "$home" 'step one'
   wait_until 450 sh -c '[ -e "$1/engine-call.1" ]' _ "$home" \
     || fail "rewake-refused: the engine turn never started: $(cat "$home/state/.supervision-host.log" 2>/dev/null)"
@@ -2686,9 +2687,20 @@ test_refused_rewake_after_a_during_turn_close_still_wakes_main() {
   [ "${decision_rows:-0}" -ge 1 ] \
     || fail "rewake-refused: the decision must stay queued for the next owned cycle to re-deliver: $(cat "$home/state/.wake-queue" 2>/dev/null)"
   watcher_live "$home" || fail "rewake-refused: the pass-through left no watcher: $(cat "$home/state/.supervision-host.log")"
+  # Restore the lock this session actually owns, then fire the next Stop
+  # cycle, to show the still-queued decision really gets re-delivered once
+  # ownership can be proven again.
+  printf '%s\n' "$main_pid" > "$home/state/.lock"
+  turn_end "$home"
+  wait_until 250 hook_exited "$home" \
+    || fail "rewake-refused: the next owned Stop never closed: $(cat "$home/state/.supervision-host.log" 2>/dev/null; cat "$home/hook.err" 2>/dev/null)"
+  expect_code 2 "$(cat "$home/hook.rc")" \
+    "rewake-refused: once ownership is provable again the next cycle must deliver the still-queued decision: rc=$(cat "$home/hook.rc") err=$(cat "$home/hook.err" 2>/dev/null)"
+  assert_re 'outcome=rewake' "$home/state/.claude-autoarm-epoch" \
+    "rewake-refused: the next owned cycle must commit the rewake once it can prove the lock: $(cat "$home/state/.claude-autoarm-epoch")"
   : > "$home/session.stop"
   stop_home_processes "$home"
-  pass "host+hook: a refused rewake commit never bypasses the session-lock proof, and the wake stays queued for the next owned cycle"
+  pass "host+hook: a refused rewake commit never bypasses the session-lock proof, and the next owned cycle re-delivers the still-queued wake"
 }
 
 test_report_surface_enforces_actor_turn_and_scope
