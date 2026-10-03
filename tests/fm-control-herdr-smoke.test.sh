@@ -268,11 +268,19 @@ kill "$AGENT_PID" 2>/dev/null || fail "could not stop the agent-named process"
 wait_process_state shell 50 \
   || version_fail "after the agent process exited the pane reads '$(fm_backend_herdr_pane_process_state "$SESSION" "$PANE_ID")' rather than 'shell' through pane process-info. Raw process-info: $(herdr pane process-info --pane "$PANE_ID" --session "$SESSION" 2>&1 | tr -d '\n')"
 
-# Herdr 0.9.3 reaps the registration itself on process exit: `agent get` now
-# answers agent_not_found immediately rather than leaving agent_status set.
-# That is the release-on-exit behavior itself, not a flake to retry past -
-# any registration still present here would be the regression.
-REGISTERED=$(herdr agent get "$PANE_ID" --session "$SESSION" 2>/dev/null | jq -r '.result.agent.agent_status // empty')
+# Herdr 0.9.3 reaps the registration itself on process exit: `agent get`
+# eventually answers agent_not_found rather than leaving agent_status set.
+# The release lands slightly after the pane's process state reads "shell",
+# so poll for it instead of taking one sample; any registration still
+# present once this bounded wait is exhausted would be the regression.
+REGISTERED=idle
+i=0
+while [ "$i" -lt 50 ]; do
+  REGISTERED=$(herdr agent get "$PANE_ID" --session "$SESSION" 2>/dev/null | jq -r '.result.agent.agent_status // empty')
+  [ -n "$REGISTERED" ] || break
+  sleep 0.1
+  i=$((i + 1))
+done
 [ -z "$REGISTERED" ] \
   || version_fail "a registration survived its agent process exiting (agent_status='$REGISTERED'); herdr 0.9.3 is expected to release it on exit"
 
