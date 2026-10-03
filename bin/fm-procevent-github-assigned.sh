@@ -874,8 +874,8 @@ apply_result() {  # <source-id> <sequence> <result-file> <mark-handled>
 
 cmd_handle() {
   apply_result "${1-}" "${2-}" "${3-}" 1 || return 1
-  local type id number repo url title signal jev node
-  while IFS=$'\t' read -r type id number repo url title signal jev node; do
+  local type id number repo jev
+  while IFS=$'\t' read -r type id number repo _ _ _ jev _; do
     [ "$type" = issue ] || continue
     [ "$jev" = jev=no ] || continue
     valid_repo "$repo" || die "captured intake repo is invalid"
