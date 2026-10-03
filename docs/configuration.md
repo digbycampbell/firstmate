@@ -2233,7 +2233,8 @@ Install it at the default location with:
 git clone https://github.com/digbycampbell/agent-slack-mirror.git ~/.local/share/agent-slack-mirror
 ```
 
-The core tracks `agent-slack-mirror`'s `main` branch: there is no version pin, so CI and bootstrap clone or fast-forward it unpinned, and a breaking upstream change surfaces as a behavior change in the installed checkout rather than a version mismatch.
+The core tracks `agent-slack-mirror`'s `main` branch: there is no version pin, so CI clones it fresh and unpinned on every run, and a breaking upstream change surfaces as a behavior change in the installed checkout rather than a version mismatch.
+Bootstrap never clones or fast-forwards the core; it only diagnoses a missing installation (see below).
 `SLACK_MIRROR_HOME` selects another checkout or install directory, and `XDG_DATA_HOME` changes the default parent in the usual way.
 Bootstrap reports `MISSING: agent-slack-mirror` with the exact clone command when the resolved directory has no executable `slack-mirror.sh`.
 The installed core's `slack-mirror.sh` header owns the substantive-content and repeat suppression rules, how a deliberate post suppresses the mirror for that turn, how a reply is threaded back into the captain thread it answers, its own state under `state/slack-captain/`, and which primary harnesses it covers.
