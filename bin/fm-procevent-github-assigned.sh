@@ -356,6 +356,7 @@ gh_api_body() {  # <marker> <gh-axi api args...>
     printf 'github-assigned: gh-axi call failed: %s\n' "$detail" >&2
     return 0
   fi
+  # shellcheck disable=SC2034 # extra exists only to prove the response is one line
   if ! { IFS= read -r line <&3 && ! IFS= read -r extra <&3; } 3< "$resp_raw"; then
     FETCHED=0
     UNPARSEABLE=1
