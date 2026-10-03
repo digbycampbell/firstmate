@@ -17,6 +17,14 @@ TMP_ROOT=$(fm_test_tmproot fm-slack-mirror)
 trap fm_test_cleanup EXIT
 export TMPDIR="$TMP_ROOT/tmp"
 mkdir -p "$TMPDIR"
+export SLACK_MIRROR_HOME="${SLACK_MIRROR_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/agent-slack-mirror}"
+if [ ! -x "$SLACK_MIRROR_HOME/slack-mirror.sh" ]; then
+  if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
+    fail "agent-slack-mirror is not installed at $SLACK_MIRROR_HOME; install: git clone https://github.com/digbycampbell/agent-slack-mirror.git $SLACK_MIRROR_HOME"
+  fi
+  echo "skip: agent-slack-mirror is not installed at $SLACK_MIRROR_HOME; install: git clone https://github.com/digbycampbell/agent-slack-mirror.git $SLACK_MIRROR_HOME"
+  exit 0
+fi
 
 CHANNEL=C0TESTCHAN
 CAPTAIN=U0CAPTAIN

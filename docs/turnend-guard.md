@@ -268,8 +268,8 @@ The registrations in detail:
 - Claude registers four `Stop` hooks in `.claude/settings.json`, all anchored through `CLAUDE_PROJECT_DIR`: `bin/fm-turnend-guard.sh --claude`, `bin/fm-claude-stop-autoarm.sh` with `asyncRewake: true` and `timeout: 28800`, `bin/fm-host-mirror.sh hook claude`, the supervision host's dialog mirror ([`supervision-host.md`](supervision-host.md)), and `bin/fm-slack-mirror.sh stop`, which mirrors the turn's final captain-facing message into the configured Slack captain channel.
   Only the first two enforce this guard.
   The Slack mirror is not part of this guard: it reads its own stdin payload in its own process, never exits nonzero, never writes stdout, and hands delivery to a detached child, so it cannot change the exit status semantics either the guard or the auto-arm depend on.
-  The mirror is no longer Claude-only: `bin/fm-slack-mirror.sh` is a thin firstmate caller over `bin/slack-mirror/`, whose harness-agnostic core owns the whole mirroring contract and whose `adapters/` own each harness's turn-end payload shape, including the read of the turn's own opening message that threads a reply automatically into the Slack thread of the captain message that triggered the turn.
-  `bin/slack-mirror/slack-mirror.sh adapters` prints the current coverage and every recorded gap, and that header is the single owner of both.
+  The mirror is no longer Claude-only: `bin/fm-slack-mirror.sh` is a thin Firstmate caller over the separately installed `agent-slack-mirror`, whose harness-agnostic core owns the whole mirroring contract and whose `adapters/` own each harness's turn-end payload shape, including the read of the turn's own opening message that threads a reply automatically into the Slack thread of the captain message that triggered the turn.
+  `bin/fm-slack-mirror.sh adapters` prints the installed core's current coverage and every recorded gap, and that core's header is the single owner of both.
 - Codex registers a `Stop` hook in `.codex/hooks.json`, anchors the executable to the hook process working directory, verifies a Firstmate-shaped hook-bearing root, and passes the original payload to the shared guard.
 - OpenCode listens for `session.idle` in `.opencode/plugins/fm-primary-turnend-guard.js`, lets the watcher coordinator act first, and calls `client.session.promptAsync` once when the guard returns 2.
 - Pi listens for `agent_settled` in `.pi/extensions/fm-primary-turnend-guard.ts`, runs once per logical agent run, and calls `pi.sendUserMessage(..., { deliverAs: "followUp" })` once when the guard returns 2.
@@ -287,7 +287,7 @@ The registrations in detail:
 - Grok registers a `Stop` hook in `.grok/hooks/fm-primary-turnend-guard.json` and delegates capability selection to `bin/fm-turnend-guard-grok.sh`.
   Grok registers a second, independent `Stop` hook in `.grok/hooks/fm-primary-slack-mirror.json` for the Slack mirror, the counterpart of Claude's Slack-mirror Stop entry and equally outside this guard.
   Its payload is camel-case and not Claude-shaped: grok 1.0.5 delivers `hookEventName`, `reason`, `promptId`, `lastAssistantMessage`, and a `transcriptPath` naming the session's `updates.jsonl`, and it fires twice, once with `reason` `end_turn` and again with `shutdown` as the session exits.
-  `bin/slack-mirror/adapters/grok.sh` owns that shape.
+  The installed `agent-slack-mirror/adapters/grok.sh` owns that shape.
   The tracked Claude Stop entries are inert when `GROK_AGENT` or `GROK_HOOK_EVENT` is present, so Grok's Claude-compatible settings loading cannot create a second continuation path.
   Both markers are required because Grok does not inject the same variables into every process kind.
   grok 0.2.73 set `GROK_AGENT` for child and tool processes, while grok 1.0.0 hook processes carry `GROK_HOOK_EVENT`, `GROK_HOOK_NAME`, `GROK_SESSION_ID`, and `GROK_WORKSPACE_ROOT` but no `GROK_AGENT`.

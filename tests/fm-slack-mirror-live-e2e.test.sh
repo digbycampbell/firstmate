@@ -21,6 +21,10 @@ set -u
 # It submits a real prompt, so it stays opt-in (fm_live_gate owns the policy).
 fm_live_gate opt-in FM_SLACK_MIRROR_LIVE_E2E jq
 
+export SLACK_MIRROR_HOME="${SLACK_MIRROR_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/agent-slack-mirror}"
+[ -x "$SLACK_MIRROR_HOME/slack-mirror.sh" ] \
+  || fail "agent-slack-mirror is not installed at $SLACK_MIRROR_HOME, so this guard checked nothing"
+
 TMP_ROOT=$(fm_test_tmproot fm-slack-mirror-live)
 trap fm_test_cleanup EXIT
 
