@@ -253,13 +253,14 @@ herdr pane get "$PANE_ID" --session "$SESSION" >/dev/null 2>&1 \
 [ -d "$WT" ] || fail "the control plane must never remove the task's local copy"
 pass "real herdr: no control verb removed the endpoint or the task's local copy"
 
-# --- the stale registration (issue #4115): the agent process is gone, the ---
-# --- record is not, and recovery must proceed anyway ------------------------
+# --- the dead agent process (issue #4115): the process is gone and recovery ---
+# --- must proceed anyway, whether Herdr keeps or releases the registration ---
 #
-# Stopping the agent-named process leaves the pane a plain shell while Herdr
-# keeps the registration, which is exactly the shape a Pi crew leaves behind
-# when it exits under a nested shell. Before the fix this read `alive` forever:
-# exit waited out its timeout and refused, and relaunch was refused for good.
+# Stopping the agent-named process leaves the pane a plain shell. Herdr 0.9.3
+# releases the registration itself as soon as the process exits (earlier
+# versions kept it, which is the stale-agent shape a Pi crew leaves behind
+# when it exits under a nested shell); either way, recovery must read the
+# pane as dead rather than refusing forever like it did before the fix.
 AGENT_PID=$(herdr pane process-info --pane "$PANE_ID" --session "$SESSION" 2>/dev/null \
   | jq -r '.result.process_info.foreground_processes[0].pid // empty')
 [ -n "$AGENT_PID" ] || fail "could not read the agent-named process pid from pane process-info"
@@ -267,19 +268,21 @@ kill "$AGENT_PID" 2>/dev/null || fail "could not stop the agent-named process"
 wait_process_state shell 50 \
   || version_fail "after the agent process exited the pane reads '$(fm_backend_herdr_pane_process_state "$SESSION" "$PANE_ID")' rather than 'shell' through pane process-info. Raw process-info: $(herdr pane process-info --pane "$PANE_ID" --session "$SESSION" 2>&1 | tr -d '\n')"
 
-# The divergence that makes this case non-vacuous: Herdr's own registry still
-# reports the agent, and only the process-level view disagrees.
+# Herdr 0.9.3 reaps the registration itself on process exit: `agent get` now
+# answers agent_not_found immediately rather than leaving agent_status set.
+# That is the release-on-exit behavior itself, not a flake to retry past -
+# any registration still present here would be the regression.
 REGISTERED=$(herdr agent get "$PANE_ID" --session "$SESSION" 2>/dev/null | jq -r '.result.agent.agent_status // empty')
-[ -n "$REGISTERED" ] \
-  || version_fail "Herdr released the registration when the agent process exited, so this run cannot prove the stale-registration path; the classifier still reads dead through agent_not_found"
+[ -z "$REGISTERED" ] \
+  || version_fail "a registration survived its agent process exiting (agent_status='$REGISTERED'); herdr 0.9.3 is expected to release it on exit"
 
 PANE_STATE=$(fm_backend_herdr_pane_agent_state "$SESSION" "$PANE_ID")
-[ "$PANE_STATE" = stale-agent ] \
-  || version_fail "a registration over a shell-only pane reads '$PANE_STATE' rather than 'stale-agent'"
+[ "$PANE_STATE" = no-agent ] \
+  || version_fail "a pane whose agent process exited and whose registration herdr released reads '$PANE_STATE' rather than 'no-agent'"
 STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
 [ "$STATE" = dead ] \
-  || version_fail "a registration over a shell-only pane recovers as '$STATE' rather than 'dead'; every relaunch would be refused"
-pass "real herdr $HERDR_VERSION: a registration Herdr keeps after its agent exits reads stale-agent and recovers as dead"
+  || version_fail "a pane whose agent exited and was released by herdr recovers as '$STATE' rather than 'dead'; every relaunch would be refused"
+pass "real herdr $HERDR_VERSION: a pane whose agent process exited reads no-agent (herdr released the registration on exit) and recovers as dead"
 
 OUT=$(run_control hsmoke exit) || fail "exit against a stale-registration pane should be idempotent success: $OUT"
 case "$OUT" in
