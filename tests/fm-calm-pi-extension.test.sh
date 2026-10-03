@@ -1652,7 +1652,7 @@ async function assertStockHtmlRendering(command, submitData) {
   editorText = command;
   terminalInputHandler(submitData);
   const htmlRenderer = createToolHtmlRenderer({
-    getToolDefinition: (name) => tools.find((tool) => tool.name === name),
+    getToolRenderers: (name) => tools.find((tool) => tool.name === name),
     theme,
     cwd: process.cwd(),
   });
@@ -1683,7 +1683,7 @@ getKeybindings().setUserBindings({ "tui.input.submit": "alt+s" });
 editorText = "/export remapped.html";
 terminalInputHandler("\r");
 const unmatchedRenderer = createToolHtmlRenderer({
-  getToolDefinition: (name) => tools.find((tool) => tool.name === name),
+  getToolRenderers: (name) => tools.find((tool) => tool.name === name),
   theme,
   cwd: process.cwd(),
 });
@@ -2817,21 +2817,6 @@ TS
     return 1
   }
 
-  wait_for_geometry_transition() {
-    local file=$1 transient_text=$2 final_text=$3 attempt=0 saw_transient=0
-    while [ "$attempt" -lt 600 ]; do
-      capture_geometry_viewport "$file" || true
-      if grep -Fq "$transient_text" "$file" 2>/dev/null; then
-        saw_transient=1
-      elif [ "$saw_transient" -eq 1 ] && grep -Fq "$final_text" "$file" 2>/dev/null; then
-        return 0
-      fi
-      sleep 0.01
-      attempt=$((attempt + 1))
-    done
-    return 1
-  }
-
   assert_geometry_gap() {
     local file=$1 label=$2
     skill_line=$(grep -n -m1 '\[skill\] ahoy' "$file" | cut -d: -f1)
@@ -2878,11 +2863,21 @@ TS
 
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l '/reload'
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" Enter
-  wait_for_geometry_transition \
-    "$snapshot" \
-    "Reloading keybindings, extensions, skills, prompts, themes, and context files..." \
-    "CALM_GEOMETRY_FINAL" \
+  wait_for_geometry_text "$snapshot" "Reloaded keybindings, extensions, skills, prompts, themes, and context files" \
     || fail "Pi Calm hidden-block geometry E2E did not complete the /reload viewport transition"
+  # The completion banner can render one frame before the transcript above it
+  # settles back to its final layout, so confirm two consecutive captures
+  # agree before measuring the gap.
+  prev_capture=""
+  i=0
+  while [ "$i" -lt 120 ]; do
+    capture_geometry_viewport "$snapshot"
+    cur_capture=$(cat "$snapshot")
+    [ "$cur_capture" = "$prev_capture" ] && break
+    prev_capture=$cur_capture
+    sleep 0.05
+    i=$((i + 1))
+  done
   assert_geometry_gap "$snapshot" "reloaded native Calm transcript"
 
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" C-t
@@ -4167,7 +4162,7 @@ export default function (pi: ExtensionAPI): void {
 }
 TS
   printf '%s\n' '{"tui.input.submit":"alt+s"}' >"$config/keybindings.json"
-  printf '%s\n' '{"hideThinkingBlock":true}' >"$config/settings.json"
+  printf '%s\n' '{"hideThinkingBlock":true,"tuiMode":"regular"}' >"$config/settings.json"
   now=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
   cat >"$session_file" <<JSON
 {"type":"session","version":3,"id":"11111111-1111-4111-8111-111111111111","timestamp":"$now","cwd":"$project"}

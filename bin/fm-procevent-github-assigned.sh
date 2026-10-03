@@ -47,10 +47,12 @@
 #
 # AUTHENTICATION is gh-axi's own: no token lives in this adapter or in .env. A
 # broken GitHub credential is already surfaced by firstmate's own session-start
-# network check, so this adapter does not duplicate that reporting - it simply
-# treats every GitHub call failure as transient and retries on the next poll
-# interval, and to firstmate simply reports nothing until the underlying
-# credential recovers.
+# network check, so this adapter does not duplicate that reporting. GitHub call
+# failures remain transient and retry on the next poll interval. An output
+# shape that cannot be parsed is different: after three consecutive affected
+# polls, the adapter emits one api-error result so firstmate sees that the
+# listener cannot read gh-axi. A persistent latch suppresses duplicate wakes
+# until a fully parseable poll begins a new failure episode.
 #
 # RATE-LIMIT-FRIENDLINESS is load-bearing, not a nice-to-have: GitHub's GraphQL
 # quota (5,000/hour) is shared with every other GraphQL caller on the same
@@ -103,18 +105,13 @@
 # output; every other gh-axi subcommand renders a TOON table meant for a human
 # or agent to read, not to be parsed here.
 #
-# gh-axi's `api` command tries to JSON-parse the raw GitHub response and, on
-# success, re-renders it as a TOON table - which is exactly what this adapter's
-# --jq filters defeat, because they always emit multiple newline-joined
-# strings rather than one parseable JSON document. That reliably drives gh-axi
-# into its documented fallback envelope instead:
-#   api_response:
-#     body: "<jq output, JSON-string-escaped>"
-#     truncated: false
-# `--full` is passed on every call so that envelope is never truncated.
-# envelope_body() below trusts nothing about this shape beyond checking those
-# three lines are present; any other shape is treated as a fetch failure
-# (fail-open), never parsed speculatively.
+# gh-axi 0.1.35 prints caller-shaped non-JSON scalar values bare, while parsed
+# JSON arrays are TOON-rendered. Every --jq filter therefore emits exactly one
+# bare scalar with a fixed marker. Row-producing filters encode their complete
+# string array as compact JSON after `rows=`, and quota reads use `quota=<n>`.
+# The adapter accepts only the expected one-line marker, then validates the
+# rows JSON itself. `--full` remains on every call so gh-axi never truncates a
+# value before validation.
 #
 # CANONICAL IDENTITY. An assigned issue is identified as "issue:<owner>/<repo>#<number>",
 # stable across relabeling, retitling, or reassignment-and-reassignment-again.
@@ -158,17 +155,19 @@ NO_RESULT_EXIT=75
 # is skipped for this cycle rather than spent.
 QUOTA_MIN_CORE=${FM_GITHUB_ASSIGNED_MIN_CORE_QUOTA:-100}
 QUOTA_MIN_GRAPHQL=${FM_GITHUB_ASSIGNED_MIN_GRAPHQL_QUOTA:-50}
+PARSE_ERROR_LIMIT=${FM_GITHUB_ASSIGNED_PARSE_ERROR_LIMIT:-3}
 
 HOME_DIR=$FM_HOME
 POLL_TMP=
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,139p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,136p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 state_dir()   { printf '%s\n' "${FM_STATE_OVERRIDE:-$HOME_DIR/state}"; }
 config_file() { printf '%s\n' "${FM_CONFIG_OVERRIDE:-$HOME_DIR/config}/github-assigned"; }
 cursor_dir()  { printf '%s\n' "$(state_dir)/github-assigned"; }
 cursor_path() { printf '%s/%s.cursor\n' "$(cursor_dir)" "$1"; }
+parse_error_latch_path() { printf '%s/%s.api-error\n' "$(cursor_dir)" "$1"; }
 
 require_tools() {
   command -v gh-axi >/dev/null 2>&1 || die "gh-axi is not installed"
@@ -337,54 +336,15 @@ write_cursor() {  # <login> <content-file, already sorted ids one per line>
   mv -f -- "$tmp" "$path"
 }
 
-# --- reading the gh-axi api envelope -----------------------------------
+# --- reading gh-axi's machine-shaped scalar ----------------------------
 
-# Decode gh-axi's `api_response: / body: ... / truncated: false` envelope.
-# Trusts nothing about the shape beyond those three fixed lines; anything else
-# - including a successfully-JSON-parsed reply gh-axi rendered some other way,
-# or a truncated body despite --full - is refused rather than guessed at.
-#
-# gh-axi's underlying `gh api --jq` call emits RAW (unquoted) jq output, not
-# JSON-encoded text, verified directly against the real `gh` binary at
-# implementation time. gh-axi then tries to JSON.parse that raw text: when the
-# text happens to be valid JSON on its own (this adapter hits that only for a
-# bare-digit quota reading), parsing succeeds and TOON re-renders it as a bare
-# scalar with no envelope at all - which is why every filter in this adapter is
-# deliberately built to never be valid JSON by itself (a multi-row TSV stream,
-# or a "quota=<n>" prefix), so parsing reliably fails and this envelope always
-# wraps it. Inside the envelope, TOON quotes the body value only when it
-# contains characters that would otherwise be ambiguous (a tab, a newline, a
-# leading/trailing quote); a value with none of those - such as "quota=5000" -
-# is written bare. Both forms are handled below; anything else is refused.
-envelope_body() {  # <raw-output-file>
-  local l1 l2 l3 rest
-  { IFS= read -r l1 <&3 || return 1
-    IFS= read -r l2 <&3 || return 1
-    IFS= read -r l3 <&3 || return 1
-  } 3< "$1"
-  [ "$l1" = 'api_response:' ] || return 1
-  case "$l2" in '  body: '*) ;; *) return 1 ;; esac
-  [ "$l3" = '  truncated: false' ] || return 1
-  rest=${l2#'  body: '}
-  case "$rest" in
-    '"'*'"')
-      jq -rn --argjson v "$rest" '$v' 2>/dev/null || return 1
-      ;;
-    *[!A-Za-z0-9=_./:-]*)
-      return 1
-      ;;
-    *)
-      printf '%s\n' "$rest"
-      ;;
-  esac
-}
-
-# Run `gh-axi api ... --full` and decode its envelope. Sets FETCHED (1 ok, 0 any
-# failure - a nonzero exit, or an unrecognized output shape) and, on success,
-# BODY_TEXT (may be empty). Every caller treats FETCHED=0 identically: log a
-# diagnostic and let this poll cycle retry, never crash and never wedge.
-gh_api_body() {  # <gh-axi api args...>
-  local rc detail
+# Run `gh-axi api ... --full` and accept exactly one bare scalar beginning
+# with <marker>=. Sets FETCHED (1 ok, 0 any failure) and BODY_TEXT (the marker's
+# value, which may be empty). An unexpected shape also marks this poll so the
+# bounded loop can wake firstmate after repeated failures.
+gh_api_body() {  # <marker> <gh-axi api args...>
+  local marker=$1 rc detail line extra
+  shift
   gh-axi api "$@" --full > "$resp_raw" 2> "$resp_err"
   rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -396,31 +356,47 @@ gh_api_body() {  # <gh-axi api args...>
     printf 'github-assigned: gh-axi call failed: %s\n' "$detail" >&2
     return 0
   fi
-  if ! BODY_TEXT=$(envelope_body "$resp_raw"); then
+  # shellcheck disable=SC2034 # extra exists only to prove the response is one line
+  if ! { IFS= read -r line <&3 && ! IFS= read -r extra <&3; } 3< "$resp_raw"; then
     FETCHED=0
+    UNPARSEABLE=1
     printf 'github-assigned: unexpected gh-axi output shape; retrying\n' >&2
     return 0
   fi
+  case "$line" in
+    "$marker="*) BODY_TEXT=${line#"$marker="} ;;
+    *)
+      FETCHED=0
+      UNPARSEABLE=1
+      printf 'github-assigned: unexpected gh-axi output shape; retrying\n' >&2
+      return 0
+      ;;
+  esac
   FETCHED=1
+}
+
+# Decode a rows=<JSON string array> result into newline-delimited rows.
+gh_api_rows() {  # <gh-axi api args...>
+  gh_api_body rows "$@"
+  [ "$FETCHED" = 1 ] || return 0
+  if ! BODY_TEXT=$(printf '%s\n' "$BODY_TEXT" \
+    | jq -r 'if type == "array" and all(.[]; type == "string") then .[] else error("expected a string array") end' 2>/dev/null); then
+    FETCHED=0
+    UNPARSEABLE=1
+    printf 'github-assigned: unexpected gh-axi rows value; retrying\n' >&2
+  fi
 }
 
 # --- quota awareness ------------------------------------------------------
 
 # Prints the remaining count for one /rate_limit resource, or nothing (and
 # returns 1) if it cannot be read. Reading /rate_limit never itself counts
-# against any quota. The filter prefixes a non-numeric marker so its raw
-# output can never itself be mistaken for standalone valid JSON - see the
-# envelope_body note on why that matters.
+# against any quota. The filter emits the adapter's fixed scalar marker.
 quota_remaining() {  # <resource: core|graphql>
   local filter
   filter=$(printf '"quota=\\(.resources.%s.remaining)"' "$1")
-  gh_api_body /rate_limit --jq "$filter"
+  gh_api_body quota /rate_limit --jq "$filter"
   [ "$FETCHED" = 1 ] || return 1
-  case "$BODY_TEXT" in
-    quota=*) ;;
-    *) return 1 ;;
-  esac
-  BODY_TEXT=${BODY_TEXT#quota=}
   case "$BODY_TEXT" in
     ''|*[!0-9]*) return 1 ;;
   esac
@@ -445,10 +421,12 @@ quota_ok() {
 # letters, digits, ., _, -, and / - nothing that can break out of a jq string
 # literal.
 issues_jq_filter() {  # <repo>
-  printf '(["count", (length | tostring)] | @tsv),
-  (.[] | select(has("pull_request") | not) | [
-    "issue", ("issue:%s#" + (.number | tostring)), (.number | tostring), "%s", .html_url, .title
-  ] | @tsv)' "$1" "$1"
+  printf '"rows=" + (([
+    (["count", (length | tostring)] | @tsv),
+    (.[] | select(has("pull_request") | not) | [
+      "issue", ("issue:%s#" + (.number | tostring)), (.number | tostring), "%s", .html_url, .title
+    ] | @tsv)
+  ]) | @json)' "$1" "$1"
 }
 
 # Fetches every open issue assigned to the login across the configured repos
@@ -467,7 +445,7 @@ fetch_issues() {
   for r in "${CFG_REPOS[@]}"; do
     page=1
     while :; do
-      gh_api_body "/repos/$r/issues" --field assignee="$CFG_LOGIN" --field state=open \
+      gh_api_rows "/repos/$r/issues" --field assignee="$CFG_LOGIN" --field state=open \
         --field per_page=100 --field page="$page" --jq "$(issues_jq_filter "$r")"
       [ "$FETCHED" = 1 ] || return 0
       raw_count=0
@@ -505,7 +483,8 @@ project_items_query() {  # <after-cursor-or-empty>
 # Fetches every open Issue or DraftIssue board item assigned to the login into
 # $project_tmp, in the same row shape fetch_issues produces. Sets FETCHED.
 project_jq_filter() {
-  printf '(.data.organization.projectV2.items.pageInfo | ["page", (.hasNextPage | tostring), (.endCursor // "")] | @tsv),
+  printf '"rows=" + (([
+    (.data.organization.projectV2.items.pageInfo | ["page", (.hasNextPage | tostring), (.endCursor // "")] | @tsv),
     (.data.organization.projectV2.items.nodes[]
      | select(.content.assignees.nodes // [] | map(.login) | index("%s") != null)
      | if .content.__typename == "DraftIssue" then
@@ -515,7 +494,8 @@ project_jq_filter() {
            ("issue:" + .content.repository.nameWithOwner + "#" + (.content.number | tostring)),
            (.content.number | tostring), .content.repository.nameWithOwner, .content.url, .content.title]
        else empty end
-     | @tsv)' "$CFG_LOGIN"
+     | @tsv)
+  ]) | @json)' "$CFG_LOGIN"
 }
 
 fetch_project() {
@@ -531,7 +511,7 @@ fetch_project() {
   while :; do
     extra_fields=()
     [ -z "$after" ] || extra_fields=(--field "after=$after")
-    gh_api_body POST graphql --field query="$(project_items_query "$after")" \
+    gh_api_rows POST graphql --field query="$(project_items_query "$after")" \
       "${extra_fields[@]}" --jq "$(project_jq_filter)"
     [ "$FETCHED" = 1 ] || return 0
     has_next=false
@@ -604,6 +584,7 @@ emit_result() {
 # BOARD_FETCHED tells the caller whether to reschedule the next board poll.
 poll_once() {
   local do_board=$1
+  UNPARSEABLE=0
   BOARD_FETCHED=0
   fetch_issues
   [ "$FETCHED" = 1 ] || return 1
@@ -635,24 +616,72 @@ staging() {
   snapshot_block_file="$POLL_TMP/snapshot-block.ids"
 }
 
+write_parse_error_latch() {  # <login>
+  local path dir tmp
+  path=$(parse_error_latch_path "$1")
+  dir=$(dirname "$path")
+  (umask 077; mkdir -p "$dir") || return 1
+  [ ! -L "$path" ] || return 1
+  tmp=$(umask 077; mktemp "$dir/.api-error.XXXXXX") || return 1
+  printf 'unparseable-gh-axi-output\n' > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  chmod 600 "$tmp" || { rm -f -- "$tmp"; return 1; }
+  mv -f -- "$tmp" "$path"
+}
+
+clear_parse_error_latch() {  # <login>
+  local path
+  path=$(parse_error_latch_path "$1")
+  [ -e "$path" ] || return 0
+  [ -f "$path" ] && [ ! -L "$path" ] \
+    || die "github-assigned parse-error latch is unsafe: $path"
+  rm -f -- "$path"
+}
+
+emit_parse_error() {  # <consecutive-count>
+  printf 'schema=%s\n' "$SCHEMA"
+  printf 'status=api-error\n'
+  printf 'login=%s\n' "$CFG_LOGIN"
+  printf 'reason=unparseable-gh-axi-output\n'
+  printf 'consecutive=%s\n' "$1"
+  printf '\n'
+}
+
 # The board's due-for-poll state is only tracked in memory for this bounded
 # child's own lifetime, never persisted: once anything is captured this
 # process exits anyway, and the next spawned child simply polls the board on
 # its own first cycle. That is a soft pacing hint, not a correctness
 # requirement - see the RATE-LIMIT header note.
 cmd_poll() {  # <home>
-  local home=${1-} i=0 next_board_due=0 now do_board
+  local home=${1-} i=0 next_board_due=0 now do_board poll_rc
+  local parse_failures=0 latch
   [ -n "$home" ] || usage
   HOME_DIR=$home
   require_tools
   load_config
+  case "$PARSE_ERROR_LIMIT" in
+    ''|*[!0-9]*|0) die "FM_GITHUB_ASSIGNED_PARSE_ERROR_LIMIT must be a positive integer" ;;
+  esac
   staging
+  latch=$(parse_error_latch_path "$CFG_LOGIN")
   while [ "$i" -lt "$MAX_LOOPS" ]; do
     i=$((i + 1))
     now=$(date +%s)
     do_board=0
     [ "$now" -lt "$next_board_due" ] || do_board=1
-    poll_once "$do_board" && return 0
+    poll_rc=0
+    poll_once "$do_board" || poll_rc=$?
+    if [ "$UNPARSEABLE" = 1 ]; then
+      parse_failures=$((parse_failures + 1))
+      if [ "$poll_rc" -ne 0 ] && [ "$parse_failures" -ge "$PARSE_ERROR_LIMIT" ] && [ ! -e "$latch" ]; then
+        write_parse_error_latch "$CFG_LOGIN" || die "cannot record the github-assigned parse-error episode"
+        emit_parse_error "$parse_failures"
+        return 0
+      fi
+    else
+      parse_failures=0
+      clear_parse_error_latch "$CFG_LOGIN"
+    fi
+    [ "$poll_rc" -ne 0 ] || return 0
     if [ "$do_board" = 1 ] && [ "$BOARD_FETCHED" = 1 ]; then
       next_board_due=$((now + CFG_BOARD_INTERVAL))
     fi
@@ -720,6 +749,7 @@ cmd_classify() {
   status=$(result_field "$file" status 2>/dev/null || true)
   case "$status" in
     assigned) printf 'assigned\n' ;;
+    api-error) printf 'api-error\n' ;;
     *) printf 'unknown\n' ;;
   esac
 }
@@ -760,6 +790,7 @@ apply_result() {  # <source-id> <sequence> <result-file> <mark-handled>
   class=$(cmd_classify "$file")
   case "$class" in
     assigned) advance_cursor "$file" ;;
+    api-error) ;;
     *) die "captured GitHub assignment result needs firstmate's attention: $class" ;;
   esac
   if [ "$mark" = 1 ]; then

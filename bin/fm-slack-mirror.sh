@@ -12,11 +12,12 @@
 #   fm-slack-mirror.sh deliver <channel> <body-file> [--thread <ts>] [--worker-details <d>]
 #   fm-slack-mirror.sh adapters                   print the harness coverage table
 #
-# THIN CALLER. bin/slack-mirror/ is the whole mirror and its header owns every
-# contract: what is mirrored, the substantive-versus-acknowledgement rule, the
-# no-double-post record, thread resolution and its three precedence layers, the
-# never-a-gate guarantee, the configuration keys, and the state files. This file
-# adds only what is firstmate's, and forwards everything else unchanged:
+# THIN CALLER. The separately installed agent-slack-mirror core and its header
+# own every mirror contract: what is mirrored, the substantive-versus-
+# acknowledgement rule, the no-double-post record, thread resolution and its
+# three precedence layers, the never-a-gate guarantee, the configuration keys,
+# and the state files. This file adds only what is firstmate's, and forwards
+# everything else unchanged:
 #
 #   - it resolves this home's `config/slack-captain`, `state/slack-captain/`, and
 #     bin/fm-slack-post.sh as the tool's environment contract, so the tool itself
@@ -32,9 +33,14 @@
 # `.grok/hooks/fm-primary-slack-mirror.json` as a Grok `Stop` hook. The adapter
 # is selected from the payload itself, so one registration shape serves both and
 # a harness that delivers no such payload is simply never registered;
-# `bin/slack-mirror/slack-mirror.sh adapters` prints the current coverage and
+# `fm-slack-mirror.sh adapters` prints the installed core's current coverage and
 # every recorded gap. docs/turnend-guard.md owns what each harness exposes at the
 # turn boundary.
+#
+# INSTALLATION. SLACK_MIRROR_HOME selects the agent-slack-mirror checkout or
+# install directory. It defaults to
+# `${XDG_DATA_HOME:-$HOME/.local/share}/agent-slack-mirror`; fm-bootstrap reports
+# the exact clone command when that directory has no executable core.
 #
 # NEVER A GATE. This entry point exits 0 on every path, prints nothing to
 # stdout, and hands delivery to a detached child, so it cannot change the exit
@@ -47,7 +53,8 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
-MIRROR="$SCRIPT_DIR/slack-mirror/slack-mirror.sh"
+MIRROR_HOME="${SLACK_MIRROR_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/agent-slack-mirror}"
+MIRROR="$MIRROR_HOME/slack-mirror.sh"
 
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"

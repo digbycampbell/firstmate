@@ -84,7 +84,7 @@ Secondmates skip it because idle is healthy and ordinary stale-pane detection do
 
 Verified on 2026-07-28 with 0.2.112 and genuine pre-native 0.2.73.
 `.grok/hooks/fm-primary-turnend-guard.json` invokes `../../../bin/fm-turnend-guard-grok.sh`.
-A second, independent `.grok/hooks/fm-primary-slack-mirror.json` invokes the Slack mirror and is outside this guard; `../../../docs/turnend-guard.md` owns it.
+A second, independent `.grok/hooks/fm-primary-slack-mirror.json` invokes Firstmate's caller for the separately installed `agent-slack-mirror` core and is outside this guard; `../../../docs/turnend-guard.md` owns it.
 The exact running Stop payload selects same-process continuation on 0.2.112; 0.2.73 omits that capability and needs one guarded `grok --resume`.
 `../../../docs/turnend-guard.md` owns adaptive and malformed-input behavior.
 
