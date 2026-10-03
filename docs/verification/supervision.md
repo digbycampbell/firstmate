@@ -533,7 +533,7 @@ The Grok Stop payload, dumped by a project `Stop` hook that wrote its stdin to a
 
 One prompt fired the hook twice: the `end_turn` payload above, then a second payload with `reason` `shutdown` carrying neither `promptId` nor `lastAssistantMessage`.
 `transcriptPath` names the session's `updates.jsonl`, a JSON-RPC session-update log whose `user_message_chunk` entries carry `_meta.promptIndex` and whose `agent_message_chunk` entries carry `_meta.promptId` and `_meta.turnStartMs`.
-That is what `bin/slack-mirror/adapters/grok.sh` reads, and it is the reason the Grok reply is bound to the finished turn's own prompt rather than to whatever text the log ends with.
+That is what the installed `agent-slack-mirror/adapters/grok.sh` reads, and it is the reason the Grok reply is bound to the finished turn's own prompt rather than to whatever text the log ends with.
 
 Codex was inspected on the same date and is a recorded gap rather than a registration: `codex-cli 0.149.0` embeds a `stop.command.input` JSON schema requiring `hook_event_name`, `last_assistant_message`, `transcript_path`, `model`, `session_id`, `stop_hook_active`, and `turn_id`, so the payload does carry the finished turn's final message, but its project hooks refuse to load without a per-hook `trusted_hash` entry in `~/.codex/config.toml`, which needs an interactive approval, so no live turn could be produced here.
 

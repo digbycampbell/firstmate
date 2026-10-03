@@ -2226,8 +2226,17 @@ The bot token is separate configuration and never lives here: it is `SLACK_BOT_T
 This configuration is local to each Firstmate home and is not part of secondmate inherited configuration.
 Channel history alone cannot see a reply written inside a thread, so the adapter also reads `conversations.replies` for the threads it tracks, keeping a per-thread read position under `state/slack-captain/threads/` that advances by the same capture-first rule as the channel position.
 Firstmate's own final captain-facing message of each turn is mirrored into the same channel automatically, so Slack carries the whole conversation rather than the subset firstmate remembered to post by hand.
-`bin/slack-mirror/slack-mirror.sh` owns that mirror and its header owns the whole contract: the substantive-content and repeat suppression rules, how a deliberate post suppresses the mirror for that turn, how a reply is threaded back into the captain thread it answers, its own state under `state/slack-captain/`, and which primary harnesses it covers.
-`bin/fm-slack-mirror.sh` is firstmate's thin caller over it and owns only what is firstmate's: this home's paths, primary scope, and the per-harness turn-end registrations.
+The mirror core is the external [`agent-slack-mirror`](https://github.com/digbycampbell/agent-slack-mirror) checkout.
+Install it at the default location with:
+
+```sh
+git clone https://github.com/digbycampbell/agent-slack-mirror.git ~/.local/share/agent-slack-mirror
+```
+
+`SLACK_MIRROR_HOME` selects another checkout or install directory, and `XDG_DATA_HOME` changes the default parent in the usual way.
+Bootstrap reports `MISSING: agent-slack-mirror` with the exact clone command when the resolved directory has no executable `slack-mirror.sh`.
+The installed core's `slack-mirror.sh` header owns the substantive-content and repeat suppression rules, how a deliberate post suppresses the mirror for that turn, how a reply is threaded back into the captain thread it answers, its own state under `state/slack-captain/`, and which primary harnesses it covers.
+`bin/fm-slack-mirror.sh` is firstmate's thin caller over it and owns only the installed-core resolution, this home's paths, primary scope, and the per-harness turn-end registrations.
 Threading is resolved in three layers: an explicit `note-reply-target` firstmate records for the turn, then automatic detection of the captain message that triggered the turn (correlated through the wake that opened it and the per-capture thread the adapter records with `note-trigger`, so no manual step is needed and an interleaved fresh message cannot misroute the reply), then the newest-inbound guess only as a last resort when the trigger cannot be read at all.
 It adds the optional keys `mirror`, `mirror_ack_max_chars`, `mirror_thread_window`, `mirror_turn_window`, `mirror_max_chars`, and `mirror_worker_details` to this same file, each with an `FM_SLACK_MIRROR_*` environment override, and mirrors nothing at all in a home with no `channel=` above.
 Every path through it exits 0 and stays silent, so Slack can never block, delay, or fail a turn in the terminal.
@@ -2279,7 +2288,8 @@ Rate-limit-friendliness is a load-bearing design constraint, not an afterthought
 A board-quota shortage never blocks noticing a newly assigned issue through the still-healthy core quota.
 Conditional requests (ETag/If-Modified-Since) were evaluated and are not used: `gh-axi api` has no flag to read response headers back, and GitHub does not honor `If-Modified-Since` on this listing endpoint regardless; `bin/fm-procevent-github-assigned.sh`'s header records both findings in detail.
 
-`bin/fm-procevent-github-assigned.sh` and its `--help` own the commands, the canonical-id and cursor-hash scheme, and the tuning variables `FM_GITHUB_ASSIGNED_MAX_LOOPS`, `FM_GITHUB_ASSIGNED_MAX_PAGES`, `FM_GITHUB_ASSIGNED_INTERVAL`, `FM_GITHUB_ASSIGNED_BOARD_INTERVAL`, `FM_GITHUB_ASSIGNED_MIN_CORE_QUOTA`, and `FM_GITHUB_ASSIGNED_MIN_GRAPHQL_QUOTA`.
+`bin/fm-procevent-github-assigned.sh` and its `--help` own the commands, the canonical-id and cursor-hash scheme, and the tuning variables `FM_GITHUB_ASSIGNED_MAX_LOOPS`, `FM_GITHUB_ASSIGNED_MAX_PAGES`, `FM_GITHUB_ASSIGNED_INTERVAL`, `FM_GITHUB_ASSIGNED_BOARD_INTERVAL`, `FM_GITHUB_ASSIGNED_MIN_CORE_QUOTA`, `FM_GITHUB_ASSIGNED_MIN_GRAPHQL_QUOTA`, and `FM_GITHUB_ASSIGNED_PARSE_ERROR_LIMIT`.
+Three consecutive polls with unparseable gh-axi responses produce one `api-error` wake; a durable latch suppresses repeats until a fully parseable poll begins a new failure episode.
 Its `list` subcommand prints the configured login's currently assigned open issues and assigned board drafts on demand, with no cursor side effects.
 ## Spoken interface and captain inbox (config/voice-*, config/inbox-*)
 

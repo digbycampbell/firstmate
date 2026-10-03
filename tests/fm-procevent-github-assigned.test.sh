@@ -2,11 +2,11 @@
 # Behavior tests for the GitHub self-assignment process-event adapter.
 #
 # The external source is replaced on PATH with a fake `gh-axi` that records
-# every invocation's argv and replies with gh-axi's real documented envelope
-# shape (verified live against gh-axi 0.1.32 and the real digio-nz/fcdispatch
-# repo and FC Dispatch board at implementation time: a multi-line jq result
-# lands in `api_response: / body: "..." / truncated: false`, while a single
-# short, special-character-free result like a quota reading is rendered bare).
+# every invocation's argv and replies with gh-axi 0.1.35's real bare scalar
+# shape, captured on 2026-10-03 against the real digio-nz/fcdispatch repo.
+# The live issue response was one line beginning `rows=["count\\t1",` and the
+# quota response was `quota=5000`; neither response used an api_response
+# envelope.
 # Nothing here touches the network.
 #
 # What is asserted is the adapter's own contract: a newly assigned issue or
@@ -47,22 +47,22 @@ trap gha_teardown EXIT
 FAKEBIN=$(fm_fakebin "$TMP_ROOT")
 cat > "$FAKEBIN/gh-axi" <<'SH'
 #!/usr/bin/env bash
-# Stand-in for gh-axi. Records argv, replies with gh-axi's real envelope shape.
+# Stand-in for gh-axi. Records argv and replies with captured 0.1.35 shapes.
 set -u
 printf '%s\n' "$*" >> "$FAKE_GH_AXI_ARGV"
 
-emit_envelope() {  # <content>, JSON-string-quoted unless it is quota=<digits>
-  case "$1" in
-    quota=*) printf 'api_response:\n  body: %s\n  truncated: false\n' "$1" ;;
-    *)
-      printf 'api_response:\n  body: %s\n  truncated: false\n' \
-        "$(printf '%s' "$1" | jq -Rs .)"
-      ;;
-  esac
+emit_scalar() {  # <marker> <newline-delimited rows>
+  if [ "$1" = quota ]; then
+    printf 'quota=%s\n' "$2"
+  else
+    printf 'rows=%s\n' "$(printf '%s' "$2" | jq -Rsc 'split("\\n") | map(select(length > 0))')"
+  fi
 }
 
 [ "${FAKE_GH_AXI_FAIL:-0}" != 1 ] || { printf 'error: "forced failure"\ncode: UNKNOWN\n'; exit 1; }
 [ "${1-}" = api ] || { printf 'fake gh-axi: unsupported command: %s\n' "$*" >&2; exit 1; }
+[ "${FAKE_GH_AXI_UNPARSEABLE:-0}" != 1 ] \
+  || { printf 'api_response:\n  body: "captured-old-envelope"\n  truncated: false\n'; exit 0; }
 shift
 
 first=${1-}
@@ -91,9 +91,9 @@ case "$path" in
     case "$*" in *graphql*) resource=graphql ;; esac
     [ "${FAKE_GH_AXI_FAIL_RATE_LIMIT:-0}" != 1 ] || { printf 'error: "forced failure"\n'; exit 1; }
     if [ "$resource" = graphql ]; then
-      emit_envelope "quota=${FAKE_QUOTA_GRAPHQL:-5000}"
+      emit_scalar quota "${FAKE_QUOTA_GRAPHQL:-5000}"
     else
-      emit_envelope "quota=${FAKE_QUOTA_CORE:-5000}"
+      emit_scalar quota "${FAKE_QUOTA_CORE:-5000}"
     fi
     ;;
   /repos/*/issues)
@@ -101,18 +101,18 @@ case "$path" in
     page=$(field_value page "$@")
     [ -n "$page" ] || page=1
     if [ "$page" = 1 ]; then
-      emit_envelope "$(cat "$FAKE_ISSUES_BODY_FILE" 2>/dev/null || true)"
+      emit_scalar rows "$(cat "$FAKE_ISSUES_BODY_FILE" 2>/dev/null || true)"
     else
-      emit_envelope ""
+      emit_scalar rows ""
     fi
     ;;
   "POST graphql")
     [ "${FAKE_GH_AXI_FAIL_PROJECT:-0}" != 1 ] || { printf 'error: "forced failure"\n'; exit 1; }
     after=$(field_value after "$@")
     if [ -z "$after" ]; then
-      emit_envelope "$(cat "$FAKE_PROJECT_PAGE1_FILE" 2>/dev/null || true)"
+      emit_scalar rows "$(cat "$FAKE_PROJECT_PAGE1_FILE" 2>/dev/null || true)"
     else
-      emit_envelope "$(cat "$FAKE_PROJECT_PAGE2_FILE" 2>/dev/null || true)"
+      emit_scalar rows "$(cat "$FAKE_PROJECT_PAGE2_FILE" 2>/dev/null || true)"
     fi
     ;;
   *)
@@ -199,10 +199,16 @@ issues_filter=$(
   )
 ) || fail "could not source the adapter to obtain issues_jq_filter"
 
-issues_filter_out=$(jq -r "$issues_filter" "$issues_fixture" 2>"$TMP_ROOT/issues_filter.err")
+issues_filter_scalar=$(jq -r "$issues_filter" "$issues_fixture" 2>"$TMP_ROOT/issues_filter.err")
 issues_filter_rc=$?
 [ "$issues_filter_rc" -eq 0 ] \
   || fail "issues_jq_filter must be a valid jq program runnable against a raw issues array: $(cat "$TMP_ROOT/issues_filter.err")"
+case "$issues_filter_scalar" in
+  rows=*) ;;
+  *) fail "issues_jq_filter must emit one rows= scalar" ;;
+esac
+issues_filter_out=$(printf '%s\n' "${issues_filter_scalar#rows=}" | jq -r '.[]') \
+  || fail "issues_jq_filter must encode its rows as a JSON string array"
 assert_contains "$issues_filter_out" "$(printf 'count\t2')" \
   "the count row reflects the raw array's own length"
 printf '%s\n' "$issues_filter_out" | grep -qF "$(printf 'issue\tissue:acme/repo#7\t7\tacme/repo')" \
@@ -310,6 +316,43 @@ FM_HOME="$home5" "$ADAPTER" list >"$TMP_ROOT/fail.list.out" 2>"$TMP_ROOT/fail.li
 assert_grep 'could not read' "$TMP_ROOT/fail.list.err" "list fails with a clean diagnostic, not a crash"
 unset FAKE_GH_AXI_FAIL
 pass "every GitHub failure path exits cleanly with a diagnostic and never wedges"
+
+# --- repeated unparseable output wakes once per failure episode -------------
+
+home_parse=$(new_home parsefail)
+: > "$FAKE_ISSUES_BODY_FILE"
+no_board_items
+export FAKE_GH_AXI_UNPARSEABLE=1
+parse_out=$(FM_GITHUB_ASSIGNED_MAX_LOOPS=3 FM_GITHUB_ASSIGNED_INTERVAL=0 \
+  FM_HOME="$home_parse" "$ADAPTER" poll "$home_parse" 2>"$TMP_ROOT/parse.err") \
+  || fail "three unparseable polls should produce an api-error result"
+assert_contains "$parse_out" 'status=api-error' "the parser outage becomes a result"
+assert_contains "$parse_out" 'reason=unparseable-gh-axi-output' "the result names the parser outage"
+assert_contains "$parse_out" 'consecutive=3' "the result records the failure threshold"
+printf '%s\n' "$parse_out" > "$TMP_ROOT/parse.result"
+[ "$("$ADAPTER" classify "$TMP_ROOT/parse.result")" = api-error ] \
+  || fail "the parser outage result should classify as api-error"
+
+rc=0
+FM_GITHUB_ASSIGNED_MAX_LOOPS=3 FM_GITHUB_ASSIGNED_INTERVAL=0 \
+  FM_HOME="$home_parse" "$ADAPTER" poll "$home_parse" \
+  > "$TMP_ROOT/parse-again.out" 2> "$TMP_ROOT/parse-again.err" || rc=$?
+[ "$rc" -eq 75 ] || fail "a latched parser outage should return no-result, got $rc"
+[ ! -s "$TMP_ROOT/parse-again.out" ] \
+  || fail "one parser outage must not emit a second result"
+
+unset FAKE_GH_AXI_UNPARSEABLE
+rc=0
+FM_HOME="$home_parse" "$ADAPTER" poll "$home_parse" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 75 ] || fail "a healthy empty poll should clear the parser outage, got $rc"
+
+export FAKE_GH_AXI_UNPARSEABLE=1
+parse_new=$(FM_GITHUB_ASSIGNED_MAX_LOOPS=3 FM_GITHUB_ASSIGNED_INTERVAL=0 \
+  FM_HOME="$home_parse" "$ADAPTER" poll "$home_parse" 2>/dev/null) \
+  || fail "a new parser failure episode should produce a new result"
+assert_contains "$parse_new" 'status=api-error' "a recovered listener may report a later outage"
+unset FAKE_GH_AXI_UNPARSEABLE
+pass "three unparseable polls wake once until a healthy poll starts a new failure episode"
 
 # --- list prints assigned issues and drafts on demand ------------------------
 
