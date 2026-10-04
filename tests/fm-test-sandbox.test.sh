@@ -104,6 +104,26 @@ echo 'ok - the foreign home is refused'")
 }
 pass "a script steered onto a foreign home by ambient FM_STATE_OVERRIDE is refused at resolution, naming the home"
 
+# The bare STATE variable is the same resolution input outside the FM_*
+# namespace: exported in the runner's environment, it beat the fixture home a
+# test passed, so a correct test either wrote into that home or was refused.
+# The runner must clear it so the explicitly passed FM_HOME wins.
+rc=$(STATE="$PRIMARY/state" run_fixture ambient-state "fixture=\$TMPDIR/fixture-home
+mkdir -p \"\$fixture/state\"
+[ -z \"\${STATE+x}\" ] || { echo \"not ok - ambient STATE reached the test: \$STATE\"; exit 1; }
+out=\$(FM_HOME=\"\$fixture\" '$WT/bin/fm-branch-outcome.sh' append --task t --verdict routine --summary s 2>&1)
+grc=\$?
+[ \"\$grc\" = 0 ] || { echo \"not ok - a correctly passed fixture home lost to ambient STATE (exit \$grc): \$out\"; exit 1; }
+[ -s \"\$fixture/state/branch-outcomes.jsonl\" ] || { echo 'not ok - the row did not land in the fixture home'; exit 1; }
+echo 'ok - the fixture home wins over ambient STATE'")
+[ "$rc" = "0" ] || {
+  cat "$TMP_ROOT/ambient-state.out" >&2
+  fail "an ambient STATE still beats an explicitly passed FM_HOME under the runner"
+}
+[ ! -e "$PRIMARY/state/branch-outcomes.jsonl" ] \
+  || fail "an ambient STATE let a test write a branch-outcome row into the primary home"
+pass "the runner clears an ambient STATE so a test's fixture home wins"
+
 # Every script that resolves a firstmate home from FM_STATE_OVERRIDE/FM_HOME
 # must carry the guard, or the boundary is only as good as whichever scripts
 # someone remembered. Each one is RUN against a home it does not own: the grep

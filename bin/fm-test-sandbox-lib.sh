@@ -44,12 +44,21 @@
 # matching FM_* is cleared before a test starts.
 FM_TEST_ENV_ALLOWLIST="FM_TEST_ORPHAN_MAX_AGE_SECONDS FM_TEST_SANDBOX"
 
-# fm_test_sandbox_cleared_vars: echo one FM_* variable name per line that must
-# be cleared from the child environment. Reads the live environment, so a
-# variable invented after this file was written is still caught.
+# Home-resolution inputs outside the FM_* namespace. The STATE= line at the top
+# of every bin/fm-*.sh honours an ambient STATE ahead of FM_HOME, exactly like
+# FM_STATE_OVERRIDE, so it is cleared with the namespace.
+FM_TEST_ENV_CLEARED_EXTRA="STATE"
+
+# fm_test_sandbox_cleared_vars: echo one variable name per line that must be
+# cleared from the child environment: every FM_* outside the allowlist, plus
+# FM_TEST_ENV_CLEARED_EXTRA. Reads the live environment, so a variable invented
+# after this file was written is still caught.
 fm_test_sandbox_cleared_vars() {
   local name allow
   while IFS= read -r name; do
+    case " $FM_TEST_ENV_CLEARED_EXTRA " in
+      *" $name "*) printf '%s\n' "$name"; continue ;;
+    esac
     case "$name" in
       FM_*) ;;
       *) continue ;;
