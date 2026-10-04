@@ -33,7 +33,7 @@ Reserve `bin/fm-slack-post.sh` for a deliberate structured post you place yourse
 
 A configured live quota channel topic is armed through `bin/fm-procevent-quota-topic.sh arm` and needs no handling on a healthy run: it produces no result and no wake, and only a fatal Slack error becomes an `api-error` result to handle.
 
-A configured GitHub self-assignment watch is armed and handled through `bin/fm-procevent-github-assigned.sh`, whose header owns its configuration, rate-limit design, and cursor scheme; its `handle <source-id> <sequence> <result-file>` is the required handling command, because only it advances the known-assignment cursor along with the acknowledgement.
+A configured GitHub issue pickup watch is armed and handled through `bin/fm-procevent-github-assigned.sh`, whose header owns its configuration, rate-limit design, signal types, and cursor scheme; its `handle <source-id> <sequence> <result-file>` is the required handling command, because only it advances the known cursor along with the acknowledgement and prints the `jev.yml` intake instruction for a captured row that still lacks Jev labels.
 A captured `assigned` result's rows each carry a type - `issue` (a promoted, number-and-repo-bearing item: the actual pick-it-up trigger) or `draft` (a board draft: intake only, not yet promoted) - so read the result file directly to see which before treating a captured item as ready to work.
 Its `list` subcommand prints the login's currently assigned issues and drafts on demand, with no cursor side effects.
 
