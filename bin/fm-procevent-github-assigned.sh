@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GitHub self-assignment adapter for the generic process-to-event runner.
+# GitHub assignment and Next: Build adapter for the generic process-to-event runner.
 #
 # Usage:
 #   fm-procevent-github-assigned.sh arm
@@ -15,10 +15,10 @@
 # `arm` registers one bounded poll of GitHub with bin/fm-procevent.sh, which owns
 # supervision, one machine-wide owner per source, durable capture, publication,
 # and restart; this adapter adds no daemon of its own. The captain
-# self-assigning a GitHub issue or a project-board draft is firstmate's
-# prioritisation signal, and this listener's only job is to notice that signal
-# and wake firstmate - it decides nothing about what to do with a
-# self-assignment. Issue-triage logic, auto-pickup behaviour, and board-move
+# self-assigning an issue or board draft, or Jev labelling an unassigned
+# open issue Next: Build with its configured board card in Ready to Build,
+# produces the same wake. This listener only notices these signals; firstmate
+# judges every pickup. Issue-triage logic, auto-pickup behaviour, and board-move
 # side effects are deliberately out of scope for this listener.
 #
 # `list` is a manual, on-demand helper: it prints the configured login's
@@ -32,7 +32,8 @@
 #   login=<github login>          optional, default digbycampbell
 #   repo=<owner/repo>             repeatable; issues in each named repo are
 #                                 watched regardless of board membership.
-#                                 default digio-nz/fcdispatch when absent
+#                                 default digio-nz/fcdispatch when absent;
+#                                 recommend every configured fleet-process repo
 #   project_owner=<org login>     optional, default digio-nz
 #   project_number=<n>            optional, default 2
 #   interval=<seconds>            optional poll interval for issues, default 300
@@ -58,16 +59,20 @@
 # quota (5,000/hour) is shared with every other GraphQL caller on the same
 # token, including manual board operations, and has been observed fully
 # exhausted by those. This adapter is deliberately built around that scarcity:
-#   - Issues are read through `GET /repos/<owner>/<repo>/issues?assignee=<login>`,
+#   - Issues are read through `GET /repos/<owner>/<repo>/issues?state=open`,
 #     one call per configured repo, which spends the generous 5,000/hour "core"
 #     quota rather than the Search API's separate 30/minute budget. It is
-#     scoped to exactly the login's assigned items in exactly the configured
-#     repos, never a whole-repo or whole-board listing.
+#     scoped to open issues in the configured repos, filtered locally to the
+#     login's assignments and unassigned Next: Build candidates. Pagination
+#     adds calls only when a repo has more than 100 open items.
 #   - The project board (GraphQL) is intake-only and lower priority than a real
 #     issue, so it is polled on its own slower `board_interval` cadence
 #     (default 1,800s) while issues keep the faster `interval` (default 300s).
-#     A board-cadence miss costs latency on noticing a new draft, never
-#     correctness: the next scheduled board poll still finds it.
+#     Candidate Status fields are read through issue nodes, only for REST
+#     candidates, on that same slower cadence. Between board reads the last
+#     candidate readiness is reused within this bounded poll child; REST
+#     eligibility is checked every cycle. New cards and column changes may
+#     take up to board_interval to be observed. Every new child checks first.
 #   - Before spending either quota, `quota_ok` reads the free `/rate_limit`
 #     endpoint (checking it never itself counts against any limit) and skips
 #     that surface's fetch for this cycle - fail-open, logged, retried next
@@ -96,8 +101,8 @@
 # and verified above.
 #
 # TWO SURFACES, ONE UNION. Each poll reads the configured repos' open assigned
-# issues via the REST endpoint above, and separately reads the configured
-# project board's items assigned to the login via GraphQL, keeping only items
+# issues and unassigned Next: Build candidates via REST, and separately reads
+# the configured project board's items assigned to the login via GraphQL, keeping only items
 # typed Issue or DraftIssue (pull requests are never surfaced). The two results
 # are combined into one set, deduplicated by canonical id, so an issue that is
 # both in a watched repo and on the board is counted once. Both reads go
@@ -113,7 +118,15 @@
 # rows JSON itself. `--full` remains on every call so gh-axi never truncates a
 # value before validation.
 #
-# CANONICAL IDENTITY. An assigned issue is identified as "issue:<owner>/<repo>#<number>",
+# Each new row retains type/id/number/repo/url/title and appends
+# signal=assigned|next-build and jev=yes|no, plus the REST node id when present.
+# Jev presence means a Next: label. Both signals share one canonical cursor.
+# `handle` prints a workflow-dispatch instruction for captured issues with
+# jev=no: firstmate runs `gh-axi workflow run jev.yml -R <repo> -f issue=<n>`
+# and waits for Jev labels before model resolution or brief creation. The
+# adapter never dispatches workflows or workers automatically.
+#
+# CANONICAL IDENTITY. An issue is identified as "issue:<owner>/<repo>#<number>",
 # stable across relabeling, retitling, or reassignment-and-reassignment-again.
 # A board draft is identified as "draft:<project item id>" (its PVTI_... id),
 # the project item's own stable identity.
@@ -161,7 +174,7 @@ HOME_DIR=$FM_HOME
 POLL_TMP=
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,136p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,/^set -u/{ /^set -u/d; p; }' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 state_dir()   { printf '%s\n' "${FM_STATE_OVERRIDE:-$HOME_DIR/state}"; }
 config_file() { printf '%s\n' "${FM_CONFIG_OVERRIDE:-$HOME_DIR/config}/github-assigned"; }
@@ -415,27 +428,36 @@ quota_ok() {
 
 # --- fetching issues (REST, per repo) -------------------------------------
 
-# The jq filter for one repo's assigned-issues listing. The repo name is
+# The jq filter for one repo's open-issues listing. The repo name is
 # embedded literally (gh-axi's --jq takes only a plain expression string, no
 # variable binding), safe because valid_repo already restricted its charset to
 # letters, digits, ., _, -, and / - nothing that can break out of a jq string
 # literal.
 issues_jq_filter() {  # <repo>
+  # shellcheck disable=SC2016 # $assigned and $labels are jq variables.
   printf '"rows=" + (([
     (["count", (length | tostring)] | @tsv),
-    (.[] | select(has("pull_request") | not) | [
-      "issue", ("issue:%s#" + (.number | tostring)), (.number | tostring), "%s", .html_url, .title
-    ] | @tsv)
-  ]) | @json)' "$1" "$1"
+    (.[] | select(has("pull_request") | not)
+     | select(.state == "open" or .state == null)
+     | (.assignees // [] | map(.login) | index("%s") != null) as $assigned
+     | (.labels // [] | map(.name)) as $labels
+     | select($assigned or ((.assignees // [] | length) == 0 and ($labels | index("Next: Build") != null)))
+     | [ (if $assigned then "issue" else "candidate" end),
+       ("issue:%s#" + (.number | tostring)), (.number | tostring), "%s", .html_url, .title,
+       (if $assigned then "signal=assigned" else "signal=next-build" end),
+       (if any($labels[]; startswith("Next: ")) then "jev=yes" else "jev=no" end), (.node_id // "")
+     ] | @tsv)
+  ]) | @json)' "$CFG_LOGIN" "$1" "$1"
 }
 
-# Fetches every open issue assigned to the login across the configured repos
+# Fetches owner assignments and unassigned Next: Build candidates across repos
 # into $issues_tmp, as "issue<TAB>id<TAB>number<TAB>repo<TAB>url<TAB>title" rows,
 # one call per repo against the generous "core" rate limit (see the
 # RATE-LIMIT header note for why this is not the Search API). Sets FETCHED.
 fetch_issues() {
   local r page kind rest line raw_count
   : > "$issues_tmp"
+  : > "$candidates_tmp"
   if ! quota_ok core "$QUOTA_MIN_CORE"; then
     FETCHED=0
     printf 'github-assigned: core API quota is low (below %s remaining); skipping this cycle\n' \
@@ -445,7 +467,7 @@ fetch_issues() {
   for r in "${CFG_REPOS[@]}"; do
     page=1
     while :; do
-      gh_api_rows "/repos/$r/issues" --field assignee="$CFG_LOGIN" --field state=open \
+      gh_api_rows "/repos/$r/issues" --field state=open \
         --field per_page=100 --field page="$page" --jq "$(issues_jq_filter "$r")"
       [ "$FETCHED" = 1 ] || return 0
       raw_count=0
@@ -456,6 +478,7 @@ fetch_issues() {
         case "$kind" in
           count) raw_count=$rest ;;
           issue) printf '%s\n' "$line" >> "$issues_tmp" ;;
+          candidate) printf '%s\n' "$line" >> "$candidates_tmp" ;;
         esac
       done <<< "$BODY_TEXT"
       [ "$raw_count" -ge 100 ] || break
@@ -472,10 +495,10 @@ fetch_issues() {
 project_items_query() {  # <after-cursor-or-empty>
   if [ -n "$1" ]; then
     # shellcheck disable=SC2016 # $after is a literal GraphQL variable reference, not a shell expansion
-    printf 'query($after: String) { organization(login: "%s") { projectV2(number: %s) { items(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id content { __typename ... on DraftIssue { title assignees(first: 20) { nodes { login } } } ... on Issue { number title url state repository { nameWithOwner } assignees(first: 20) { nodes { login } } } } } } } } }' \
+    printf 'query($after: String) { organization(login: "%s") { projectV2(number: %s) { items(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id content { __typename ... on DraftIssue { title assignees(first: 20) { nodes { login } } } ... on Issue { number title url state repository { nameWithOwner } assignees(first: 20) { nodes { login } } labels(first: 100) { nodes { name } } } } } } } } }' \
       "$CFG_PROJECT_OWNER" "$CFG_PROJECT_NUMBER"
   else
-    printf 'query { organization(login: "%s") { projectV2(number: %s) { items(first: 100) { pageInfo { hasNextPage endCursor } nodes { id content { __typename ... on DraftIssue { title assignees(first: 20) { nodes { login } } } ... on Issue { number title url state repository { nameWithOwner } assignees(first: 20) { nodes { login } } } } } } } } }' \
+    printf 'query { organization(login: "%s") { projectV2(number: %s) { items(first: 100) { pageInfo { hasNextPage endCursor } nodes { id content { __typename ... on DraftIssue { title assignees(first: 20) { nodes { login } } } ... on Issue { number title url state repository { nameWithOwner } assignees(first: 20) { nodes { login } } labels(first: 100) { nodes { name } } } } } } } } }' \
       "$CFG_PROJECT_OWNER" "$CFG_PROJECT_NUMBER"
   fi
 }
@@ -488,11 +511,12 @@ project_jq_filter() {
     (.data.organization.projectV2.items.nodes[]
      | select(.content.assignees.nodes // [] | map(.login) | index("%s") != null)
      | if .content.__typename == "DraftIssue" then
-         ["item", "draft", ("draft:" + .id), "", "", "", .content.title]
+         ["item", "draft", ("draft:" + .id), "", "", "", .content.title, "signal=assigned"]
        elif .content.__typename == "Issue" and .content.state == "OPEN" then
          ["item", "issue",
            ("issue:" + .content.repository.nameWithOwner + "#" + (.content.number | tostring)),
-           (.content.number | tostring), .content.repository.nameWithOwner, .content.url, .content.title]
+           (.content.number | tostring), .content.repository.nameWithOwner, .content.url, .content.title, "signal=assigned",
+           (if any(.content.labels.nodes[]?; .name | startswith("Next: ")) then "jev=yes" else "jev=no" end)]
        else empty end
      | @tsv)
   ]) | @json)' "$CFG_LOGIN"
@@ -538,6 +562,47 @@ fetch_project() {
   done
 }
 
+# Read Status only on REST candidates, in bounded batches of node ids.
+# The configured board is matched by owner AND number; another board cannot
+# authorise a pickup. A truncated projectItems connection fails closed.
+candidate_cards_query() {  # <JSON node-id array>
+  printf 'query { nodes(ids: %s) { ... on Issue { id projectItems(first: 100) {
+    pageInfo { hasNextPage } nodes {
+      project { number owner { ... on Organization { login } ... on User { login } } }
+      fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+    }
+  } } } }' "$1"
+}
+
+candidate_cards_filter() {
+  printf '"rows=" + ([.data.nodes[] | select(. != null)
+    | if .projectItems.pageInfo.hasNextPage then error("truncated issue projectItems") else . end
+    | select(any(.projectItems.nodes[];
+      .project.owner.login == "%s" and .project.number == %s
+      and .fieldValueByName.name == "Ready to Build"))
+    | .id] | @json)' "$CFG_PROJECT_OWNER" "$CFG_PROJECT_NUMBER"
+}
+
+fetch_candidate_cards() {
+  local ids
+  : > "$ready_ids"
+  [ -s "$candidates_tmp" ] || return 0
+  quota_ok graphql "$QUOTA_MIN_GRAPHQL" || return 1
+  cut -f9 "$candidates_tmp" | jq -Rn '
+    [inputs | select(length > 0)]
+    | [range(0; length; 100) as $i | .[$i:$i+100]][] | tojson
+  ' -r > "$candidate_batches"
+  while IFS= read -r ids; do
+    gh_api_rows POST graphql --field query="$(candidate_cards_query "$ids")" --jq "$(candidate_cards_filter)"
+    [ "$FETCHED" = 1 ] || { : > "$ready_ids"; return 1; }
+    [ -z "$BODY_TEXT" ] || printf '%s\n' "$BODY_TEXT" >> "$ready_ids"
+  done < "$candidate_batches"
+}
+
+include_ready_candidates() {
+  awk -F'\t' 'NR==FNR { ready[$1]=1; next } ($9 in ready) { sub(/^candidate/, "issue"); print }' "$ready_ids" "$candidates_tmp" >> "$issues_tmp"
+}
+
 # --- combining, diffing, and emitting -----------------------------------
 
 # Combines $issues_tmp and $project_tmp into a deduplicated, sorted snapshot,
@@ -572,8 +637,9 @@ emit_result() {
   printf '\n'
   cat "$union_ids"
   printf '\n'
-  while IFS=$'\t' read -r type id number repo url title; do
-    printf 'new\t%s\t%s\t%s\t%s\t%s\t%s\n' "$type" "$id" "$number" "$repo" "$url" "$title"
+  local row
+  while IFS= read -r row; do
+    printf 'new\t%s\n' "$row"
   done < "$new_rows_file"
 }
 
@@ -584,6 +650,7 @@ emit_result() {
 # BOARD_FETCHED tells the caller whether to reschedule the next board poll.
 poll_once() {
   local do_board=$1
+  local candidates_fetched=1 project_fetched=0
   UNPARSEABLE=0
   BOARD_FETCHED=0
   fetch_issues
@@ -591,8 +658,12 @@ poll_once() {
   if [ "$do_board" = 1 ]; then
     fetch_project
     BOARD_FETCHED=$FETCHED
+    project_fetched=$FETCHED
+    fetch_candidate_cards || candidates_fetched=0
+    [ "$candidates_fetched" = 1 ] || BOARD_FETCHED=0
   fi
-  [ "$BOARD_FETCHED" = 1 ] || : > "$project_tmp"
+  include_ready_candidates
+  [ "$project_fetched" = 1 ] || : > "$project_tmp"
   build_snapshot "$CFG_LOGIN"
   [ "$NEW_COUNT" -gt 0 ] || return 1
   emit_result
@@ -605,6 +676,10 @@ staging() {
   resp_raw="$POLL_TMP/resp.raw"
   resp_err="$POLL_TMP/resp.err"
   issues_tmp="$POLL_TMP/issues.tsv"
+  candidates_tmp="$POLL_TMP/candidates.tsv"
+  candidate_batches="$POLL_TMP/candidate-batches.jsonl"
+  ready_ids="$POLL_TMP/ready.ids"
+  : > "$ready_ids"
   project_tmp="$POLL_TMP/project.tsv"
   combined_tmp="$POLL_TMP/combined.tsv"
   snapshot_rows="$POLL_TMP/snapshot.tsv"
@@ -710,12 +785,10 @@ cmd_list() {
   issues=$(awk -F'\t' '$1 == "issue"' "$snapshot_rows" | wc -l | tr -d ' ')
   drafts=$(awk -F'\t' '$1 == "draft"' "$snapshot_rows" | wc -l | tr -d ' ')
   printf 'count: %s (%s issue, %s draft) assigned to %s\n' "$total" "$issues" "$drafts" "$CFG_LOGIN"
-  while IFS=$'\t' read -r type id number repo url title; do
-    case "$type" in
-      issue) printf 'issue %s#%s "%s" %s\n' "$repo" "$number" "$title" "$url" ;;
-      draft) printf 'draft %s "%s"\n' "${id#draft:}" "$title" ;;
-    esac
-  done < "$snapshot_rows"
+  awk -F'\t' '
+    $1 == "issue" { printf "issue %s#%s \"%s\" %s\n", $4, $3, $6, $5 }
+    $1 == "draft" { sub(/^draft:/, "", $2); printf "draft %s \"%s\"\n", $2, $6 }
+  ' "$snapshot_rows"
 }
 
 # --- reading a captured result -------------------------------------------
@@ -775,10 +848,10 @@ advance_cursor() {  # <result-file>
     return 0
   fi
   [ "$current_hash" = "$from" ] \
-    || die "captured GitHub assignment result does not continue the stored read position for $login"
+    || die "captured GitHub pickup result does not continue the stored read position for $login"
   payload_snapshot_block "$file" > "$snapshot_block_file"
   [ "$(hash_of_file "$snapshot_block_file")" = "$to" ] \
-    || die "captured GitHub assignment result is internally inconsistent"
+    || die "captured GitHub pickup result is internally inconsistent"
   write_cursor "$login" "$snapshot_block_file" || die "cannot commit the github-assigned read position"
 }
 
@@ -791,7 +864,7 @@ apply_result() {  # <source-id> <sequence> <result-file> <mark-handled>
   case "$class" in
     assigned) advance_cursor "$file" ;;
     api-error) ;;
-    *) die "captured GitHub assignment result needs firstmate's attention: $class" ;;
+    *) die "captured GitHub pickup result needs firstmate's attention: $class" ;;
   esac
   if [ "$mark" = 1 ]; then
     "$SCRIPT_DIR/fm-procevent.sh" handled "$sid" "$seq" || return 1
@@ -800,7 +873,15 @@ apply_result() {  # <source-id> <sequence> <result-file> <mark-handled>
 }
 
 cmd_handle() {
-  apply_result "${1-}" "${2-}" "${3-}" 1
+  apply_result "${1-}" "${2-}" "${3-}" 1 || return 1
+  local type id number repo jev
+  while IFS=$'\t' read -r type id number repo _ _ _ jev _; do
+    [ "$type" = issue ] || continue
+    [ "$jev" = jev=no ] || continue
+    valid_repo "$repo" || die "captured intake repo is invalid"
+    case "$number" in ''|*[!0-9]*) die "captured intake issue number is invalid" ;; esac
+    printf 'intake: %s#%s has no Jev Next labels. Run gh-axi workflow run jev.yml -R %s -f issue=%s, then wait for Jev labels before resolving the model or writing the brief. Firstmate judges pickup after intake.\n' "$repo" "$number" "$repo" "$number"
+  done < <(awk -F'\t' '$1 == "new" { sub(/^new\t/, ""); print }' "${3-}")
 }
 
 # The runner's own entry: advance the read position immediately (idempotent),

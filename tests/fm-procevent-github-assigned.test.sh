@@ -98,6 +98,17 @@ case "$path" in
     ;;
   /repos/*/issues)
     [ "${FAKE_GH_AXI_FAIL_ISSUES:-0}" != 1 ] || { printf 'error: "forced failure"\n'; exit 1; }
+    if [ -n "${FAKE_ISSUES_JSON:-}" ]; then
+      prev=''
+      for arg in "$@"; do
+        if [ "$prev" = --jq ]; then
+          assignee=$(field_value assignee "$@")
+          jq --arg login "$assignee" 'if $login == "" then . else map(select(any(.assignees[]; .login == $login))) end' "$FAKE_ISSUES_JSON" | jq -r "$arg"
+          exit
+        fi
+        prev=$arg
+      done
+    fi
     page=$(field_value page "$@")
     [ -n "$page" ] || page=1
     if [ "$page" = 1 ]; then
@@ -108,11 +119,22 @@ case "$path" in
     ;;
   "POST graphql")
     [ "${FAKE_GH_AXI_FAIL_PROJECT:-0}" != 1 ] || { printf 'error: "forced failure"\n'; exit 1; }
+    query=$(field_value query "$@")
+    case "$query" in
+      *'nodes(ids:'*)
+        [ "${FAKE_BAD_CARD_OUTPUT:-0}" != 1 ] || { printf 'rows={}\n'; exit 0; }
+        prev=''
+        for arg in "$@"; do
+          if [ "$prev" = --jq ]; then jq -r "$arg" "$FAKE_CANDIDATES_JSON"; exit; fi
+          prev=$arg
+        done
+        ;;
+    esac
     after=$(field_value after "$@")
     if [ -z "$after" ]; then
-      emit_scalar rows "$(cat "$FAKE_PROJECT_PAGE1_FILE" 2>/dev/null || true)"
+      emit_scalar rows "$(awk -F'\t' '$1 == "item" && NF < 8 { print $0 "\tsignal=assigned"; next } { print }' "$FAKE_PROJECT_PAGE1_FILE" 2>/dev/null || true)"
     else
-      emit_scalar rows "$(cat "$FAKE_PROJECT_PAGE2_FILE" 2>/dev/null || true)"
+      emit_scalar rows "$(awk -F'\t' '$1 == "item" && NF < 8 { print $0 "\tsignal=assigned"; next } { print }' "$FAKE_PROJECT_PAGE2_FILE" 2>/dev/null || true)"
     fi
     ;;
   *)
@@ -138,7 +160,7 @@ no_board_items() {
 no_board_items
 
 issue_row() {  # <number> <title>
-  printf 'issue\tissue:%s#%s\t%s\t%s\thttps://github.com/%s/issues/%s\t%s\n' \
+  printf 'issue\tissue:%s#%s\t%s\t%s\thttps://github.com/%s/issues/%s\t%s\tsignal=assigned\tjev=no\n' \
     "$REPO" "$1" "$1" "$REPO" "$REPO" "$1" "$2"
 }
 
@@ -152,6 +174,78 @@ new_home() {  # <name>
 }
 
 cursor_file() { printf '%s/state/github-assigned/%s.cursor\n' "$1" "$LOGIN"; }
+
+# Drive raw REST and GraphQL fixtures through the public poll interface.
+export FAKE_ISSUES_JSON="$TMP_ROOT/candidates.json"
+export FAKE_CANDIDATES_JSON="$TMP_ROOT/cards.json"
+cat > "$FAKE_ISSUES_JSON" <<'JSON'
+[
+ {"number":37,"node_id":"I_ready","state":"open","html_url":"https://github.com/digio-nz/fcdispatch/issues/37","title":"Build me","assignees":[],"labels":[{"name":"Next: Build"}]},
+ {"number":38,"node_id":"I_other","state":"open","html_url":"https://github.com/digio-nz/fcdispatch/issues/38","title":"Someone else owns it","assignees":[{"login":"someone"}],"labels":[{"name":"Next: Build"}]},
+ {"number":39,"node_id":"I_shaping","state":"open","html_url":"https://github.com/digio-nz/fcdispatch/issues/39","title":"Still shaping","assignees":[],"labels":[{"name":"Next: Build"}]}
+]
+JSON
+cat > "$FAKE_CANDIDATES_JSON" <<'JSON'
+{"data":{"nodes":[
+ {"id":"I_ready","projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"number":2,"owner":{"login":"digio-nz"}},"fieldValueByName":{"name":"Ready to Build"}}]}},
+ {"id":"I_other","projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"number":2,"owner":{"login":"digio-nz"}},"fieldValueByName":{"name":"Ready to Build"}}]}},
+ {"id":"I_shaping","projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"project":{"number":2,"owner":{"login":"digio-nz"}},"fieldValueByName":{"name":"Shaping"}}]}}
+]}}
+JSON
+home_next=$(new_home nextbuild)
+out_next=$(FM_HOME="$home_next" "$ADAPTER" poll "$home_next") || fail "an unassigned Next: Build issue in Ready to Build must produce a result"
+assert_contains "$out_next" 'issue_count=1' "only the ready unassigned candidate qualifies"
+assert_contains "$out_next" 'signal=next-build' "the wake identifies Jev's signal"
+assert_contains "$out_next" '#37' "the ready issue is captured"
+assert_no_grep 'assignee=' "$FAKE_GH_AXI_ARGV" "REST must include unassigned issues"
+printf '%s\n' "$out_next" > "$TMP_ROOT/next.result"
+FM_HOME="$home_next" "$ADAPTER" autohandle unused 1 "$TMP_ROOT/next.result" >/dev/null || true
+rc=0
+FM_HOME="$home_next" "$ADAPTER" poll "$home_next" >/dev/null || rc=$?
+[ "$rc" -eq 75 ] || fail "the same label must not refire a captured issue"
+# A fresh cursor still must not see an issue moved out of Ready to Build.
+jq '(.data.nodes[0].projectItems.nodes[0].fieldValueByName.name) = "Shaping"' "$FAKE_CANDIDATES_JSON" > "$TMP_ROOT/moved.json"
+mv "$TMP_ROOT/moved.json" "$FAKE_CANDIDATES_JSON"
+home_moved=$(new_home moved)
+rc=0
+FM_HOME="$home_moved" "$ADAPTER" poll "$home_moved" >/dev/null || rc=$?
+[ "$rc" -eq 75 ] || fail "a card outside Ready to Build must produce no wake"
+# The same public endpoint sees owner assignments on another configured repo.
+jq '.[0] | .assignees=[{"login":"digbycampbell"}] | .labels=[] | [.]' "$FAKE_ISSUES_JSON" > "$TMP_ROOT/farm.json"
+export FAKE_ISSUES_JSON="$TMP_ROOT/farm.json"
+home_farm=$(new_home farm)
+printf 'repo=digio-nz/digio-farm\n' >> "$home_farm/config/github-assigned"
+out_farm=$(FM_HOME="$home_farm" "$ADAPTER" poll "$home_farm") || fail "self-assignment on digio-farm must produce a result"
+assert_contains "$out_farm" 'issue:digio-nz/digio-farm#37' "all configured repos are polled"
+assert_contains "$out_farm" 'signal=assigned' "the assignment signal is explicit"
+printf '%s\n' "$out_farm" > "$TMP_ROOT/farm.result"
+# A switch from assignment to Jev's label shares the same canonical cursor.
+FM_HOME="$home_farm" "$ADAPTER" autohandle unused 1 "$TMP_ROOT/farm.result" >/dev/null || true
+jq '.[0].assignees=[] | .[0].labels=[{"name":"Next: Build"}]' "$FAKE_ISSUES_JSON" > "$TMP_ROOT/farm-next.json"
+export FAKE_ISSUES_JSON="$TMP_ROOT/farm-next.json"
+jq '(.data.nodes[0].projectItems.nodes[0].fieldValueByName.name) = "Ready to Build"' "$FAKE_CANDIDATES_JSON" > "$TMP_ROOT/ready-again.json"
+export FAKE_CANDIDATES_JSON="$TMP_ROOT/ready-again.json"
+rc=0
+FM_HOME="$home_farm" "$ADAPTER" poll "$home_farm" >/dev/null || rc=$?
+[ "$rc" -eq 75 ] || fail "a known assignment must not refire under Next: Build"
+# The slower board cadence also applies to candidate status reads.
+home_slow=$(new_home slow)
+jq '(.data.nodes[0].projectItems.nodes[0].fieldValueByName.name) = "Shaping"' "$FAKE_CANDIDATES_JSON" > "$TMP_ROOT/not-ready.json"
+export FAKE_CANDIDATES_JSON="$TMP_ROOT/not-ready.json"
+: > "$FAKE_GH_AXI_ARGV"
+rc=0
+FM_GITHUB_ASSIGNED_MAX_LOOPS=3 FM_GITHUB_ASSIGNED_INTERVAL=0 FM_GITHUB_ASSIGNED_BOARD_INTERVAL=1800 \
+  FM_HOME="$home_slow" "$ADAPTER" poll "$home_slow" >/dev/null || rc=$?
+[ "$rc" -eq 75 ] || fail "shaping candidates remain quiet over multiple polls"
+[ "$(grep -cF 'nodes(ids:' "$FAKE_GH_AXI_ARGV")" -eq 1 ] || fail "candidate board status must use the slower cadence"
+# Malformed candidate card output reaches the existing three-poll wake.
+export FAKE_BAD_CARD_OUTPUT=1
+home_bad_cards=$(new_home badcards)
+out_bad=$(FM_GITHUB_ASSIGNED_MAX_LOOPS=3 FM_GITHUB_ASSIGNED_INTERVAL=0 \
+  FM_HOME="$home_bad_cards" "$ADAPTER" poll "$home_bad_cards" 2>/dev/null) || fail "unparseable candidate cards must wake"
+assert_contains "$out_bad" 'status=api-error' "candidate parsing shares the outage wake"
+unset FAKE_ISSUES_JSON FAKE_CANDIDATES_JSON FAKE_BAD_CARD_OUTPUT
+pass "raw issue and card reads cover both signals, no-assignee, column and cursor rules"
 
 # --- classify is defensive about anything foreign ---------------------------
 
@@ -185,7 +279,7 @@ cat > "$issues_fixture" <<'JSON'
 [
   {"number": 42, "html_url": "https://github.com/acme/repo/issues/42", "title": "Has a PR",
    "pull_request": {"url": "https://api.github.com/repos/acme/repo/pulls/42"}},
-  {"number": 7, "html_url": "https://github.com/acme/repo/issues/7", "title": "Plain issue"}
+  {"number": 7, "html_url": "https://github.com/acme/repo/issues/7", "title": "Plain issue", "assignees":[{"login":"digbycampbell"}], "labels":[]}
 ]
 JSON
 
@@ -362,7 +456,7 @@ printf 'page\tfalse\t\nitem\tdraft\tdraft:PVTI_fake123\t\t\t\tListed draft\n' > 
 list_out=$(FM_HOME="$home6" "$ADAPTER" list) || fail "list should succeed"
 assert_contains "$list_out" 'count: 2 (1 issue, 1 draft)' "list summarizes both kinds"
 assert_contains "$list_out" 'issue digio-nz/fcdispatch#801' "list names the issue"
-assert_contains "$list_out" 'draft PVTI_fake123' "list names the draft"
+assert_contains "$list_out" 'draft PVTI_fake123 "Listed draft"' "list preserves the draft title across empty issue fields"
 no_board_items
 pass "list prints the captain's currently assigned issues and drafts on demand"
 
@@ -412,7 +506,10 @@ assert_grep "procevent github-assigned $SID" "$home8/state/.wake-queue" "the cap
 assert_present "$home8/state/procevent/$SID.source" "the source stays armed after a capture"
 seq=${result%.result}
 seq=${seq##*.}
-FM_HOME="$home8" "$ADAPTER" handle "$SID" "$seq" "$result" >/dev/null \
+handle_out=$(FM_HOME="$home8" "$ADAPTER" handle "$SID" "$seq" "$result") \
   || fail "handling the captured result failed"
+assert_contains "$handle_out" 'gh-axi workflow run jev.yml -R digio-nz/fcdispatch -f issue=901' "unlabelled pickup instructs Jev dispatch"
+assert_contains "$handle_out" 'wait for Jev labels before resolving the model or writing the brief' "intake precedes model and brief"
+assert_no_grep 'workflow run' "$FAKE_GH_AXI_ARGV" "the adapter instructs firstmate instead of dispatching itself"
 assert_present "$home8/state/procevent-inbox/$SID.$seq.handled" "handling records the acknowledgement"
 pass "register, run, capture, publish, classify, and acknowledge round-trip"
