@@ -352,4 +352,20 @@ echo "ok - allowlisted variable survived"')
 }
 pass "an explicitly allowlisted FM_TEST_* variable still reaches the test"
 
+# Live-guard opt-in switches must reach the test, or a prompt-submitting live
+# guard can never be run through the runner. A near-miss name proves the
+# pattern is not a blanket pass for anything containing LIVE.
+rc=$(FM_LIVE=1 FM_SLACK_MIRROR_LIVE_E2E=1 FM_TEST_BASE_PATH=/fixture/bin FM_LIVE_E2E_HOME=/x \
+  run_fixture live-switches \
+  '[ "${FM_LIVE:-}" = 1 ] || { echo "not ok - FM_LIVE was cleared"; exit 1; }
+[ "${FM_SLACK_MIRROR_LIVE_E2E:-}" = 1 ] || { echo "not ok - FM_SLACK_MIRROR_LIVE_E2E was cleared"; exit 1; }
+[ "${FM_TEST_BASE_PATH:-}" = /fixture/bin ] || { echo "not ok - FM_TEST_BASE_PATH was cleared"; exit 1; }
+[ -z "${FM_LIVE_E2E_HOME+x}" ] || { echo "not ok - a non-switch FM_* name reached the test"; exit 1; }
+echo "ok - live switches survived"')
+[ "$rc" = "0" ] || {
+  cat "$TMP_ROOT/live-switches.out" >&2
+  fail "live-guard opt-in switches were cleared, or the pattern let a non-switch through"
+}
+pass "FM_LIVE, FM_*_LIVE_E2E and FM_TEST_BASE_PATH reach the test while other FM_* names do not"
+
 git -C "$PRIMARY" worktree remove --force "$WT" >/dev/null 2>&1 || true

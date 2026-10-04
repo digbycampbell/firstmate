@@ -41,8 +41,12 @@
 # treehouse pool that holds a worktree of this repository.
 
 # Environment variables the suite is allowed to inherit. Everything else
-# matching FM_* is cleared before a test starts.
-FM_TEST_ENV_ALLOWLIST="FM_TEST_ORPHAN_MAX_AGE_SECONDS FM_TEST_SANDBOX"
+# matching FM_* is cleared before a test starts. FM_LIVE and every
+# FM_*_LIVE_E2E are the opt-in switches fm_live_gate (tests/lib.sh) reads, so a
+# prompt-submitting live guard can run through the runner; FM_TEST_BASE_PATH is
+# the base PATH harness fixtures build on. None of them resolves a home.
+FM_TEST_ENV_ALLOWLIST="FM_TEST_ORPHAN_MAX_AGE_SECONDS FM_TEST_SANDBOX FM_LIVE FM_TEST_BASE_PATH"
+FM_TEST_ENV_ALLOWLIST_PATTERN='FM_*_LIVE_E2E'
 
 # Home-resolution inputs outside the FM_* namespace. The STATE= line at the top
 # of every bin/fm-*.sh honours an ambient STATE ahead of FM_HOME, exactly like
@@ -66,6 +70,8 @@ fm_test_sandbox_cleared_vars() {
     for allow in $FM_TEST_ENV_ALLOWLIST; do
       [ "$name" = "$allow" ] && continue 2
     done
+    # shellcheck disable=SC2053 # The right-hand side is a glob on purpose.
+    [[ $name == $FM_TEST_ENV_ALLOWLIST_PATTERN ]] && continue
     printf '%s\n' "$name"
   done < <(compgen -e)
 }
