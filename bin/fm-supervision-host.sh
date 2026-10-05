@@ -1041,6 +1041,9 @@ while :; do
   if [ "$REASON" = "check: rearm-resurface" ] \
     && [ "$(fm_wake_actor_pending_count main)" -eq 0 ] 2>/dev/null; then
     log_line "dropped	stale resurface: no main-actionable row is queued"
+    # A failed start falls through on purpose: with no fresh arm to park on,
+    # the close continues down the ordinary path so the resurface still
+    # reaches main instead of the host dropping a wake with no arm parked.
     if start_arm ""; then
       ARM_PID=$STARTED_ARM_PID
       ARM_OUT=$STARTED_ARM_OUT
