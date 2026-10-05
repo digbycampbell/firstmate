@@ -31,9 +31,10 @@
 # (secondmate ledger-first publish of a child done). A ship `done:` is not
 # accepted while the named head exists only in the worker's disposable copy.
 # The check tests that head, not whether some branch moved. In no-mistakes
-# mode the pre-validation `done: {summary}` is the pipeline handoff and is
-# not gated; only the later CI-ready `done: PR <url> checks green` is, or on a
-# Gerrit project the later `done: PR <change url> published for review`. The
+# mode the worker starts the pipeline itself (FM_DOD_NM_START), and a
+# pre-validation `done: {summary}` from a brief written before that rule is a
+# pipeline handoff and is not gated; only the CI-ready `done: PR <url> checks
+# green` is, or on a Gerrit project `done: PR <change url> published for review`. The
 # named head is the worker copy's HEAD, except that a done naming the task's
 # recorded pr= passes when the forge holds that head: a forge-reported
 # pr_head= in no-mistakes mode, or a recorded merge
@@ -315,6 +316,18 @@ fm_ask_user_escalation_block() {  # <data-dir> <task-id>
 EOF
 }
 
+# How a no-mistakes worker starts its pipeline, shared by every no-mistakes
+# block. The worker starts it itself right after its implementation commit: a
+# pre-validation done-and-stop handoff left builders idle until firstmate
+# noticed (four times on 2026-10-03/04), and firstmate's start steer was a
+# Claude slash command that jammed a Codex composer. The skill invocation is
+# harness-specific (.agents/skills/harness-adapters references own each form),
+# so the brief names the shell command every harness can run.
+FM_DOD_NM_START='The task is complete only when committed on your branch.
+When it is implemented and committed, start the no-mistakes pipeline yourself, in the same turn and without stopping first: invoke the no-mistakes skill the way your harness invokes skills, or run `no-mistakes axi run` from the shell where your harness has none.
+The pipeline owns the push and the PR, so never push from this copy.
+Never append `done:` before the pipeline has returned: a `done:` naming no PR or published change is not a handoff, and stopping on one leaves the task idle.'
+
 # The forge-independent middle of the no-mistakes contract: how a worker drives
 # the pipeline, what `--intent` may carry, and the two firstmate-specific rules.
 # Written once; only the two sentences about a green PR depend on the forge,
@@ -328,7 +341,7 @@ fm_nm_driving_block() {  # <forge>
   fi
   cat <<EOF
 You drive no-mistakes by responding to its gates, not by implementing fixes.
-Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
+Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke the no-mistakes skill, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, pass \`--intent\` as only this brief's \`## Captain's intent\` subsection body, not its heading, plus any later words the captain actually said.
 Preserve the actual words without adding speaker labels or direct address; the subsection heading supplies provenance outside the pipeline input.
 For a legacy brief with no such subsection, include only words on lines marked \`[captain] \`, excluding that metadata prefix; never copy its mixed \`# Task\` wholesale.
@@ -471,20 +484,17 @@ Delivery contract: mode=no-mistakes process=fleet
 Ship branch: $branch
 $FM_DOD_VERIFY
 
-The task is complete only when committed on your branch.
-When you believe it is complete, append \`done [at=<epoch>]: {summary}\` to the status file and stop.
-Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
-That first \`done:\` is the handoff that starts the pipeline, which owns the push and opens the PR; it is not a request to push from this copy.
+$FM_DOD_NM_START
 
 EOF
       fm_nm_driving_block "$forge"
       printf '\n'
       fm_fleet_pr_rules
       cat <<EOF
-After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), read the PR body back with \`gh-axi pr view <number> --full\`, where <number> is the PR number from your PR URL.
+After the pipeline reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), read the PR body back with \`gh-axi pr view <number> --full\`, where <number> is the PR number from your PR URL.
 When it does not follow this repository's \`.github/pull_request_template.md\` with its closing keyword, rewrite it into the template: render it with \`work.ts pr --type <type> [--scope <scope>] --body-file <file> --dry-run\`, where the file holds the plain-English \`## What\`, and set the PR body to the text after that output's \`---\` line with \`gh-axi pr edit <number> --body-file <rendered file>\`; a body edit does not move the head.
 Then append \`done [at=<epoch>]: PR {url} checks green\` and stop. You are finished.
-That CI-ready \`done:\` is accepted only when this copy's HEAD - your latest commit - is one the /no-mistakes run pushed, so commit nothing after the run; the check tests that commit, not merely that a branch moved.
+That CI-ready \`done:\` is accepted only when this copy's HEAD - your latest commit - is one the no-mistakes run pushed, so commit nothing after the run; the check tests that commit, not merely that a branch moved.
 EOF
       ;;
     direct-PR:gerrit:*)
@@ -514,10 +524,7 @@ $FM_DOD_VERIFY
 This project's review server is Gerrit: it has no pull requests and no forge CI the pipeline can watch, so **no-mistakes runs here as a review pass that ends at a ready branch**, and you then publish that branch as one change.
 Pass \`--skip push,pr,ci\` on every \`no-mistakes axi run\` for this task, and skip nothing else: \`review\`, \`test\`, \`document\`, and \`lint\` are the whole point of the run.
 Those three are the only steps that reach a forge, and skipping them is a supported outcome, not a degraded one.
-The task is complete only when committed on your branch.
-When you believe it is complete, append \`done [at=<epoch>]: {summary}\` to the status file and stop.
-Firstmate will then instruct you to run /no-mistakes to validate.
-That first \`done:\` is the handoff that starts the pipeline; it is not a request to publish.
+$FM_DOD_NM_START
 
 EOF
       fm_nm_driving_block "$forge"
@@ -578,19 +585,16 @@ Delivery contract: mode=no-mistakes
 Ship branch: $branch
 $FM_DOD_VERIFY
 
-The task is complete only when committed on your branch.
-When you believe it is complete, append \`done [at=<epoch>]: {summary}\` to the status file and stop.
-Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
-That first \`done:\` is the handoff that starts the pipeline, which owns the push; it is not a request to push from this copy.
+$FM_DOD_NM_START
 
 EOF
       fm_nm_driving_block "$forge"
       cat <<EOF
 
-After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), read the PR back from the forge and confirm it is not a draft (\`gh-axi pr view <number>\` must print \`draft: no\`, where <number> is the PR number from your PR URL); if it is a draft, mark it ready with \`gh-axi pr ready <number>\`.
+After the pipeline reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), read the PR back from the forge and confirm it is not a draft (\`gh-axi pr view <number>\` must print \`draft: no\`, where <number> is the PR number from your PR URL); if it is a draft, mark it ready with \`gh-axi pr ready <number>\`.
 A draft cannot be merged, so a done report on one leaves the merge unasked.
 Then append \`done [at=<epoch>]: PR {url} checks green\` and stop. You are finished.
-That CI-ready \`done:\` is accepted only when this copy's HEAD - your latest commit - is one the /no-mistakes run pushed, so commit nothing after the run; the check tests that commit, not merely that a branch moved.
+That CI-ready \`done:\` is accepted only when this copy's HEAD - your latest commit - is one the no-mistakes run pushed, so commit nothing after the run; the check tests that commit, not merely that a branch moved.
 If you deliberately keep the PR a draft, append \`paused [at=<epoch>]: {why the draft is held}\` instead of done.
 EOF
       ;;

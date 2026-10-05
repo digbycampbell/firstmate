@@ -382,6 +382,32 @@ test_pr_based_dod_draft_check_uses_gh_axi() {
   pass "PR-based DoD draft check uses gh-axi"
 }
 
+# A no-mistakes worker starts its own pipeline after the implementation commit.
+# Briefs that said "append done and stop; firstmate will instruct you to run
+# /no-mistakes" left four builders idle on 2026-10-03/04, and the steer that
+# followed was a Claude slash command a Codex composer could not run.
+test_no_mistakes_dod_has_the_worker_start_its_own_pipeline() {
+  local spec out
+  for spec in 'none none' 'gerrit none' 'none fleet'; do
+    out="$TMP_ROOT/dod-start-${spec// /-}.md"
+    # shellcheck disable=SC2086 # spec is two words on purpose: forge and process
+    fm_dod_block no-mistakes dod-start fm-issue-9 $spec > "$out" \
+      || { fail "no-mistakes ($spec): DoD did not render"; continue; }
+    assert_grep 'start the no-mistakes pipeline yourself, in the same turn and without stopping first' "$out" \
+      "no-mistakes ($spec): DoD does not have the worker start the pipeline itself"
+    # shellcheck disable=SC2016  # the backticks are literal brief text
+    assert_grep 'run `no-mistakes axi run` from the shell' "$out" \
+      "no-mistakes ($spec): DoD names no harness-neutral way to start the pipeline"
+    assert_grep 'Never append `done:` before the pipeline has returned' "$out" \
+      "no-mistakes ($spec): DoD does not forbid a pre-pipeline done"
+    assert_no_grep 'Firstmate will then instruct you' "$out" \
+      "no-mistakes ($spec): DoD still tells the worker to wait for a start steer"
+    assert_no_grep '/no-mistakes' "$out" \
+      "no-mistakes ($spec): DoD names a Claude-only slash invocation"
+  done
+  pass "no-mistakes DoD has the worker start its own pipeline with a harness-neutral command"
+}
+
 # The ship branch has no fm/<task-id> default: a caller that forgets it is
 # refused rather than handed a branch a fleet-process ruleset refuses at push.
 test_dod_block_requires_the_ship_branch() {
@@ -474,6 +500,7 @@ test_standalone_local_only_needs_project_ref
 test_non_done_lines_are_not_gated
 test_fenced_and_indented_captain_lines_are_not_intent
 test_pr_based_dod_draft_check_uses_gh_axi
+test_no_mistakes_dod_has_the_worker_start_its_own_pipeline
 test_dod_block_requires_the_ship_branch
 test_fleet_process_dod_uses_work_ts_and_leaves_the_draft
 test_fleet_process_is_refused_where_it_cannot_apply
