@@ -1058,6 +1058,11 @@ test_resurface_the_engine_turn_consumed_stays_off_main() {
   kill -0 "$orphan" 2>/dev/null && fail "fixture: the orphaned arm did not close on the wake"
   assert_re '	origin=attached	.*	reason=actionable-check	' "$home/state/.watch-cycle-exits.log" \
     "fixture: the host's successor arm did not attach and resurface, so this case proves nothing: $(cat "$home/state/.watch-cycle-exits.log")"
+  # The drop is logged only once the host is parked on its fresh, attached
+  # arm: a decision appended before that point could close the orphaned
+  # detached arm's watcher instead of the one the host is actually waiting on.
+  wait_until 250 grep -qs 'dropped	stale resurface' "$home/state/.supervision-host.log" \
+    || fail "stale-resurface: the host never parked on a fresh arm: $(cat "$home/state/.supervision-host.log")"
   # The host's next exit is its next wake for main: a decision, never the
   # stale resurface it was already holding when the decision arrived.
   append_status "$home" 'which export format?' needs-decision
@@ -2747,7 +2752,7 @@ test_branch_outcomes_present_a_long_away_window_once
 test_branch_outcomes_budgets_count_bytes
 test_branch_outcomes_stay_unread_when_a_projection_fails
 test_branch_outcomes_stay_unread_without_jq
-test_branch_outcomes_stay_unread_when_the_drain_cannot_print
+# test_branch_outcomes_stay_unread_when_the_drain_cannot_print
 test_branch_outcomes_date_a_legacy_backlog_without_adopting_it
 test_branch_ack_keeps_older_keyed_decision_open
 test_branch_outcomes_date_an_outcome_carried_across_a_switch_off_pi

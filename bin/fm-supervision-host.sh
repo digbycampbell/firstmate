@@ -1036,19 +1036,31 @@ while :; do
   # A resurface reports the queue as it stood when its arm attached, and the
   # host can read it only after an engine turn has consumed that row: the
   # successor arm can attach to a live watcher before the turn's grant exists.
-  # With no main-actionable row left it is no wake, so park on a fresh arm,
-  # which judges the queue again.
+  # With no main-actionable row left it is no wake, so start a fresh arm and
+  # re-judge the queue only once that arm is attached: a decision that closed
+  # between the first count and the attach would otherwise be delivered to the
+  # orphaned detached arm instead of the one the host parks on, stranding it
+  # under a handling marker that a following arm just follows rather than
+  # resurfacing.
   if [ "$REASON" = "check: rearm-resurface" ] \
     && [ "$(fm_wake_actor_pending_count main)" -eq 0 ] 2>/dev/null; then
-    log_line "dropped	stale resurface: no main-actionable row is queued"
-    # A failed start falls through on purpose: with no fresh arm to park on,
-    # the close continues down the ordinary path so the resurface still
-    # reaches main instead of the host dropping a wake with no arm parked.
-    if start_arm ""; then
-      ARM_PID=$STARTED_ARM_PID
-      ARM_OUT=$STARTED_ARM_OUT
+    if start_successor "" && [ "$(fm_wake_actor_pending_count main)" -eq 0 ] 2>/dev/null; then
+      log_line "dropped	stale resurface: no main-actionable row is queued"
+      ARM_PID=$SUCCESSOR_PID
+      ARM_OUT=$SUCCESSOR_OUT
+      SUCCESSOR_PID=
+      SUCCESSOR_OUT=
       ARM_TEXT=
       continue
+    fi
+    # A failed start, or a recount that found a row queued after the fresh arm
+    # attached, falls through on purpose: the close continues down the
+    # ordinary path so the resurface still reaches main instead of the host
+    # dropping a wake with no arm parked.
+    if [ -n "${SUCCESSOR_PID:-}" ]; then
+      retire_arm "$SUCCESSOR_PID" "$SUCCESSOR_OUT"
+      SUCCESSOR_PID=
+      SUCCESSOR_OUT=
     fi
   fi
   # Attended: the close reaches main exactly as the plain arm delivers it,
