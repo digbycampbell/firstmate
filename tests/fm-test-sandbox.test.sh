@@ -368,4 +368,50 @@ echo "ok - live switches survived"')
 }
 pass "FM_LIVE, FM_*_LIVE_E2E and FM_TEST_BASE_PATH reach the test while other FM_* names do not"
 
+# --- leftover fixture processes are reaped ------------------------------------
+#
+# The 2026-09-27 incident: release-wait fixture shells outlived killed runs and
+# piled up for days. A script that exits leaving its fixture blocked must not
+# leave it running, and a runner killed outright must have its leftovers stopped
+# by the next runner - but never a live runner's.
+LEFT_PID_FILE="$TMP_ROOT/leftover.pid"
+rc=$(run_fixture leftover "( while [ ! -e \"\$TMPDIR/never-released\" ]; do sleep 0.05; done ) &
+printf '%s\\n' \$! > '$LEFT_PID_FILE'
+echo 'ok - left a blocked fixture behind'")
+left=$(cat "$LEFT_PID_FILE" 2>/dev/null || true)
+[ -n "$left" ] || fail "the leftover fixture did not record its pid: $(cat "$TMP_ROOT/leftover.out")"
+if [ -n "$left" ] && kill -0 "$left" 2>/dev/null; then
+  kill "$left" 2>/dev/null || true
+  fail "a fixture still blocked on its release file outlived the script that started it"
+else
+  pass "a blocked fixture left behind by a finished script is stopped"
+fi
+
+if [ -d /proc ]; then
+  # An abandoned run: its owner record names a process that has exited.
+  DEAD_RUN="$TMP_ROOT/dead-run"; LIVE_RUN="$TMP_ROOT/live-run"
+  mkdir -p "$DEAD_RUN/s0" "$LIVE_RUN/s0"
+  sh -c 'exit 0' & dead=$!; wait "$dead"
+  printf '%s\n%s\n' "$dead" 1 > "$DEAD_RUN/.fm-test-runner-owner"
+
+  printf '%s\n%s\n' "$$" "$(_fm_test_starttime "$$")" > "$LIVE_RUN/.fm-test-runner-owner"
+  env FM_TEST_SANDBOX="$DEAD_RUN/s0" sh -c 'while :; do sleep 0.05; done' & orphan=$!
+  env FM_TEST_SANDBOX="$LIVE_RUN/s0" sh -c 'while :; do sleep 0.05; done' & keeper=$!
+  sleep 0.3
+  rc=$(run_fixture abandoned "echo 'ok - trivial'")
+  if kill -0 "$orphan" 2>/dev/null; then
+    kill "$orphan" 2>/dev/null || true
+    fail "a process left by a runner that is gone survived the next runner's start"
+  else
+    pass "the next runner stops processes a runner that is gone left behind"
+  fi
+  if kill -0 "$keeper" 2>/dev/null; then
+    pass "a live runner's sandbox processes are never reaped by another runner"
+  else
+    fail "a runner reaped a process belonging to a live runner"
+  fi
+  kill "$keeper" 2>/dev/null || true
+  wait "$orphan" "$keeper" 2>/dev/null || true
+fi
+
 git -C "$PRIMARY" worktree remove --force "$WT" >/dev/null 2>&1 || true

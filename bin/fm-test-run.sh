@@ -2418,6 +2418,10 @@ if [ ! -f "$ROOT/bin/fm-test-sandbox-lib.sh" ]; then
 fi
 # shellcheck source=bin/fm-test-sandbox-lib.sh
 . "$ROOT/bin/fm-test-sandbox-lib.sh"
+# Leftover fixture processes: claim this run's directory, then stop what a
+# runner that is gone left behind (bin/fm-test-sandbox-lib.sh owns the rule).
+fm_test_record_runner_owner "$RUN_TMP"
+fm_test_reap_abandoned_sandboxes
 
 RUN_ID="fm-test-run-${RUN_STARTED_MS}-$$"
 TOTAL=0
@@ -2540,6 +2544,7 @@ run_script_bounded() {  # <sandbox> <script> <out> <stream> <id>
     printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
       "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$out"
   fi
+  fm_test_reap_sandbox_processes "$sandbox"
   return "$rc"
 }
 
