@@ -229,7 +229,7 @@ test_phase_brief_passes_its_plan_base_branch() {
   mkdir -p "$home/data"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
     phase-a1 firstmate --mode no-mistakes --issue 61 --base-branch plan-issue-57 >/dev/null 2>&1 \
-    || { fail "fm-brief.sh should scaffold a Phase brief with --base-branch"; return; }
+    || fail "fm-brief.sh should scaffold a Phase brief with --base-branch"
   brief="$home/data/phase-a1/brief.md"
   # shellcheck disable=SC2016  # the backticks are literal brief text
   assert_grep 'pass `--base-branch plan-issue-57` on every `no-mistakes axi run` for this task' "$brief" \

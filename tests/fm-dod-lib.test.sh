@@ -415,7 +415,7 @@ test_no_mistakes_dod_passes_a_plan_base_branch() {
   local out
   out="$TMP_ROOT/dod-base.md"
   fm_dod_block no-mistakes dod-base fm-issue-61 none fleet plan-issue-57 > "$out" \
-    || { fail "a no-mistakes DoD with a base branch did not render"; return; }
+    || fail "a no-mistakes DoD with a base branch did not render"
   # shellcheck disable=SC2016  # the backticks are literal brief text
   assert_grep 'pass `--base-branch plan-issue-57` on every `no-mistakes axi run` for this task' "$out" \
     "the DoD does not pass the plan branch to the pipeline"
