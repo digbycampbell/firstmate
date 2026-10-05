@@ -392,7 +392,7 @@ test_no_mistakes_dod_has_the_worker_start_its_own_pipeline() {
     out="$TMP_ROOT/dod-start-${spec// /-}.md"
     # shellcheck disable=SC2086 # spec is two words on purpose: forge and process
     fm_dod_block no-mistakes dod-start fm-issue-9 $spec > "$out" \
-      || { fail "no-mistakes ($spec): DoD did not render"; continue; }
+      || fail "no-mistakes ($spec): DoD did not render"
     assert_grep 'start the no-mistakes pipeline yourself, in the same turn and without stopping first' "$out" \
       "no-mistakes ($spec): DoD does not have the worker start the pipeline itself"
     # shellcheck disable=SC2016  # the backticks are literal brief text
