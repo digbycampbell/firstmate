@@ -362,7 +362,7 @@ Branch acknowledgement retiring the check-row receipts of exactly its granted se
 
 An actionable close whose parent process has already exited also leaves one detached handling successor, so that close does not end the home's only cycle.
 `bin/fm-watch-arm.sh` owns that launch.
-An arm that finds that watcher already running, with a non-empty wake queue under a downtime or acknowledged marker, reports `check: rearm-resurface` and exits while leaving the watcher running.
+An arm that finds that watcher already running, with a non-empty wake queue under a downtime or acknowledged marker, reports `check: rearm-resurface` and exits while leaving the watcher running, unless a live supervision-branch grant already holds that queued row, in which case the arm skips the resurface and leaves the branch actor to drain it.
 
 An attached arm reports the ended cycle's ledger delivery and exits even when a successor watcher is already healthy, and it leaves that successor running.
 It follows a successor only when that cycle published no delivery.
