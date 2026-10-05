@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--issue <n> [--issue-suffix <s>] | --chore <slug>]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--issue <n> [--issue-suffix <s> | --plan-branch <plan-issue-n>] | --chore <slug>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
@@ -51,6 +51,9 @@
 #   brief bin/fm-brief.sh scaffolds with the same flags (bin/fm-ship-branch-lib.sh
 #   owns the names), so each is refused together with --branch-prefix; the branch
 #   is recorded as branch= and the issue as issue= in the task metadata.
+#   --plan-branch plan-issue-<n> with --issue <phase> spawns a Phase of a
+#   one-branch Plan on the Plan's own branch, matching the brief fm-brief.sh
+#   scaffolds with the same flags; it is refused wherever --issue-suffix is.
 #   The brief's " process=fleet" (bin/fm-dod-lib.sh) must agree with the
 #   project's registered +fleet-process (bin/fm-project-mode.sh) exactly as its
 #   forge must, and a fresh ship on a fleet-process project is refused unless its
@@ -680,6 +683,7 @@ YOLO_SET=0
 ISSUE_SET=0
 ISSUE_SUFFIX=
 CHORE=
+PLAN_BRANCH=
 BRANCH_PREFIX_SET=0
 TRACEPARENT_SET=0
 RELAUNCH=0
@@ -723,6 +727,7 @@ for a in "$@"; do
       ISSUE_SET=1
       ;;
     issue-suffix) ISSUE_SUFFIX=$a ;;
+    plan-branch) PLAN_BRANCH=$a ;;
     chore) CHORE=$a ;;
     branch-prefix)
       BRANCH_PREFIX=$a
@@ -787,6 +792,8 @@ for a in "$@"; do
     ;;
   --issue-suffix) want_value="issue-suffix" ;;
   --issue-suffix=*) ISSUE_SUFFIX=${a#--issue-suffix=} ;;
+  --plan-branch) want_value="plan-branch" ;;
+  --plan-branch=*) PLAN_BRANCH=${a#--plan-branch=} ;;
   --chore) want_value=chore ;;
   --chore=*) CHORE=${a#--chore=} ;;
   --branch-prefix) want_value="branch-prefix" ;;
@@ -889,8 +896,8 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: --issue applies only to a fresh ship spawn; --relaunch reuses the existing task and makes no new board move" >&2
     exit 1
   }
-  [ -z "$ISSUE_SUFFIX$CHORE" ] || {
-    echo "error: --relaunch reuses the task's recorded ship branch; --issue-suffix and --chore cannot override it" >&2
+  [ -z "$ISSUE_SUFFIX$CHORE$PLAN_BRANCH" ] || {
+    echo "error: --relaunch reuses the task's recorded ship branch; --issue-suffix, --plan-branch, and --chore cannot override it" >&2
     exit 1
   }
   [ "$BRANCH_PREFIX_SET" -eq 0 ] || {
@@ -938,8 +945,8 @@ else
       echo "error: --yolo applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
       exit 1
     }
-    if [ "$ISSUE_SET" -eq 1 ] || [ -n "$ISSUE_SUFFIX$CHORE" ]; then
-      echo "error: --issue applies only to ship spawns, as do --issue-suffix and --chore; a scout delivers a report and a secondmate carries no linked issue" >&2
+    if [ "$ISSUE_SET" -eq 1 ] || [ -n "$ISSUE_SUFFIX$CHORE$PLAN_BRANCH" ]; then
+      echo "error: --issue applies only to ship spawns, as do --issue-suffix, --plan-branch, and --chore; a scout delivers a report and a secondmate carries no linked issue" >&2
       exit 1
     fi
     [ "$BRANCH_PREFIX_SET" -eq 0 ] || {
@@ -1518,8 +1525,8 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
     echo "error: config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped)." >&2
     exit 1
   fi
-  if [ "$ISSUE_SET" -eq 1 ] || [ -n "$ISSUE_SUFFIX$CHORE" ]; then
-    echo "error: --issue applies only to a single-task ship spawn; batch dispatch (id=repo pairs) does not support it, because one issue number cannot fan out across the batch's distinct tasks, and --issue-suffix and --chore are refused there for the same reason" >&2
+  if [ "$ISSUE_SET" -eq 1 ] || [ -n "$ISSUE_SUFFIX$CHORE$PLAN_BRANCH" ]; then
+    echo "error: --issue applies only to a single-task ship spawn; batch dispatch (id=repo pairs) does not support it, because one issue number cannot fan out across the batch's distinct tasks, and --issue-suffix, --plan-branch, and --chore are refused there for the same reason" >&2
     exit 1
   fi
   rc=0
@@ -1567,7 +1574,7 @@ fm_task_id_creation_valid "$ID" || {
   exit 2
 }
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = ship ]; then
-  BRANCH=$(fm_ship_branch_resolve "$ID" "$ISSUE_ARG" "$ISSUE_SUFFIX" "$CHORE" "$BRANCH_PREFIX" "$BRANCH_PREFIX_SET") || exit 1
+  BRANCH=$(fm_ship_branch_resolve "$ID" "$ISSUE_ARG" "$ISSUE_SUFFIX" "$CHORE" "$BRANCH_PREFIX" "$BRANCH_PREFIX_SET" "$PLAN_BRANCH") || exit 1
 fi
 if [ -e "$STATE" ] || [ -L "$STATE" ]; then
   fm_backlog_directory_present "$STATE" "state directory" || {

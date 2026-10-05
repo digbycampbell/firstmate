@@ -1665,7 +1665,7 @@ test_brief_renders_the_fleet_process() {
 
   out=$(FM_HOME="$home" "$BRIEF" fleet-b4 proj --mode no-mistakes --fleet-process 2>&1) \
     && fail "a fleet-process brief with no issue or chore scaffolded"
-  assert_contains "$out" "needs an fm-issue-<n> or fm-chore-<slug> ship branch" "the refusal did not name the accepted branches"
+  assert_contains "$out" "needs an fm-issue-<n>, fm-chore-<slug>, or plan-issue-<n> ship branch" "the refusal did not name the accepted branches"
   assert_absent "$home/data/fleet-b4/brief.md" "a refused fleet-process brief was still written"
   out=$(FM_HOME="$home" "$BRIEF" fleet-b5 proj --mode local-only --fleet-process --issue 3 2>&1) \
     && fail "a local-only fleet-process brief scaffolded"
@@ -1723,7 +1723,23 @@ EOF
   out=$(run_spawn "$home" "$fakebin" fleet-s6 "$proj" claude --relaunch --chore tidy)
   status=$?
   [ "$status" -ne 0 ] || fail "a relaunch accepted --chore"
-  assert_contains "$out" "--issue-suffix and --chore cannot override it" "the relaunch refusal did not name the flags"
+  assert_contains "$out" "--issue-suffix, --plan-branch, and --chore cannot override it" "the relaunch refusal did not name the flags"
+
+  FM_HOME="$home" "$BRIEF" fleet-s8 proj --mode direct-PR --fleet-process --issue 61 --plan-branch plan-issue-57 >/dev/null \
+    || fail "a one-branch Phase brief should scaffold"
+  fill_brief_subsections "$home/data/fleet-s8/brief.md" "Build the phase." "Ship it."
+  out=$(run_spawn "$home" "$fakebin" fleet-s8 "$proj" claude --mode direct-PR --yolo off --issue 61)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a one-branch Phase brief launched on a spawn that selected its own issue branch"
+  assert_contains "$out" "the brief says branch=plan-issue-57 but this spawn selected branch=fm-issue-61" \
+    "the Phase branch drift was not named"
+  out=$(run_spawn "$home" "$fakebin" fleet-s8 "$proj" claude --mode direct-PR --yolo off --issue 61 --plan-branch plan-issue-57)
+  assert_not_contains "$out" "branch mismatch" "an agreeing Phase brief and spawn were reported as drift"
+  assert_not_contains "$out" "refuses to create branch" "a Plan's branch was refused"
+  assert_not_contains "$out" "process mismatch" "an agreeing Phase brief was reported as process drift"
+  out=$(run_spawn "$home" "$fakebin" fleet-s9 "$proj" claude --scout --plan-branch plan-issue-57)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a scout spawn accepted --plan-branch"
 
   rec=$(make_home fleet-spawn-unbound "- proj [no-mistakes] - fixture (added 2026-01-01)")
   IFS='|' read -r home proj fakebin <<EOF

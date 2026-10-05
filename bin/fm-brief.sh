@@ -14,7 +14,7 @@
 # charters still use a single `{TASK}` charter fill. Firstmate may adjust other
 # sections when the task genuinely deviates (e.g. working an existing external
 # PR instead of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix> | --issue <n> [--issue-suffix <s>] | --chore <slug>] [--fleet-process] [--base-branch <branch>] [--forge <none|gerrit> [--shape squash]] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix> | --issue <n> [--issue-suffix <s>] | --chore <slug>] [--fleet-process] [--base-branch <branch> | --plan-branch <plan-issue-n>] [--forge <none|gerrit> [--shape squash]] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -77,6 +77,12 @@
 # The rendered start instruction then passes `--base-branch <branch>` to every
 # `no-mistakes axi run`, which sets the run's rebase, PR, and CI base; without it
 # the pipeline rebased Phase work onto main. Refused outside no-mistakes ships.
+# That is a legacy plan's Phase; a Phase of a one-branch Plan (digio-factory#55)
+# instead takes --plan-branch plan-issue-<n> with --issue <phase>, --mode
+# direct-PR, and --fleet-process: its branch is the Plan's own, its first action
+# is work.ts switching to it, and its definition of done is plain commits pushed
+# there plus a request for the Phase review, never a pipeline run or a Phase PR
+# (bin/fm-dod-lib.sh owns that block, bin/fm-ship-branch-lib.sh the branch).
 # --forge names the project's forge, defaults to none, and is orthogonal to --mode
 # exactly as the registry's `forge=` token is. It is the captain's confirmed
 # registry binding, read from data/projects.md at intake and passed here; this
@@ -221,6 +227,8 @@ CHORE=
 PROCESS=none
 BASE_BRANCH=
 BASE_BRANCH_SET=0
+PLAN_BRANCH=
+PLAN_BRANCH_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -237,6 +245,7 @@ for a in "$@"; do
       issue-suffix) ISSUE_SUFFIX=$a ;;
       chore) CHORE=$a ;;
       base-branch) BASE_BRANCH=$a; BASE_BRANCH_SET=1 ;;
+      plan-branch) PLAN_BRANCH=$a; PLAN_BRANCH_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -264,6 +273,8 @@ for a in "$@"; do
     --fleet-process) PROCESS=fleet ;;
     --base-branch) want_value="base-branch" ;;
     --base-branch=*) BASE_BRANCH=${a#--base-branch=}; BASE_BRANCH_SET=1 ;;
+    --plan-branch) want_value="plan-branch" ;;
+    --plan-branch=*) PLAN_BRANCH=${a#--plan-branch=}; PLAN_BRANCH_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -344,9 +355,16 @@ if [ "$BASE_BRANCH_SET" -eq 1 ]; then
   git check-ref-format --branch "$BASE_BRANCH" >/dev/null 2>&1 \
     || { echo "error: --base-branch is not a valid branch name (got '$BASE_BRANCH')" >&2; exit 1; }
 fi
+if [ "$PLAN_BRANCH_SET" -eq 1 ]; then
+  { [ "$KIND" = ship ] && [ "$MODE" = direct-PR ] && [ "$PROCESS" = fleet ] && [ "$BASE_BRANCH_SET" -eq 0 ]; } || {
+    echo "error: --plan-branch applies only to a direct-PR --fleet-process ship brief without --base-branch: a one-branch Plan's Phase pushes plain commits to the Plan's branch, never through the no-mistakes pipeline" >&2
+    exit 1
+  }
+  [ -n "$PLAN_BRANCH" ] || { echo "error: --plan-branch requires a non-empty value" >&2; exit 1; }
+fi
 ID=${POS[0]}
 # bin/fm-spawn.sh selects the same branch from the same flags.
-BRANCH=$(fm_ship_branch_resolve "$ID" "$ISSUE" "$ISSUE_SUFFIX" "$CHORE" "$BRANCH_PREFIX" "$BRANCH_PREFIX_SET") || exit 1
+BRANCH=$(fm_ship_branch_resolve "$ID" "$ISSUE" "$ISSUE_SUFFIX" "$CHORE" "$BRANCH_PREFIX" "$BRANCH_PREFIX_SET" "$PLAN_BRANCH") || exit 1
 if [ "$KIND" = ship ]; then
   fm_process_valid "$PROCESS" "$MODE" "$FORGE" "$BRANCH" "fm-brief.sh --fleet-process" || exit 1
 fi
@@ -675,9 +693,9 @@ case "$MODE" in
     ;;
 esac
 RULE1=$(fm_ship_rule_one "$MODE" "$ID" "$BRANCH" "$FORGE") || exit 1
-DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$PROCESS" "$BASE_BRANCH") || exit 1
+DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$PROCESS" "$BASE_BRANCH" "${PLAN_BRANCH:+$ISSUE}") || exit 1
 if [ "$PROCESS" = fleet ]; then
-  SETUP1="First action: $(fm_fleet_branch_step "$BRANCH")" || exit 1
+  SETUP1="First action: $(fm_fleet_branch_step "$BRANCH" "$ISSUE")" || exit 1
 else
   SETUP1="First action: create your branch: \`git checkout -b $BRANCH_Q --\`"
 fi
