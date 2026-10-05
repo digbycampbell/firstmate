@@ -165,6 +165,7 @@ On each actionable close the engine takes, the host runs these steps:
 4. It releases the branch's leases and grant, whether or not the wake was handled.
 5. It parks on the successor only for a handled wake.
    A main-only pass-through is not a park: the host exits after leaving that cycle running, as [Attended](#attended) describes.
+   A successor that attached to a live watcher before step 2 can close at once with `check: rearm-resurface` for the very row this turn consumes, so when no main-actionable row is still queued the host drops that close and parks on a fresh arm instead of waking main.
 
 The host counts the wake handled only when all three hold:
 

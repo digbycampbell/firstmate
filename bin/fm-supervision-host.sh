@@ -1033,6 +1033,21 @@ while :; do
     emit
     exit 0
   fi
+  # A resurface reports the queue as it stood when its arm attached, and the
+  # host can read it only after an engine turn has consumed that row: the
+  # successor arm can attach to a live watcher before the turn's grant exists.
+  # With no main-actionable row left it is no wake, so park on a fresh arm,
+  # which judges the queue again.
+  if [ "$REASON" = "check: rearm-resurface" ] \
+    && [ "$(fm_wake_actor_pending_count main)" -eq 0 ] 2>/dev/null; then
+    log_line "dropped	stale resurface: no main-actionable row is queued"
+    if start_arm ""; then
+      ARM_PID=$STARTED_ARM_PID
+      ARM_OUT=$STARTED_ARM_OUT
+      ARM_TEXT=
+      continue
+    fi
+  fi
   # Attended: the close reaches main exactly as the plain arm delivers it,
   # unless the supervision session may take it (attended_acceptor).
   if ! fm_afk_contract_away_present "$STATE"; then

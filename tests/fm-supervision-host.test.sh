@@ -1035,6 +1035,40 @@ test_main_only_pass_through_leaves_the_successor_watcher_running() {
   pass "host: a main-only pass-through leaves the successor watcher running and the close undelivered for main"
 }
 
+# The live loop (2026-10-06): the cycle a pass-through leaves behind is an arm
+# whose parent has exited, so its next close starts a detached handling
+# successor before the host's own successor arm runs. That arm attaches with
+# the close's row still queued and ungranted and prints check: rearm-resurface
+# at once; the host read it only after the engine turn had consumed the row,
+# and passed it to main, which drained nothing. Main's next turn end repeated it.
+test_resurface_the_engine_turn_consumed_stays_off_main() {
+  local home orphan
+  home=$(make_home stale-resurface attended)
+  FM_HOME="$home" FM_CREW_STATE_BIN="$home/fakebin/fm-crew-state.sh" PATH="$home/fakebin:$PATH" \
+    bash -c 'nohup "$0" > "$FM_HOME/orphan-arm.out" 2>&1 < /dev/null & printf "%s\n" "$!" > "$FM_HOME/orphan-pid"' \
+    "$ROOT/bin/fm-watch-arm.sh"
+  orphan=$(cat "$home/orphan-pid")
+  wait_until 150 watcher_live "$home" || fail "stale-resurface: the orphaned arm never started a watcher: $(cat "$home/orphan-arm.out")"
+  start_host "$home"
+  wait_until 150 grep -qs '^watcher: attached pid=' "$home/host.out" \
+    || fail "fixture: the host's first cycle did not attach to the orphaned arm's watcher: $(cat "$home/host.out")"
+  append_status "$home" 'step one'
+  wait_until 250 handled_at_least "$home" 1 \
+    || fail "stale-resurface: the wake was not handled on the engine: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
+  kill -0 "$orphan" 2>/dev/null && fail "fixture: the orphaned arm did not close on the wake"
+  assert_re '	origin=attached	.*	reason=actionable-check	' "$home/state/.watch-cycle-exits.log" \
+    "fixture: the host's successor arm did not attach and resurface, so this case proves nothing: $(cat "$home/state/.watch-cycle-exits.log")"
+  # The host's next exit is its next wake for main: a decision, never the
+  # stale resurface it was already holding when the decision arrived.
+  append_status "$home" 'which export format?' needs-decision
+  wait_until 250 host_exited "$home" || fail "stale-resurface: a later decision never reached main: $(cat "$home/state/.supervision-host.log")"
+  assert_no_re '^check: rearm-resurface' "$home/host.out" "a resurface whose rows the engine turn consumed woke main"
+  assert_no_re '	pass-through	attended	main-only	check: rearm-resurface' "$home/state/.supervision-host.log" \
+    "a resurface whose rows the engine turn consumed was passed to main"
+  assert_re '^signal: .*demo.status' "$home/host.out" "the later decision must reach main as the arm printed it"
+  pass "host: a resurface whose queued rows the engine turn already consumed stays off main, and the next real close still reaches it"
+}
+
 # The session-lock holder's process identity cannot be read (its proc entry
 # is truncated), so no main-session key exists: the close reaches main exactly
 # as the arm printed it, before any mirror feed or engine turn.
@@ -2727,6 +2761,7 @@ test_quiet_record_without_its_daemon_is_a_present_captain
 test_attended_main_only_close_passes_straight_to_main
 test_off_written_while_parked_passes_the_next_attended_close_to_main
 test_main_only_pass_through_leaves_the_successor_watcher_running
+test_resurface_the_engine_turn_consumed_stays_off_main
 test_attended_close_with_unidentified_main_session_passes_to_main
 test_close_accepted_away_that_turns_attended_passes_to_main
 test_attended_close_that_turns_main_only_before_its_turn_passes_to_main
