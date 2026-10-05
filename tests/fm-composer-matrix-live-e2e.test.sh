@@ -146,6 +146,18 @@ check_harness_idle_cursorless() {  # <name> <version> <target>
     verdict=$(fm_composer_classify_screen "$caps" "$pane" '' "$identity")
     [ "$verdict" != need-identity ] || verdict=unknown
   fi
+  # Opencode's left bar is provable without a cursor, and fm-control exit and
+  # relaunch need `empty` to type its exit command: an idle opencode reading
+  # `unknown` cursorless left a dead-upstream worker unstoppable (2026-09-28).
+  if [ "$name" = opencode ] && [ "$verdict" != empty ]; then
+    printf '# %s cursorless pane tail:\n' "$name" >&2
+    tmux -L "$SOCKET" capture-pane -p -t "$target" 2>/dev/null \
+      | grep '[^[:space:]]' | tail -8 | sed 's/^/#   /' >&2
+    FAILED=1
+    printf 'not ok - %s (%s): a proven-idle composer read cursorless as %s; fm-control could not exit this worker on herdr, zellij, cmux or orca\n' \
+      "$name" "$version" "${verdict:-unreadable}" >&2
+    return 0
+  fi
   if [ "$verdict" = pending ]; then
     printf '# %s cursorless pane tail:\n' "$name" >&2
     tmux -L "$SOCKET" capture-pane -p -t "$target" 2>/dev/null \

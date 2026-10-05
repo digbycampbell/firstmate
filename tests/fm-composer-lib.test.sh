@@ -705,6 +705,58 @@ test_matrix_opencode_leftbar_signals() {
   pass "matrix: opencode's left-bar composer reads empty everywhere and scans the full active run"
 }
 
+test_matrix_opencode_key_hint_row_under_the_floor() {
+  # Real opencode 1.18.34 draws a key-hint row directly under its left-bar
+  # floor. Without a cursor anchor (herdr, zellij, cmux, orca) that row read as
+  # a lower live shape, so every idle opencode composer was `unknown` and
+  # fm-control exit/relaunch refused an opencode worker whose upstream had died
+  # (2026-09-28). These rows are the live captures, trimmed to the composer.
+  local home after busy draft
+  home=$'  ┃
+  ┃  Ask anything… "Fix a TODO in the codebase"
+  ┃
+  ┃  Build · Kimi K3 OpenCode Go
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                                       tab agents  ctrl+p commands
+
+
+     ● Tip Press ctrl+g , home to jump to the beginning of the conversation'
+  after=$'  ┃
+  ┃
+  ┃
+  ┃  Build · Kimi K3 OpenCode Go                          /tmp/oc:master
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/oc                           tab agents  ctrl+p commands    • OpenCode 1.18.34
+'
+  busy=$'  ┃
+  ┃
+  ┃
+  ┃  Build · Kimi K3 OpenCode Go                          /tmp/oc:master
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ■■■■■■⬝⬝ Upstream request failed: Insufficient account funds [retrying in 1s attempt #3]    esc interrupt
+'
+  draft=$'  ┃
+  ┃  draft text not sent
+  ┃
+  ┃  Build · Kimi K3 OpenCode Go
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/oc                           tab agents  ctrl+p commands    • OpenCode 1.18.34
+'
+  assert_screen "opencode 1.18.34 home screen on herdr" empty "$CAPS_STYLED" "$home"
+  assert_screen "opencode 1.18.34 home screen on cmux/orca" empty "$CAPS_PLAIN" "$home"
+  assert_screen "opencode 1.18.34 after an interrupted turn on herdr" empty "$CAPS_STYLED" "$after"
+  assert_screen "opencode 1.18.34 after an interrupted turn on cmux/orca" empty "$CAPS_PLAIN" "$after"
+  # The asymmetry: a busy activity row under the floor is not the hint and still
+  # refuses, and a real draft above the hint is never read as empty.
+  assert_screen "opencode 1.18.34 busy retrying upstream on cmux/orca" unknown "$CAPS_PLAIN" "$busy"
+  assert_screen "opencode 1.18.34 typed draft above the hint on cmux/orca" unknown "$CAPS_PLAIN" "$draft"
+  # The hint only counts directly under a floor: under an unfloored bar it is
+  # an ordinary lower row and the bar stays stale.
+  assert_screen "opencode hint row under an unfloored bar" unknown "$CAPS_PLAIN" \
+    $'  ┃\n  ┃  Build · Kimi K3 OpenCode Go\n   tab agents  ctrl+p commands\n'
+  pass "matrix: opencode's key-hint row under its floor is furniture, and a busy row or draft still refuses"
+}
+
 test_matrix_grok_titled_bottom_border() {
   # Grok 1.0.5 widened its titled BOTTOM border three columns past the top and
   # content rows. This is the idle capture from issue #3436; Herdr has no
@@ -981,6 +1033,7 @@ test_matrix_codex_idle_starfield_furniture
 test_matrix_pi_separated_needs_identity
 test_matrix_pi_dollar_status_footer_is_empty
 test_matrix_opencode_leftbar_signals
+test_matrix_opencode_key_hint_row_under_the_floor
 test_matrix_grok_titled_bottom_border
 test_matrix_kimi_bordered_shell_glyph_box
 test_matrix_claude_inside_zellij_ansi_dump

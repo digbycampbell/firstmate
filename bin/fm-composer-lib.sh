@@ -475,6 +475,14 @@ FM_COMPOSER_IDLE_RE_DEFAULT='^Type a message\.\.\.$|^Ask anything(\.\.\.|…)|^P
 # ("Build · GPT-5.5 Fast OpenAI · high"). It is composer furniture, not typed
 # text, and only the run's LAST row is ever matched against it.
 FM_COMPOSER_LEFTBAR_FOOTER_RE_DEFAULT='^(Build|Plan)[[:space:]]+·[[:space:]]+'
+# Opencode draws a key-hint row directly BELOW its left-bar floor, idle on its
+# home screen (`tab agents  ctrl+p commands`) and after a turn or an interrupt
+# (`<path>  tab agents  ctrl+p commands  • OpenCode 1.18.34`); verified live on
+# opencode 1.18.34. Input never renders below the floor, so a row carrying this
+# hint is furniture, never the lower live shape that makes the composer stale.
+# A busy opencode draws its activity row there instead (`esc interrupt`), which
+# does not match and keeps the busy composer a refusal.
+FM_COMPOSER_LEFTBAR_HINT_RE_DEFAULT='(^|[[:space:]])tab agents[[:space:]]+ctrl\+p commands([[:space:]]|$)'
 # Claude draws its permission-mode hint on its own row directly below the
 # composer (` ⏵⏵ bypass permissions on (shift+tab to cycle)`, ` ⏵⏵ accept edits
 # on`, ` ⏸ plan mode on`; verified live through Herdr on claude 2.1.236). The
@@ -1528,6 +1536,16 @@ _fm_composer_select_cursorless() {
     raw=$(_fm_composer_screen_row "$next" "$plain")
     trimmed=$raw
     fm_composer_normalize_trim_var trimmed
+    # Opencode's key-hint row sits directly under a floored left bar, so only a
+    # floored left bar may skip it.
+    if [ "$FM_COMPOSER_SELECTED_KIND" = leftbar ] && [ "$boundary" -gt "$FM_COMPOSER_SELECTED_LAST" ] \
+       && fm_composer_idle_matches "$trimmed" \
+         "${FM_COMPOSER_LEFTBAR_HINT_RE:-$FM_COMPOSER_LEFTBAR_HINT_RE_DEFAULT}" sensitive; then
+      next=$((next + 1))
+      raw=$(_fm_composer_screen_row "$next" "$plain")
+      trimmed=$raw
+      fm_composer_normalize_trim_var trimmed
+    fi
     if [ -n "$trimmed" ] && ! fm_composer_row_has_edge "$trimmed"; then
       FM_COMPOSER_SELECTED_KIND=
       return 1
