@@ -323,6 +323,7 @@ EOF
 # Claude slash command that jammed a Codex composer. The skill invocation is
 # harness-specific (.agents/skills/harness-adapters references own each form),
 # so the brief names the shell command every harness can run.
+# shellcheck disable=SC2016 # The backticks are literal brief text.
 FM_DOD_NM_START='The task is complete only when committed on your branch.
 When it is implemented and committed, start the no-mistakes pipeline yourself, in the same turn and without stopping first: invoke the no-mistakes skill the way your harness invokes skills, or run `no-mistakes axi run` from the shell where your harness has none.
 The pipeline owns the push and the PR, so never push from this copy.

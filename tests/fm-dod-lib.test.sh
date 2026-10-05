@@ -398,6 +398,7 @@ test_no_mistakes_dod_has_the_worker_start_its_own_pipeline() {
     # shellcheck disable=SC2016  # the backticks are literal brief text
     assert_grep 'run `no-mistakes axi run` from the shell' "$out" \
       "no-mistakes ($spec): DoD names no harness-neutral way to start the pipeline"
+    # shellcheck disable=SC2016  # the backticks are literal brief text
     assert_grep 'Never append `done:` before the pipeline has returned' "$out" \
       "no-mistakes ($spec): DoD does not forbid a pre-pipeline done"
     assert_no_grep 'Firstmate will then instruct you' "$out" \
