@@ -66,7 +66,7 @@ fm_home_guard_assert() {
 
   printf 'fm-home-guard: ISOLATION FAILURE - %s resolved its firstmate home to %s, which is outside the test sandbox %s.\n' \
     "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]:-a firstmate script}" "$resolved" "$sandbox" >&2
-  printf 'fm-home-guard: a test must pass a fixture home it created. FM_STATE_OVERRIDE is read AHEAD of FM_HOME, so an ambient override silently wins over the FM_HOME a test passes explicitly.\n' >&2
+  printf 'fm-home-guard: a test must pass a fixture home it created. FM_STATE_OVERRIDE and STATE are read AHEAD of FM_HOME, so an ambient value silently wins over the FM_HOME a test passes explicitly.\n' >&2
   printf 'fm-home-guard: FM_HOME=%s FM_STATE_OVERRIDE=%s FM_ROOT_OVERRIDE=%s\n' \
     "${FM_HOME:-<unset>}" "${FM_STATE_OVERRIDE:-<unset>}" "${FM_ROOT_OVERRIDE:-<unset>}" >&2
   exit 99

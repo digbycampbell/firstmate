@@ -1642,19 +1642,34 @@ report_stranded_source() {  # <source-id> <claim-token> <why-and-recovery>
 # announces a new one. Nothing here changes what reconcile does about the launch
 # itself: it keeps relaunching exactly as before, and this only says so once.
 #
+# The announcement waits for a SECOND consecutive unconfirmed cycle in the same
+# episode. A runner merely slow to claim under load is owned by the next cycle,
+# which ends the episode before anything is said; announcing on the first miss
+# woke firstmate for every such transient (six episodes of the Slack captain
+# listener on 2026-10-04, each found live one cycle later). A runner that cannot
+# start fails every cycle, so it is still announced, one cycle later.
+#
 # The queue key carries a nonce beyond the episode: the watcher remembers every
 # key it has surfaced for good, so a key made of the registration identity alone
 # would be surfaced for the first episode only and every later episode of the
 # same registration would sit in the queue unannounced. The marker records the
-# episode and that nonce together, and the episode alone decides whether to
-# announce.
+# episode with `pending` after the first miss, then the episode and that nonce
+# once announced, and the episode alone decides whether to announce again.
 report_launch_failure() {  # <source-id> <registration-identity>
-  local id=$1 identity=$2 episode nonce
+  local id=$1 identity=$2 episode nonce marker previous
   case "$identity" in ''|*[!0-9:]*) episode=unreadable ;; *) episode=${identity//:/-} ;; esac
+  marker=$(launch_failed_file "$id")
+  previous=$(cat -- "$marker" 2>/dev/null || true)
+  if [ "$previous" != "$episode pending" ]; then
+    [ "${previous%%[[:space:]]*}" != "$episode" ] || return 1
+    (umask 077; printf '%s pending\n' "$episode" > "$marker") || return 1
+    return 0
+  fi
+  rm -f -- "$marker"
   nonce="$RANDOM$RANDOM"
-  announce_source_once "$(launch_failed_file "$id")" "$episode" \
+  announce_source_once "$marker" "$episode" \
     "procevent:$id:launch-failed:$episode-$nonce" \
-    "check: process-event source $id is registered but its launch did not prove it took the source's claim within FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS, so nothing is confirmed to be collecting from it; reconcile reports that as failed= and keeps launching it every supervision cycle. If it stays that way, check the source command and the adapter binary the registration names, and run an attached bin/fm-procevent.sh start $id to reproduce a refusal on its stderr - the detached launch discards it, and a hand-run reconcile only counts it as failed=. A later cycle that finds the source owned ends this episode on its own, so a runner that was merely slow to claim needs nothing from you." \
+    "check: process-event source $id is registered but its launch did not prove it took the source's claim within FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS on two consecutive supervision cycles, so nothing is confirmed to be collecting from it; reconcile reports that as failed= and keeps launching it every supervision cycle. If it stays that way, check the source command and the adapter binary the registration names, and run an attached bin/fm-procevent.sh start $id to reproduce a refusal on its stderr - the detached launch discards it, and a hand-run reconcile only counts it as failed=. A later cycle that finds the source owned ends this episode on its own, so a runner that was merely slow to claim needs nothing from you." \
     "$episode $nonce"
 }
 

@@ -41,15 +41,28 @@
 # treehouse pool that holds a worktree of this repository.
 
 # Environment variables the suite is allowed to inherit. Everything else
-# matching FM_* is cleared before a test starts.
-FM_TEST_ENV_ALLOWLIST="FM_TEST_ORPHAN_MAX_AGE_SECONDS FM_TEST_SANDBOX"
+# matching FM_* is cleared before a test starts. FM_LIVE and every
+# FM_*_LIVE_E2E are the opt-in switches fm_live_gate (tests/lib.sh) reads, so a
+# prompt-submitting live guard can run through the runner; FM_TEST_BASE_PATH is
+# the base PATH harness fixtures build on. None of them resolves a home.
+FM_TEST_ENV_ALLOWLIST="FM_TEST_ORPHAN_MAX_AGE_SECONDS FM_TEST_SANDBOX FM_LIVE FM_TEST_BASE_PATH"
+FM_TEST_ENV_ALLOWLIST_PATTERN='FM_*_LIVE_E2E'
 
-# fm_test_sandbox_cleared_vars: echo one FM_* variable name per line that must
-# be cleared from the child environment. Reads the live environment, so a
-# variable invented after this file was written is still caught.
+# Home-resolution inputs outside the FM_* namespace. The STATE= line at the top
+# of every bin/fm-*.sh honours an ambient STATE ahead of FM_HOME, exactly like
+# FM_STATE_OVERRIDE, so it is cleared with the namespace.
+FM_TEST_ENV_CLEARED_EXTRA="STATE"
+
+# fm_test_sandbox_cleared_vars: echo one variable name per line that must be
+# cleared from the child environment: every FM_* outside the allowlist, plus
+# FM_TEST_ENV_CLEARED_EXTRA. Reads the live environment, so a variable invented
+# after this file was written is still caught.
 fm_test_sandbox_cleared_vars() {
   local name allow
   while IFS= read -r name; do
+    case " $FM_TEST_ENV_CLEARED_EXTRA " in
+      *" $name "*) printf '%s\n' "$name"; continue ;;
+    esac
     case "$name" in
       FM_*) ;;
       *) continue ;;
@@ -57,6 +70,8 @@ fm_test_sandbox_cleared_vars() {
     for allow in $FM_TEST_ENV_ALLOWLIST; do
       [ "$name" = "$allow" ] && continue 2
     done
+    # shellcheck disable=SC2053 # The right-hand side is a glob on purpose.
+    [[ $name == $FM_TEST_ENV_ALLOWLIST_PATTERN ]] && continue
     printf '%s\n' "$name"
   done < <(compgen -e)
 }
@@ -166,6 +181,118 @@ fm_test_sandbox_exec() {
   local -a FM_TEST_SANDBOX_ARGV=()
   fm_test_sandbox_argv "$1" "$2" || return 1
   "${FM_TEST_SANDBOX_ARGV[@]}"
+}
+
+# --- leftover fixture processes ----------------------------------------------
+#
+# A fixture that blocks on a release file (`while [ ! -e "$RELEASE" ]; do sleep
+# 0.05; done`) outlives its test when the test is killed before it releases it.
+# 159 such shells, two days old, drove load past 90 and timed out about 180
+# tests in a crew pipeline (2026-09-27). Every contained process carries the
+# FM_TEST_SANDBOX its script ran under (fm_test_sandbox_argv), so the runner
+# reaps by that attribution instead of trusting each fixture to bound itself:
+# after a script exits, every process still carrying its sandbox is stopped, and
+# at startup every process whose sandbox belongs to a runner that is gone is
+# stopped too, which covers a runner killed outright. Linux /proc only; where
+# /proc/<pid>/environ is unreadable nothing is attributed and nothing is killed.
+
+FM_TEST_RUNNER_OWNER_FILE=.fm-test-runner-owner
+
+# _fm_test_starttime <pid>: the kernel start time of <pid>, or fail.
+_fm_test_starttime() {
+  local stat
+  local -a fields=()
+  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  # Field 22 overall is index 19 after the "pid (comm) " prefix.
+  read -r -a fields <<< "${stat##*) }"
+  [ -n "${fields[19]:-}" ] || return 1
+  printf '%s\n' "${fields[19]}"
+}
+
+# fm_test_record_runner_owner <run-dir>: mark <run-dir> as owned by this shell,
+# so a later runner can tell a live run's sandboxes from a dead one's.
+fm_test_record_runner_owner() {
+  local start
+  start=$(_fm_test_starttime "$$") || start=unknown
+  printf '%s\n%s\n' "$$" "$start" > "$1/$FM_TEST_RUNNER_OWNER_FILE"
+}
+
+# _fm_test_runner_alive <run-dir>: 0 when the runner that owns <run-dir> is
+# still the same live process.
+_fm_test_runner_alive() {
+  local file="$1/$FM_TEST_RUNNER_OWNER_FILE" pid start now
+  [ -f "$file" ] || return 1
+  { IFS= read -r pid; IFS= read -r start; } < "$file" || return 1
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  now=$(_fm_test_starttime "$pid") || return 1
+  [ "$start" = unknown ] || [ "$now" = "$start" ]
+}
+
+# _fm_test_older_than <path> <seconds>: 0 when <path> was last modified more
+# than <seconds> ago.
+_fm_test_older_than() {
+  local mtime
+  mtime=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null) || return 1
+  [ $(( $(date +%s) - mtime )) -gt "$2" ]
+}
+
+# _fm_test_sandbox_pids: one "<pid> <sandbox>" line per readable process that
+# carries FM_TEST_SANDBOX, in one grep over every environ rather than a fork per
+# process, because the per-script reap runs after every script.
+_fm_test_sandbox_pids() {
+  local hit path value
+  [ -d /proc ] || return 0
+  grep -sHazo '^FM_TEST_SANDBOX=[^[:cntrl:]]*' /proc/[0-9]*/environ 2>/dev/null \
+    | tr '\0' '\n' \
+    | while IFS= read -r hit; do
+        path=${hit%%:FM_TEST_SANDBOX=*}
+        value=${hit#*:FM_TEST_SANDBOX=}
+        path=${path#/proc/}
+        path=${path%/environ}
+        case "$path" in ''|*[!0-9]*) continue ;; esac
+        printf '%s %s\n' "$path" "$value"
+      done
+}
+
+# _fm_test_kill_pids <pid>...: TERM, then KILL whatever is left.
+_fm_test_kill_pids() {
+  [ "$#" -gt 0 ] || return 0
+  kill -TERM "$@" 2>/dev/null || true
+  sleep 0.2
+  kill -KILL "$@" 2>/dev/null || true
+}
+
+# fm_test_reap_sandbox_processes <sandbox-root>: stop every process still
+# carrying exactly <sandbox-root>, other than this shell.
+fm_test_reap_sandbox_processes() {
+  local root=$1 pid sandbox
+  local -a victims=()
+  [ -n "$root" ] || return 0
+  while read -r pid sandbox; do
+    [ "$pid" != "$$" ] && [ "$sandbox" = "$root" ] && victims+=("$pid")
+  done < <(_fm_test_sandbox_pids)
+  _fm_test_kill_pids ${victims[@]+"${victims[@]}"}
+}
+
+# fm_test_reap_abandoned_sandboxes: stop every process whose sandbox lives in a
+# runner directory (the sandbox's parent) whose owning runner is gone.
+fm_test_reap_abandoned_sandboxes() {
+  local pid sandbox run
+  local -a victims=()
+  while read -r pid sandbox; do
+    [ "$pid" != "$$" ] && [ -n "$sandbox" ] || continue
+    run=$(dirname -- "$sandbox")
+    if [ -f "$run/$FM_TEST_RUNNER_OWNER_FILE" ]; then
+      _fm_test_runner_alive "$run" && continue
+    elif [ -d "$run" ]; then
+      # A runner that predates the owner record cannot be proven dead, and it
+      # may be another lane's live run: reap only once it is well past any
+      # plausible suite.
+      _fm_test_older_than "$run" "${FM_TEST_ORPHAN_MAX_AGE_SECONDS:-21600}" || continue
+    fi
+    victims+=("$pid")
+  done < <(_fm_test_sandbox_pids)
+  _fm_test_kill_pids ${victims[@]+"${victims[@]}"}
 }
 
 # --- protected-root discovery ----------------------------------------------

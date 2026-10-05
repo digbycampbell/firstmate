@@ -1600,7 +1600,7 @@ A failed durable offer claim is likewise reported once as `x-mode-error cannot r
 Live replies are posted by `bin/fm-x-reply.sh`, which sends `POST /connector/answer` with `{request_id,text}` for one-message replies.
 Add `--image <path>` to attach one local PNG, JPEG, GIF, WebP, BMP, or TIFF as `{media_type,data_base64}` in the relay's optional `image` object.
 
-Completion follow-ups use `bin/fm-x-followup.sh`, which checks the local `state/<id>.meta` link and sends the same payload shape through `POST /connector/followup` by calling `bin/fm-x-reply.sh --followup`, up to three times per link within the window.
+Completion follow-ups use `bin/fm-x-followup.sh`, which checks the local `state/<id>.meta` link and sends the same payload shape through `POST /connector/followup` by calling `bin/fm-x-reply.sh --followup`, up to three times per link within the window on two consecutive supervision cycles.
 Add `--image <path>` there too when a completion follow-up should carry an image.
 
 **Follow-up success, expiry, and retry**
@@ -2176,11 +2176,12 @@ Raising the confirm window lengthens every supervision cycle and delays wake del
 A source that can never start is reported as `failed=` with a non-zero exit on every `reconcile`, rather than counted as `started` and retried silently as though it were healthy, so a wedged source stays visible instead of presenting as armed.
 The `failed=` count reaches only the command's caller because `bin/fm-watch.sh` discards `reconcile` output and exit status.
 For that reason, `reconcile` also publishes a durable `check` wake once per failure episode, with key `procevent:<id>:launch-failed:<registration-identity>-<episode-nonce>`.
+The wake waits for a second consecutive unconfirmed cycle, because a runner merely slow to claim under load is found owned by the next cycle, which ends the episode before anything is announced.
 Later cycles stay silent for that episode until a launch confirms.
 A later fresh failure gets a fresh key, because the watcher never re-surfaces a key it has already surfaced.
 
 - The announcement changes nothing about the launch: `reconcile` keeps relaunching the source every cycle exactly as before, and nothing is retried differently, throttled, or recovered from that signal.
-- The wake reports only the observed failure: the launch did not prove that it took the claim within the window.
+- The wake reports only the observed failure: the launch did not prove that it took the claim within the window on two consecutive supervision cycles.
 - If the failure persists, inspect the source command and adapter binary named in the registration.
   The wake names both, along with the attached `bin/fm-procevent.sh start <source-id>` command that reproduces the refusal on stderr.
   The detached launch discards that output.

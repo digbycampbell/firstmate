@@ -385,13 +385,40 @@ pass "a burst past the page limit is paginated, never silently truncated"
 
 home=$(new_home cursorbreak)
 mkdir -p "$home/state/slack-captain"
-printf 'schema=%s\nts=%s\n' fm-slack-captain-cursor.v1 999.000999 > "$(cursor_file "$home")"
-err=$(FM_HOME="$home" "$ADAPTER" handle "$SID" 1 "$out" 2>&1) && rc=0 || rc=$?
+# A span that starts after the stored position would skip what lies between.
+sed 's/^from_ts=0$/from_ts=150.000150/' "$out" > "$TMP_ROOT/gap.result"
+printf 'schema=%s\nts=%s\n' fm-slack-captain-cursor.v1 100.000100 > "$(cursor_file "$home")"
+err=$(FM_HOME="$home" "$ADAPTER" handle "$SID" 1 "$TMP_ROOT/gap.result" 2>&1) && rc=0 || rc=$?
 [ "$rc" -ne 0 ] || fail "a discontinuous result must be refused"
 assert_contains "$err" "do not continue the stored read position" \
   "the refusal must name the continuity break"
-assert_grep 'ts=999.000999' "$(cursor_file "$home")" "a refused result must not rebase the read position"
+assert_grep 'ts=100.000100' "$(cursor_file "$home")" "a refused result must not rebase the read position"
 pass "a result that does not continue the stored position is refused loudly"
+
+# --- an out-of-order capture the read position already covers ----------------
+#
+# The 2026-10-04 wedge: two debounce captures of one span (723: 0..100, 724:
+# 0..200) arrived together and 724 was handled first. 723 ends inside what is
+# already applied, so it is acknowledged as superseded, never refused forever.
+# autohandle applies exactly what handle applies, minus the acknowledgement
+# (which needs a registered source), and prints the same verdict line.
+home=$(new_home outoforder)
+sed 's/^to_ts=200.000200$/to_ts=100.000100/' "$out" > "$TMP_ROOT/older.result"
+msg=$(FM_HOME="$home" "$ADAPTER" autohandle "$SID" 724 "$out" 2>&1)
+assert_contains "$msg" "applied: $SID" "the newer, wider capture applies"
+assert_grep 'ts=200.000200' "$(cursor_file "$home")" "the newer capture advances the read position"
+msg=$(FM_HOME="$home" "$ADAPTER" autohandle "$SID" 723 "$TMP_ROOT/older.result" 2>&1)
+assert_contains "$msg" "superseded: $SID" "an older capture the read position covers is superseded, not refused"
+assert_grep 'ts=200.000200' "$(cursor_file "$home")" "a superseded capture never moves the read position back"
+# The same pair in arrival order: the wider capture starts before the stored
+# position and reaches past it, so it applies without skipping anything.
+home=$(new_home inorder)
+msg=$(FM_HOME="$home" "$ADAPTER" autohandle "$SID" 723 "$TMP_ROOT/older.result" 2>&1)
+assert_contains "$msg" "applied: $SID" "the older capture applies first in arrival order"
+msg=$(FM_HOME="$home" "$ADAPTER" autohandle "$SID" 724 "$out" 2>&1)
+assert_contains "$msg" "applied: $SID" "a wider capture overlapping the stored position applies"
+assert_grep 'ts=200.000200' "$(cursor_file "$home")" "the overlapping capture advances to its end"
+pass "overlapping debounce captures apply in either order and the covered one is superseded"
 
 printf 'schema=%s\nts=%s\n' fm-slack-cursor.v0 100.000100 > "$(cursor_file "$home")"
 err=$("$ADAPTER" poll "$home" "$CHANNEL" 2>&1) && rc=0 || rc=$?
@@ -539,7 +566,8 @@ pass "thread read-position continuity survives across polls and repeat applicati
 # like the channel position, and nothing is rebased.
 printf 'schema=%s\nts=%s\n' fm-slack-captain-thread-cursor.v1 888.000888 \
   > "$(thread_cursor "$home" "$ROOT_TS")"
-err=$(FM_HOME="$home" "$ADAPTER" handle "$SID" 2 "$TMP_ROOT/thread.out" 2>&1) && rc=0 || rc=$?
+sed "s/^thread=$ROOT_TS $ROOT_TS /thread=$ROOT_TS 900.000900 /" "$TMP_ROOT/thread.out" > "$TMP_ROOT/thread-gap.out"
+err=$(FM_HOME="$home" "$ADAPTER" handle "$SID" 2 "$TMP_ROOT/thread-gap.out" 2>&1) && rc=0 || rc=$?
 [ "$rc" -ne 0 ] || fail "a discontinuous thread span must be refused"
 assert_contains "$err" "do not continue the stored read position for thread" \
   "the refusal must name the thread continuity break"

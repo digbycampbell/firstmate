@@ -67,8 +67,11 @@ fm_git_identity_reject_message() {  # <what> [<what>...]
     "$FM_GIT_CREW_NAME" "$FM_GIT_CREW_EMAIL"
   printf '  %s <%s>   (firstmate itself, via bin/fm-git-identity.sh commit)\n' \
     "$FM_GIT_FIRSTMATE_NAME" "$FM_GIT_FIRSTMATE_EMAIL"
-  printf 'Fix: in a task worktree run\n'
-  printf '  bin/fm-git-identity.sh apply-worktree <worktree> --hooks-dir <dir>\n'
+  printf 'GitHub accepts both addresses, so a noreply or personal address is never the fix,\n'
+  printf 'even where a project note asks for one; report that note as wrong instead.\n'
+  printf 'Fix: commit with the identity this task worktree was armed with. Drop any\n'
+  printf 'GIT_AUTHOR_*/GIT_COMMITTER_* override or --author flag. A worktree with no\n'
+  printf 'identity of its own is armed by firstmate at spawn; do not arm one by hand.\n'
   printf 'Do not set this with a plain "git config user.email" in a linked worktree:\n'
   printf 'that writes the SHARED clone config and would relabel the captain'"'"'s own commits.\n'
 }

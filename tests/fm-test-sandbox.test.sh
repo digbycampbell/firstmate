@@ -104,6 +104,26 @@ echo 'ok - the foreign home is refused'")
 }
 pass "a script steered onto a foreign home by ambient FM_STATE_OVERRIDE is refused at resolution, naming the home"
 
+# The bare STATE variable is the same resolution input outside the FM_*
+# namespace: exported in the runner's environment, it beat the fixture home a
+# test passed, so a correct test either wrote into that home or was refused.
+# The runner must clear it so the explicitly passed FM_HOME wins.
+rc=$(STATE="$PRIMARY/state" run_fixture ambient-state "fixture=\$TMPDIR/fixture-home
+mkdir -p \"\$fixture/state\"
+[ -z \"\${STATE+x}\" ] || { echo \"not ok - ambient STATE reached the test: \$STATE\"; exit 1; }
+out=\$(FM_HOME=\"\$fixture\" '$WT/bin/fm-branch-outcome.sh' append --task t --verdict routine --summary s 2>&1)
+grc=\$?
+[ \"\$grc\" = 0 ] || { echo \"not ok - a correctly passed fixture home lost to ambient STATE (exit \$grc): \$out\"; exit 1; }
+[ -s \"\$fixture/state/branch-outcomes.jsonl\" ] || { echo 'not ok - the row did not land in the fixture home'; exit 1; }
+echo 'ok - the fixture home wins over ambient STATE'")
+[ "$rc" = "0" ] || {
+  cat "$TMP_ROOT/ambient-state.out" >&2
+  fail "an ambient STATE still beats an explicitly passed FM_HOME under the runner"
+}
+[ ! -e "$PRIMARY/state/branch-outcomes.jsonl" ] \
+  || fail "an ambient STATE let a test write a branch-outcome row into the primary home"
+pass "the runner clears an ambient STATE so a test's fixture home wins"
+
 # Every script that resolves a firstmate home from FM_STATE_OVERRIDE/FM_HOME
 # must carry the guard, or the boundary is only as good as whichever scripts
 # someone remembered. Each one is RUN against a home it does not own: the grep
@@ -331,5 +351,67 @@ echo "ok - allowlisted variable survived"')
   fail "an allowlisted variable was cleared along with the rest of the namespace"
 }
 pass "an explicitly allowlisted FM_TEST_* variable still reaches the test"
+
+# Live-guard opt-in switches must reach the test, or a prompt-submitting live
+# guard can never be run through the runner. A near-miss name proves the
+# pattern is not a blanket pass for anything containing LIVE.
+rc=$(FM_LIVE=1 FM_SLACK_MIRROR_LIVE_E2E=1 FM_TEST_BASE_PATH=/fixture/bin FM_LIVE_E2E_HOME=/x \
+  run_fixture live-switches \
+  '[ "${FM_LIVE:-}" = 1 ] || { echo "not ok - FM_LIVE was cleared"; exit 1; }
+[ "${FM_SLACK_MIRROR_LIVE_E2E:-}" = 1 ] || { echo "not ok - FM_SLACK_MIRROR_LIVE_E2E was cleared"; exit 1; }
+[ "${FM_TEST_BASE_PATH:-}" = /fixture/bin ] || { echo "not ok - FM_TEST_BASE_PATH was cleared"; exit 1; }
+[ -z "${FM_LIVE_E2E_HOME+x}" ] || { echo "not ok - a non-switch FM_* name reached the test"; exit 1; }
+echo "ok - live switches survived"')
+[ "$rc" = "0" ] || {
+  cat "$TMP_ROOT/live-switches.out" >&2
+  fail "live-guard opt-in switches were cleared, or the pattern let a non-switch through"
+}
+pass "FM_LIVE, FM_*_LIVE_E2E and FM_TEST_BASE_PATH reach the test while other FM_* names do not"
+
+# --- leftover fixture processes are reaped ------------------------------------
+#
+# The 2026-09-27 incident: release-wait fixture shells outlived killed runs and
+# piled up for days. A script that exits leaving its fixture blocked must not
+# leave it running, and a runner killed outright must have its leftovers stopped
+# by the next runner - but never a live runner's.
+LEFT_PID_FILE="$TMP_ROOT/leftover.pid"
+rc=$(run_fixture leftover "( while [ ! -e \"\$TMPDIR/never-released\" ]; do sleep 0.05; done ) &
+printf '%s\\n' \$! > '$LEFT_PID_FILE'
+echo 'ok - left a blocked fixture behind'")
+left=$(cat "$LEFT_PID_FILE" 2>/dev/null || true)
+[ -n "$left" ] || fail "the leftover fixture did not record its pid: $(cat "$TMP_ROOT/leftover.out")"
+if [ -n "$left" ] && kill -0 "$left" 2>/dev/null; then
+  kill "$left" 2>/dev/null || true
+  fail "a fixture still blocked on its release file outlived the script that started it"
+else
+  pass "a blocked fixture left behind by a finished script is stopped"
+fi
+
+if [ -d /proc ]; then
+  # An abandoned run: its owner record names a process that has exited.
+  DEAD_RUN="$TMP_ROOT/dead-run"; LIVE_RUN="$TMP_ROOT/live-run"
+  mkdir -p "$DEAD_RUN/s0" "$LIVE_RUN/s0"
+  sh -c 'exit 0' & dead=$!; wait "$dead"
+  printf '%s\n%s\n' "$dead" 1 > "$DEAD_RUN/.fm-test-runner-owner"
+
+  printf '%s\n%s\n' "$$" "$(_fm_test_starttime "$$")" > "$LIVE_RUN/.fm-test-runner-owner"
+  env FM_TEST_SANDBOX="$DEAD_RUN/s0" sh -c 'while :; do sleep 0.05; done' & orphan=$!
+  env FM_TEST_SANDBOX="$LIVE_RUN/s0" sh -c 'while :; do sleep 0.05; done' & keeper=$!
+  sleep 0.3
+  rc=$(run_fixture abandoned "echo 'ok - trivial'")
+  if kill -0 "$orphan" 2>/dev/null; then
+    kill "$orphan" 2>/dev/null || true
+    fail "a process left by a runner that is gone survived the next runner's start"
+  else
+    pass "the next runner stops processes a runner that is gone left behind"
+  fi
+  if kill -0 "$keeper" 2>/dev/null; then
+    pass "a live runner's sandbox processes are never reaped by another runner"
+  else
+    fail "a runner reaped a process belonging to a live runner"
+  fi
+  kill "$keeper" 2>/dev/null || true
+  wait "$orphan" "$keeper" 2>/dev/null || true
+fi
 
 git -C "$PRIMARY" worktree remove --force "$WT" >/dev/null 2>&1 || true

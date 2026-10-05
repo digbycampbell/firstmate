@@ -560,6 +560,26 @@ The single post that turn produced, as the fake Slack transport recorded it, thr
 }
 ```
 
+Rechecked 2026-10-05 on `grok 1.0.46 (2765805b9442)`: the guard is red.
+`-p` mode still dispatches the project `Stop` hook twice per prompt, once with `reason` `end_turn` and `lastAssistantMessage`, then once with `reason` `shutdown`.
+The payload now also carries Claude-compatible keys alongside the camel-case ones:
+
+```json
+{"hookEventName":"stop","reason":"end_turn","hook_event_name":"Stop","session_id":"…","transcript_path":"…/updates.jsonl","permission_mode":"bypassPermissions"}
+```
+
+The installed core tries `adapters/claude.sh` first, its `claims` predicate accepts any `hook_event_name` of `Stop`, and its `extract` finds no Claude transcript text, so the turn is dropped as having nothing to mirror.
+The fix belongs in agent-slack-mirror's adapter selection, not in this repository's registration.
+The guard now runs through the runner:
+
+```sh
+FM_SLACK_MIRROR_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-slack-mirror-live-e2e.test.sh
+```
+
+```text
+not ok - grok grok 1.0.46 (2765805b9442): expected exactly one mirrored post from one turn, saw 0
+```
+
 ## Watcher continuity
 
 The cross-harness evidence combines the 2026-07-17 live pass with Claude's replacement Stop-owned path revalidated on 2026-09-21, all against isolated project and home state.

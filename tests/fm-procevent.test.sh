@@ -2312,7 +2312,7 @@ ep_damage() { cat "$TMP_ROOT/episode-bad.source" > "$EP_SOURCE"; }
 ep_repair() { cat "$TMP_ROOT/episode-good.source" > "$EP_SOURCE"; }
 ep_reconcile() {  # <expected-fragment> <expected-exit-nonzero:0|1> <msg>; sets ep_out
   local rc=0
-  ep_out=$(FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=2 pe "$HEP" reconcile) || rc=$?
+  ep_out=$(FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=${EP_CONFIRM:-2} pe "$HEP" reconcile) || rc=$?
   assert_contains "$ep_out" "$1" "$3: $ep_out"
   if [ "$2" -eq 1 ]; then
     [ "$rc" -ne 0 ] || fail "$3 (reconcile exited 0): $ep_out"
@@ -2320,10 +2320,37 @@ ep_reconcile() {  # <expected-fragment> <expected-exit-nonzero:0|1> <msg>; sets 
     [ "$rc" -eq 0 ] || fail "$3 (reconcile exited $rc): $ep_out"
   fi
 }
+ep_wait_released() {
+  for _ in $(seq 1 100); do
+    [ -e "$FM_PROCEVENT_CLAIM_ROOT/episode-src.claim" ] || break
+    sleep 0.1
+  done
+  [ ! -e "$FM_PROCEVENT_CLAIM_ROOT/episode-src.claim" ] \
+    || fail "the confirmed episode runner never released its claim"
+}
+# The transient: one unconfirmed cycle, then the next cycle confirms. Nothing is
+# ever announced for it.
 ep_damage
 ep_reconcile "failed=1" 1 "a launch that never proved its claim was not reported failed"
+ep_repair
+# A wide window: confirmation returns as soon as the claim is proven, so this
+# only keeps a loaded host from turning the recovery cycle into a second miss.
+# The next cycle either confirms a fresh launch or finds the slow runner already
+# owning the source; both end the episode, and neither may fail.
+EP_CONFIRM=30 ep_reconcile "failed=0" 0 "a source that recovered on the next cycle was still reported failed"
+[ "$(launch_failed_wake_count "$HEP" episode-src)" = 0 ] \
+  || fail "a launch that confirmed on the next cycle was announced as failed: $ep_out"
+ep_wait_released
+ep_damage
+ep_reconcile "failed=1" 1 "a launch that never proved its claim was not reported failed"
+# One unconfirmed cycle is what a runner merely slow to claim looks like, so it
+# is not announced yet (the 2026-10-04 Slack listener wakes, each found live one
+# cycle later).
+[ "$(launch_failed_wake_count "$HEP" episode-src)" = 0 ] \
+  || fail "a single unconfirmed launch was announced before a second cycle could find it owned: $ep_out"
+ep_reconcile "failed=1" 1 "a second unconfirmed launch was not reported failed"
 [ "$(launch_failed_wake_count "$HEP" episode-src)" = 1 ] \
-  || fail "a launch that could not confirm was not announced: $ep_out"
+  || fail "a launch that could not confirm on two consecutive cycles was not announced: $ep_out"
 ep_key=$(launch_failed_wake_keys "$HEP" episode-src)
 # <registration identity>-<per-episode nonce>: the watcher remembers every key
 # it has surfaced for good, so the identity alone would announce only the first
@@ -2354,7 +2381,7 @@ ep_reconcile "failed=1" 1 "the second cycle stopped relaunching a source that ca
 [ "$(launch_failed_wake_count "$HEP" episode-src)" = 1 ] \
   || fail "the same failure episode was announced twice: $ep_out"
 ep_repair
-ep_reconcile "started=1" 0 "a repaired source did not confirm"
+EP_CONFIRM=30 ep_reconcile "failed=0" 0 "a repaired source was still reported failed"
 assert_contains "$ep_out" "failed=0" "a repaired source was still reported failed: $ep_out"
 [ "$(launch_failed_wake_count "$HEP" episode-src)" = 1 ] \
   || fail "a confirmed launch produced a launch-failed wake: $ep_out"
@@ -2366,6 +2393,7 @@ done
   || fail "the confirmed episode runner never released its claim"
 ep_damage
 ep_reconcile "failed=1" 1 "a source that failed again after recovering was not reported failed"
+ep_reconcile "failed=1" 1 "a source that failed again after recovering was not reported failed twice"
 [ "$(launch_failed_wake_count "$HEP" episode-src)" = 2 ] \
   || fail "a new failure episode after a confirmed launch was not announced: $ep_out"
 # The earlier version of this assertion locked in ONE key for both episodes,
@@ -2381,7 +2409,7 @@ case "$ep_key_again" in
 esac
 ep_repair
 pe "$HEP" retire episode-src >/dev/null 2>&1 || true
-pass "a launch that cannot confirm is announced once per failure episode"
+pass "a launch that cannot confirm on two consecutive cycles is announced once per failure episode"
 
 # --- the launch-failed key fits the watcher's seen marker at the id limit ----
 # bin/fm-watch.sh names the marker for a surfaced key `.seen-procevent-<hex>`,
@@ -2397,6 +2425,7 @@ if ! { awk '/^argv:$/ { print; exit } { print }' "$LK_SOURCE" > "$LK_SOURCE.tmp"
   && cat "$LK_SOURCE.tmp" > "$LK_SOURCE" && rm -f -- "$LK_SOURCE.tmp"; }; then
   fail "could not damage the long-id registration"
 fi
+FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=2 pe "$HLK" reconcile >/dev/null 2>&1 || true
 lk_out=$(FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=2 pe "$HLK" reconcile) || true
 assert_contains "$lk_out" "failed=1" "the long-id launch was not reported failed: $lk_out"
 lk_key=$(launch_failed_wake_keys "$HLK" "$LK_ID")

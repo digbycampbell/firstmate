@@ -318,9 +318,13 @@ report_attached() {
 
 # True when a live watcher is holding a queue the next cycle must re-deliver
 # and will not announce itself. A handling marker is a handoff already in
-# progress, so the arm keeps following that watcher instead.
+# progress, so the arm keeps following that watcher instead. Only rows main
+# can act on count: a row a live supervision-branch grant reserves is being
+# handled there, and surfacing it woke main to drain nothing (dozens of empty
+# rearm-resurface turns on 2026-10-02/03).
 queued_downtime_needs_surface() {
   [ -s "$FM_WAKE_QUEUE" ] || return 1
+  [ "$(fm_wake_actor_pending_count main)" -gt 0 ] 2>/dev/null || return 1
   fm_recovery_marker_snapshot "$STATE/.watcher-down" || return 1
   case "$FM_RECOVERY_MARKER_TOKEN" in
     pending:downtime:*|announced:downtime:*|acked:*) return 0 ;;
