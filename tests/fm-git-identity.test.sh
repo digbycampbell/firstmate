@@ -122,8 +122,12 @@ test_commit_carrying_the_captain_identity_is_refused() {
     *) fail "the refusal does not say which identity to use instead: $out" ;;
   esac
   case $out in
-    *apply-worktree*) : ;;
-    *) fail "the refusal does not say how to fix it: $out" ;;
+    *'noreply or personal address is never the fix'*) : ;;
+    *) fail "the refusal does not rule out substituting a noreply address: $out" ;;
+  esac
+  case $out in
+    *'apply-worktree <worktree> --hooks-dir <dir>'*)
+      fail "the refusal still invites a hand-run apply-worktree with an arbitrary hooks dir: $out" ;;
   esac
   pass "a commit carrying the captain's address is refused at commit time, with a fix"
 }
@@ -147,6 +151,63 @@ test_environment_identity_cannot_bypass_the_guard() {
     *"$CAPTAIN_EMAIL"*) pass "an environment-supplied identity is checked, not just config" ;;
     *) fail "the refusal does not name the environment-supplied address: $out" ;;
   esac
+  # The 2026-10-04 reviewer case: the override is the cause, so the refusal
+  # must say so and name the identity the worktree would commit as without it.
+  case $out in
+    *'GIT_AUTHOR_*/GIT_COMMITTER_* override'*'configured as digio crew <crew@digio.nz>'*)
+      pass "an override refusal names the override as the cause and the worktree's own identity" ;;
+    *) fail "the refusal does not name the override as the cause: $out" ;;
+  esac
+}
+
+test_rearming_into_a_new_guard_dir_does_not_chain_guards() {
+  local d="$TMP/rechain" rc
+  make_fixture "$d"
+  "$ID_BIN" apply-worktree "$d/wt" --hooks-dir "$d/guard-one" >/dev/null 2>&1 \
+    || { fail "first apply-worktree failed"; return; }
+  # Arming again under a hooksPath that already names another firstmate guard
+  # (a re-arm into a new dir, or an inherited hooksPath) once chained the new
+  # guard into the old one, and two guards exec'd each other forever.
+  "$ID_BIN" apply-worktree "$d/wt" --hooks-dir "$d/guard-two" >/dev/null 2>&1 \
+    || { fail "second apply-worktree failed"; return; }
+  # Back to the first dir: guard-one now chains to guard-two, which chains to
+  # guard-one.
+  "$ID_BIN" apply-worktree "$d/wt" --hooks-dir "$d/guard-one" >/dev/null 2>&1 \
+    || { fail "third apply-worktree failed"; return; }
+  ( cd "$d/wt" && printf 'z\n' >>log.txt && git add log.txt \
+    && timeout 20 git commit -qm "after re-arm" ) >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 124 ] || { fail "a commit after re-arming looped between two guards until killed"; return; }
+  [ "$rc" -eq 0 ] || { fail "a commit after re-arming failed (exit $rc)"; return; }
+  pass "re-arming into a new guard dir never chains one guard into another"
+}
+
+test_hooks_dir_inside_a_tracked_tree_is_refused() {
+  local d="$TMP/stray" out
+  make_fixture "$d"
+  # The 2026-09-21 incident: a hooks dir under a repository's working tree that
+  # the repository does not ignore left an untracked hooks/ behind there.
+  out=$("$ID_BIN" apply-worktree "$d/wt" --hooks-dir "$d/parent/hooks" 2>&1)
+  # shellcheck disable=SC2181 # the message is captured above, so the status is read separately
+  if [ $? -eq 0 ]; then
+    fail "apply-worktree accepted a hooks dir that dirties the parent repository"
+    return
+  fi
+  [ ! -e "$d/parent/hooks" ] || fail "the refused hooks dir was still created"
+  [ -z "$(git -C "$d/parent" status --porcelain)" ] \
+    || fail "a refused apply-worktree left the parent repository dirty"
+  case $out in
+    *'not ignored there'*) : ;;
+    *) fail "the refusal does not explain why: $out" ;;
+  esac
+  # Control: the same location is fine once the repository ignores it, which
+  # is the shape bin/fm-spawn.sh uses (<home>/state/<id>.githooks).
+  printf 'state/\n' > "$d/parent/.git/info/exclude"
+  "$ID_BIN" apply-worktree "$d/wt" --hooks-dir "$d/parent/state/t.githooks" >/dev/null 2>&1 \
+    || { fail "apply-worktree refused a hooks dir the repository ignores"; return; }
+  [ -z "$(git -C "$d/parent" status --porcelain)" ] \
+    || fail "an ignored hooks dir still dirtied the parent repository"
+  pass "a hooks dir that would dirty a repository is refused; an ignored one is accepted"
 }
 
 test_guard_refuses_when_its_own_prerequisites_are_missing() {
@@ -329,6 +390,8 @@ git config --global --unset-all user.name 2>/dev/null || true
 test_worktree_identity_does_not_leak_into_the_parent_clone
 test_commit_carrying_the_captain_identity_is_refused
 test_environment_identity_cannot_bypass_the_guard
+test_hooks_dir_inside_a_tracked_tree_is_refused
+test_rearming_into_a_new_guard_dir_does_not_chain_guards
 test_guard_refuses_when_its_own_prerequisites_are_missing
 test_verify_refuses_an_unarmed_worktree
 test_taking_over_hooks_path_keeps_the_repo_own_hooks

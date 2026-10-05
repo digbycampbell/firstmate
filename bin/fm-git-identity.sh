@@ -160,6 +160,11 @@ cmd_guard_commit() {  # <worktree>
   done < <(effective_identity "$top")
   if [ "${#bad[@]}" -gt 0 ]; then
     fm_git_identity_reject_message "${bad[@]}" >&2
+    if [ -n "${GIT_AUTHOR_NAME:-}${GIT_AUTHOR_EMAIL:-}${GIT_COMMITTER_NAME:-}${GIT_COMMITTER_EMAIL:-}" ]; then
+      printf 'This commit'"'"'s identity comes from a GIT_AUTHOR_*/GIT_COMMITTER_* override (git commit --author sets one too); this worktree is configured as %s <%s>.\n' \
+        "$(git -C "$top" config --get user.name 2>/dev/null || printf '<unset>')" \
+        "$(git -C "$top" config --get user.email 2>/dev/null || printf '<unset>')" >&2
+    fi
     exit 1
   fi
   return 0
@@ -168,10 +173,29 @@ cmd_guard_commit() {  # <worktree>
 cmd_hook_pre_commit() {  # <worktree> [<chained-hooks-dir>] [hook args...]
   local dir=${1:-.} chained=${2:-}
   cmd_guard_commit "$dir"
-  if [ -n "$chained" ] && [ -x "$chained/pre-commit" ]; then
+  # A guard directory is never a chain target (see cmd_apply_worktree); a hook
+  # written before that rule must not loop either.
+  if [ -n "$chained" ] && [ -x "$chained/pre-commit" ] && [ ! -f "$chained/$HOOKS_MARKER" ]; then
     exec "$chained/pre-commit" "${@:3}"
   fi
   return 0
+}
+
+# A hooks directory inside a repository's working tree that the repository does
+# not ignore becomes untracked content there: one such stray hooks/ made a
+# firstmate home read dirty, so its self-update skipped. bin/fm-spawn.sh passes
+# <home>/state/<id>.githooks, which every firstmate home ignores.
+require_hooks_dir_untracked() {  # <absolute-hooks-dir>
+  local path=$1 probe top
+  probe=$path
+  while [ ! -d "$probe" ]; do
+    probe=$(dirname -- "$probe")
+  done
+  top=$(git -C "$probe" rev-parse --show-toplevel 2>/dev/null) || return 0
+  [ -n "$top" ] || return 0
+  git -C "$top" check-ignore -q --no-index -- "$path" 2>/dev/null && return 0
+  git -C "$top" check-ignore -q --no-index -- "$path/" 2>/dev/null && return 0
+  die "--hooks-dir '$path' is inside the working tree of '$top' and not ignored there, so it would leave untracked files in that repository; pass a directory outside it, such as <firstmate-home>/state/<task>.githooks"
 }
 
 # Build the per-worktree hooks directory: firstmate's commit guard as
@@ -187,6 +211,7 @@ write_hooks_dir() {  # <hooks-dir> <worktree> <chained-hooks-dir-or-empty>
   if [ -e "$hooks_arg" ] && [ ! -d "$hooks_arg" ]; then
     die "--hooks-dir '$hooks_arg' exists and is not a directory"
   fi
+  require_hooks_dir_untracked "$hooks_arg"
   mkdir -p -- "$hooks_arg" || die "cannot create hooks directory '$hooks_arg'"
   hooks=$(resolve_dir "$hooks_arg") || die "cannot resolve hooks directory '$hooks_arg'"
   [ "$hooks" != / ] || die "refusing to use / as a hooks directory"
@@ -284,10 +309,13 @@ cmd_apply_worktree() {  # <worktree> --hooks-dir <dir>
     esac
     chained=$(resolve_dir "$chained" || true)
   fi
-  # Never chain to the directory we are about to install into: re-arming an
-  # already-armed worktree would otherwise make the guard call itself.
-  if [ -n "$chained" ] && [ "$chained" = "$(resolve_dir "$hooks_arg" 2>/dev/null || printf '%s' "$hooks_arg")" ]; then
+  # Never chain to a firstmate guard directory, ours or another task's: re-arming
+  # an armed worktree, or arming under an inherited hooksPath that names another
+  # guard, would otherwise make two guards exec each other forever. Chain to the
+  # repo hooks the worktree recorded instead.
+  if [ -n "$chained" ] && [ -f "$chained/$HOOKS_MARKER" ]; then
     chained=$(git -C "$wt" config --worktree --get firstmate.chainedHooksPath 2>/dev/null || true)
+    [ -z "$chained" ] || [ ! -f "$chained/$HOOKS_MARKER" ] || chained=''
   fi
   hooks=$(write_hooks_dir "$hooks_arg" "$wt" "$chained") || exit 1
   if [ -n "$chained" ]; then
@@ -346,7 +374,7 @@ cmd_verify_worktree() {  # <worktree>
   email=$(git -C "$wt" config --worktree --get user.email 2>/dev/null || true)
   name=$(git -C "$wt" config --worktree --get user.name 2>/dev/null || true)
   [ -n "$email" ] \
-    || die "this worktree has no per-worktree user.email; it would fall back to the machine's identity. Run: bin/fm-git-identity.sh apply-worktree '$wt' --hooks-dir <dir>"
+    || die "this worktree has no per-worktree user.email; it would fall back to the machine's identity. bin/fm-spawn.sh arms task worktrees with apply-worktree; a hand-run apply-worktree needs a --hooks-dir outside any repository's tracked tree"
   fm_git_identity_allowed "$email" || {
     fm_git_identity_reject_message \
       "commits in '$wt' would be ${name:-<unset>} <$email>" >&2
