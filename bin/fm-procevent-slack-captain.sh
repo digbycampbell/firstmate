@@ -52,9 +52,11 @@
 # because doing so before the runner has captured its output would lose messages
 # on a crash. It reports `from_ts` and `to_ts` instead, and cursors advance
 # only in `handle`/`autohandle`, strictly after the result is durably captured.
-# A result that does not continue the stored cursor is refused loudly and the
-# cursor is never silently rebased; the same refusal covers an unreadable or
-# incompatible cursor file. Slack's own retention still bounds what any cursor
+# A result whose span starts after the stored cursor would skip messages, so it
+# is refused loudly and the cursor is never silently rebased; the same refusal
+# covers an unreadable or incompatible cursor file. A result the cursor already
+# covers, such as a debounce recollection handled after a later, wider capture
+# of the same span, is acknowledged as `superseded` without moving anything. Slack's own retention still bounds what any cursor
 # can recover, so this is continuity within retention, never a no-loss claim.
 #
 # THREAD REPLIES. Channel history alone cannot see a reply the captain writes
@@ -723,9 +725,31 @@ channel_from_source_id() {  # <source-id>
   printf '%s\n' "$channel"
 }
 
-# Advance the stored read position to the result's committed end. Idempotent by
-# exact position: a result already applied is a no-op success, and a result that
-# does not continue the stored cursor is refused rather than rebased.
+# ts_le <a> <b>: 0 when Slack timestamp <a> is at or before <b>. Compared as
+# integer seconds then the fraction, never as a float, so six-digit fractions
+# on ten-digit seconds keep their precision.
+ts_le() {
+  local a=$1 b=$2 ai bi af bf
+  ai=${a%%.*}; bi=${b%%.*}
+  af=; bf=
+  case "$a" in *.*) af=${a#*.} ;; esac
+  case "$b" in *.*) bf=${b#*.} ;; esac
+  ai=${ai#"${ai%%[!0]*}"}; bi=${bi#"${bi%%[!0]*}"}
+  [ "${#ai}" -ne "${#bi}" ] && { [ "${#ai}" -lt "${#bi}" ]; return; }
+  [ "$ai" != "$bi" ] && { [[ $ai < $bi ]]; return; }
+  while [ "${#af}" -lt "${#bf}" ]; do af=${af}0; done
+  while [ "${#bf}" -lt "${#af}" ]; do bf=${bf}0; done
+  [[ $af < $bf || $af == "$bf" ]]
+}
+
+# Advance the stored read position to the result's committed end. A result is
+# applied when its span starts at or before the stored position, so nothing
+# between them is skipped: one that ends at or before it is already covered (a
+# debounce recollection handled after a later, wider one) and is a no-op, and
+# one that reaches past it moves the position to its end. A result that starts
+# after the stored position would skip messages and is refused, never rebased.
+# Sets CURSOR_ADVANCED to 1 when the position moved.
+CURSOR_ADVANCED=0
 advance_cursor() {  # <channel> <result-file>
   local channel=$1 file=$2 from to
   from=$(result_field "$file" from_ts) || die "result start position is ambiguous"
@@ -733,16 +757,16 @@ advance_cursor() {  # <channel> <result-file>
   valid_ts "$from" || die "result carries an invalid start read position"
   valid_ts "$to" || die "result carries an invalid end read position"
   read_cursor "$channel"
-  if [ "$CURSOR_TS" = "$to" ]; then
-    return 0
-  fi
-  [ "$CURSOR_TS" = "$from" ] \
+  ts_le "$from" "$CURSOR_TS" \
     || die "captured Slack messages do not continue the stored read position for $channel"
+  ts_le "$to" "$CURSOR_TS" && return 0
   write_cursor "$channel" "$to" || die "cannot commit the slack captain read position"
+  CURSOR_ADVANCED=1
 }
 
 # The same rule, per tracked thread: a thread span is applied only when it
-# continues that thread's stored position, and is a no-op when already applied.
+# starts at or before that thread's stored position, and is a no-op when that
+# position already covers it.
 advance_thread_cursors() {  # <channel> <result-file>
   local channel=$1 file=$2 thread from to
   while IFS=' ' read -r thread from to _count; do
@@ -752,11 +776,12 @@ advance_thread_cursors() {  # <channel> <result-file>
     valid_ts "$to" || die "result carries an invalid thread end read position"
     read_thread_cursor "$channel" "$thread" \
       || die "captured Slack thread replies name a thread this home does not track: $thread"
-    [ "$THREAD_TS_READ" = "$to" ] && continue
-    [ "$THREAD_TS_READ" = "$from" ] \
+    ts_le "$from" "$THREAD_TS_READ" \
       || die "captured Slack thread replies do not continue the stored read position for thread $thread"
+    ts_le "$to" "$THREAD_TS_READ" && continue
     write_cursor_file "$(thread_path "$channel" "$thread")" "$THREAD_SCHEMA" "$to" \
       || die "cannot commit the slack captain read position for thread $thread"
+    CURSOR_ADVANCED=1
   done < <(result_threads "$file")
 }
 
@@ -801,13 +826,19 @@ apply_result() {  # <source-id> <sequence> <result-file> <mark-handled>
     api-error) ;;
     *) die "captured Slack result needs firstmate's attention: $class" ;;
   esac
-  case "$class" in
-    messages|untrusted-messages) record_reply_target "$channel" "$file" "$sid" "$seq" ;;
+  # A covered result moved nothing, so its older messages must not become the
+  # newest inbound the mirror replies to.
+  case "$class:$CURSOR_ADVANCED" in
+    messages:1|untrusted-messages:1) record_reply_target "$channel" "$file" "$sid" "$seq" ;;
   esac
   if [ "$mark" = 1 ]; then
     "$SCRIPT_DIR/fm-procevent.sh" handled "$sid" "$seq" || return 1
   fi
-  printf 'applied: %s read-position=%s\n' "$sid" "$(result_field "$file" to_ts)"
+  case "$class:$CURSOR_ADVANCED" in
+    messages:0|untrusted-messages:0)
+      printf 'superseded: %s read-position=%s already covers this capture\n' "$sid" "$CURSOR_TS" ;;
+    *) printf 'applied: %s read-position=%s\n' "$sid" "$(result_field "$file" to_ts)" ;;
+  esac
 }
 
 cmd_handle() {
