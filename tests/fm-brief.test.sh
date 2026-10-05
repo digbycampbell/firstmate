@@ -246,6 +246,47 @@ test_phase_brief_passes_its_plan_base_branch() {
   pass "a Phase brief passes its plan base branch to the pipeline, and only a no-mistakes ship takes one"
 }
 
+# A Phase of a one-branch Plan (digio-factory#55) has no branch or PR of its
+# own: its brief puts the worker on the Plan's branch with plain commits.
+test_one_branch_phase_brief_works_on_the_plan_branch() {
+  local home brief out
+  home="$TMP_ROOT/plan-branch-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" phase-p1 firstmate \
+    --mode direct-PR --fleet-process --issue 61 --plan-branch plan-issue-57 >/dev/null 2>&1 \
+    || fail "fm-brief.sh should scaffold a one-branch Phase brief"
+  brief="$home/data/phase-p1/brief.md"
+  assert_grep 'Ship branch: plan-issue-57' "$brief" "the Phase brief does not work on the Plan's branch"
+  # shellcheck disable=SC2016  # the backticks are literal brief text
+  assert_grep 'First action: switch to the Plan'"'"'s branch with work.ts, never by hand: `work.ts branch 61 --create`' "$brief" \
+    "the Phase brief does not switch to the Plan's branch with work.ts"
+  # shellcheck disable=SC2016  # the backticks are literal brief text
+  assert_grep 'push only your `plan-issue-57` branch' "$brief" "the Phase brief's push rule names another branch"
+  assert_grep 'Phase review requested on {Plan PR url}' "$brief" "the Phase brief does not request the Phase review"
+  assert_no_grep 'git checkout -b' "$brief" "the Phase brief creates a branch of its own"
+  assert_no_grep 'no-mistakes doctor' "$brief" "the Phase brief prepares a pipeline"
+  assert_no_grep 'no-mistakes axi run' "$brief" "the Phase brief starts a pipeline"
+  assert_no_grep 'EOF' "$brief" "the Phase brief leaked a heredoc EOF marker"
+  for args in "--mode no-mistakes --fleet-process" "--mode direct-PR" \
+    "--mode no-mistakes --fleet-process --base-branch plan-issue-57"; do
+    # shellcheck disable=SC2086  # each case is a deliberate flag list
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" phase-p2 firstmate $args --issue 62 --plan-branch plan-issue-57 2>&1) \
+      && fail "fm-brief.sh accepted --plan-branch with $args"
+    assert_contains "$out" "--plan-branch applies only to a direct-PR --fleet-process ship brief" \
+      "the --plan-branch refusal with $args did not say why"
+    assert_absent "$home/data/phase-p2/brief.md" "a refused --plan-branch scaffold still wrote a brief"
+  done
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" phase-p3 firstmate \
+    --mode direct-PR --fleet-process --plan-branch plan-issue-57 2>&1) \
+    && fail "fm-brief.sh accepted --plan-branch without its Phase issue"
+  assert_contains "$out" "--plan-branch needs --issue <n>" "the Phase-less refusal did not name the flag"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" phase-p4 firstmate \
+    --mode direct-PR --fleet-process --issue 64 --plan-branch main 2>&1) \
+    && fail "fm-brief.sh accepted a non-Plan branch as --plan-branch"
+  assert_contains "$out" "must name a Plan's branch" "the bad --plan-branch refusal did not describe a valid one"
+  pass "a one-branch Phase brief works on the Plan's branch, and only a direct-PR fleet-process ship takes one"
+}
+
 test_issue_based_branch_names() {
   local home issue_brief fallback_brief out
   home="$TMP_ROOT/issue-branch-home"
@@ -1539,3 +1580,4 @@ test_branch_prefix_value_is_validated
 test_branch_prefix_command_is_shell_safe
 test_crewmate_scaffolds_forbid_pool_administration
 test_phase_brief_passes_its_plan_base_branch
+test_one_branch_phase_brief_works_on_the_plan_branch

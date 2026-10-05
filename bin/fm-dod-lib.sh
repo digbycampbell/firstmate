@@ -6,7 +6,7 @@
 # receives. Both paths must hand the worker the same contract: a promoted
 # no-mistakes worker that never received the ask-user escalation rule or the
 # `--yes` ban is the exact delivery hole this single owner exists to close.
-# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> <branch> [<forge>] [<process>] [<base-branch>]
+# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> <branch> [<forge>] [<process>] [<base-branch>] [<phase>]
 # prints the block on stdout with no trailing blank line. The caller validates the
 # mode; an unknown mode is refused rather than silently rendered as the pipeline
 # contract.
@@ -20,6 +20,15 @@
 # to leave the PR the draft it opens as: only a passing Review by someone other
 # than its author makes it ready. fm_process_valid refuses it on local-only, on
 # a Gerrit forge, and on a branch the organisation ruleset would refuse.
+# A fleet-process ship whose branch is a one-branch Plan's plan-issue-<n>
+# (bin/fm-ship-branch-lib.sh) is a Phase of that Plan (digio-factory#55): it
+# needs mode=direct-PR and its <phase> issue number, and its block tells the
+# worker to switch to the Plan's branch with work.ts, push plain commits there,
+# open or refresh the draft Plan PR, and report done with a request for the
+# Phase review, which someone other than the worker records on the Plan PR. It
+# never runs the pipeline, which would rebase the shared branch and write its
+# own PR body. A legacy plan's Phase keeps its own fm-issue-<n> branch and the
+# no-mistakes <base-branch> instead.
 # Every block also carries the verification reference FM_DOD_VERIFY, in the same
 # words, directly under its "Ship branch:" line: local verification follows the
 # project's own AGENTS.md testing standard rather than a competing rule here, so
@@ -178,8 +187,14 @@ fm_process_valid() {  # <process> <mode> <forge> <branch> <caller>
   fi
   case "$branch" in
     fm-issue-*|fm-chore-*) fm_ship_branch_org_allowed "$branch" && return 0 ;;
+    plan-issue-*)
+      if [ "$mode" != direct-PR ]; then
+        echo "error: $caller: a one-branch Plan's Phase pushes plain commits to $branch, so it ships mode=direct-PR, never through the no-mistakes pipeline, which would rebase the shared branch and write its own PR body (got mode=$mode)" >&2
+        return 1
+      fi
+      fm_ship_plan_branch_valid "$branch" && fm_ship_branch_org_allowed "$branch" && return 0 ;;
   esac
-  echo "error: $caller: the fleet process needs an fm-issue-<n> or fm-chore-<slug> ship branch (got '$branch'); pass --issue <n> or --chore <slug>" >&2
+  echo "error: $caller: the fleet process needs an fm-issue-<n>, fm-chore-<slug>, or plan-issue-<n> ship branch (got '$branch'); pass --issue <n>, --chore <slug>, or --issue <phase> --plan-branch plan-issue-<n>" >&2
   return 1
 }
 
@@ -406,10 +421,15 @@ EOF
 # The branch-creation step for a fleet-process ship, keyed by the ship branch's
 # shape (bin/fm-ship-branch-lib.sh owns the shapes). A retry suffix is outside
 # what work.ts names, so that one case confirms the issue through work.ts and
-# creates the exact recorded branch from the same base work.ts uses.
-fm_fleet_branch_step() {  # <branch>
-  local branch=$1 n rest
+# creates the exact recorded branch from the same base work.ts uses. A Phase of
+# a one-branch Plan names its <phase> issue, because the branch names the Plan.
+fm_fleet_branch_step() {  # <branch> [<phase>]
+  local branch=$1 phase=${2:-} n rest
   case "$branch" in
+    plan-issue-*)
+      [ -n "$phase" ] || { echo "error: fm_fleet_branch_step: '$branch' needs its Phase issue number" >&2; return 1; }
+      printf '%s\n' "switch to the Plan's branch with work.ts, never by hand: \`work.ts branch $phase --create\` checks that Phase #$phase is open and switches to \`$branch\`, tracking origin and fast-forwarded; never create a branch of your own, because every Phase of this Plan is commits on \`$branch\`, and \`work.ts\` is the command your Definition of done names."
+      ;;
     fm-issue-*)
       rest=${branch#fm-issue-}
       n=${rest%%[!0-9]*}
@@ -453,8 +473,8 @@ State what you verified.
 FM_DOD_VERIFY_EOF
 FM_DOD_VERIFY=${FM_DOD_VERIFY%$'\n'}
 
-fm_dod_block() {  # <mode> <task-id> <branch> [<forge>] [<process>] [<base-branch>]
-  local mode=$1 id=$2 forge=${4:-none} process=${5:-none} base=${6:-}
+fm_dod_block() {  # <mode> <task-id> <branch> [<forge>] [<process>] [<base-branch>] [<phase>]
+  local mode=$1 id=$2 forge=${4:-none} process=${5:-none} base=${6:-} phase=${7:-}
   local branch=${3:-} nm_start=$FM_DOD_NM_START
   if [ -n "$base" ]; then
     [ "$mode" = no-mistakes ] || { echo "error: fm_dod_block: a base branch applies only to a no-mistakes ship" >&2; return 1; }
@@ -466,6 +486,33 @@ This task's PR targets \`$base\`, not the default branch: pass \`--base-branch $
   [ -n "$branch" ] || { echo "error: fm_dod_block: task $id needs its ship branch" >&2; return 1; }
   fm_forge_valid_for_mode "$forge" "$mode" fm_dod_block || return 1
   fm_process_valid "$process" "$mode" "$forge" "$branch" fm_dod_block || return 1
+  if fm_ship_plan_branch_valid "$branch" || [ -n "$phase" ]; then
+    if [ "$process" != fleet ] || [ -z "$phase" ] || [ -n "$base" ] || ! fm_ship_plan_branch_valid "$branch"; then
+      echo "error: fm_dod_block: a one-branch Plan's Phase needs the fleet process, a plan-issue-<n> branch, its Phase issue number, and no base branch" >&2
+      return 1
+    fi
+    cat <<EOF
+# Definition of done
+Delivery contract: mode=direct-PR process=fleet
+Ship branch: $branch
+$FM_DOD_VERIFY
+
+This task is Phase #$phase of a one-branch Plan: its work is plain commits pushed to the Plan's shared \`$branch\` branch and reviewed on the Plan PR.
+There is no Phase branch and no Phase PR. Do NOT run /no-mistakes: the pipeline would rebase the shared branch and write its own PR body.
+EOF
+    fm_fleet_work_ts_lines
+    cat <<EOF
+Never rebase, amend a pushed commit, or force-push \`$branch\`: other Phases build on it, and its ruleset refuses a force-push.
+Never type a PR title, body, or label by hand, never mark the Plan PR ready, and never record a review on it: a reviewer other than you records this Phase's review.
+The task is complete only when committed on \`$branch\` and pushed.
+When it is implemented and committed, run \`git push\`; when the push is refused because \`$branch\` moved, run \`git pull --no-rebase\`, resolve any conflict, commit, and push again.
+Then run \`work.ts pr --type <type> --draft\`: it opens the draft Plan PR into the default branch with \`Closes #<plan>\` only, or refreshes the open one's reviewed-Phases list, and prints the Plan PR URL.
+Then append \`done [at=<epoch>]: Phase #$phase pushed to $branch at <head sha>; Phase review requested on {Plan PR url}\` to the status file and stop.
+That \`done:\` is accepted only when this copy's HEAD - your latest commit - is pushed to \`$branch\`; the check tests that commit, not merely that a branch moved.
+Firstmate arranges the Phase review, which its reviewer records with \`work.ts review <plan-pr> --phase $phase\` on the exact head; the Plan PR stays a draft until the Plan's own review.
+EOF
+    return 0
+  fi
   case "$mode:$forge:$process" in
     direct-PR:none:fleet)
       cat <<EOF

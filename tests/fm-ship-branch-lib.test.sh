@@ -40,7 +40,10 @@ test_resolver_names_each_shape() {
   [ "$out" = fm/t1 ] || fail "a legacy ship resolved to $out"
   out=$(fm_ship_branch_resolve t1 '' '' '' fix/ 1) || fail "a prefixed branch did not resolve"
   [ "$out" = fix/t1 ] || fail "a prefixed ship resolved to $out"
-  pass "the resolver names issue, retry, chore, and prefixed ship branches"
+  out=$(fm_ship_branch_resolve t1 61 '' '' fm/ 0 plan-issue-57) || fail "a one-branch Phase did not resolve"
+  [ "$out" = plan-issue-57 ] || fail "a one-branch Phase resolved to $out"
+  fm_ship_branch_org_allowed "$out" || fail "the ruleset pattern refused a Plan's branch"
+  pass "the resolver names issue, retry, chore, Plan, and prefixed ship branches"
 }
 
 test_resolver_refuses_contradictions_and_bad_names() {
@@ -58,6 +61,12 @@ test_resolver_refuses_contradictions_and_bad_names() {
   out=$(fm_ship_branch_resolve t1 0 '' '' fm/ 0 2>&1) && fail "issue 0 was accepted"
   out=$(fm_ship_branch_resolve t1 12x '' '' fm/ 0 2>&1) && fail "a non-numeric issue was accepted"
   assert_contains "$out" "positive integer" "the bad-issue refusal did not describe a valid issue"
+  out=$(fm_ship_branch_resolve t1 '' '' '' fm/ 0 plan-issue-57 2>&1) && fail "a Plan branch without its Phase was accepted"
+  assert_contains "$out" "--plan-branch needs --issue <n>" "the Phase-less refusal did not name the flag"
+  out=$(fm_ship_branch_resolve t1 61 -r2 '' fm/ 0 plan-issue-57 2>&1) && fail "a Plan branch with a retry suffix was accepted"
+  out=$(fm_ship_branch_resolve t1 61 '' '' fm/ 0 feature-57 2>&1) && fail "a non-Plan branch was accepted as a Plan's"
+  assert_contains "$out" "plan-issue-<n>" "the bad Plan branch refusal did not describe a valid one"
+  out=$(fm_ship_branch_resolve t1 61 '' '' fix/ 1 plan-issue-57 2>&1) && fail "a Plan branch with a prefix was accepted"
   pass "the resolver refuses contradictory flags and names the ruleset would refuse"
 }
 

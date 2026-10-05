@@ -4,11 +4,16 @@
 # Sourced by bin/fm-dod-lib.sh, so bin/fm-brief.sh, bin/fm-spawn.sh, and
 # bin/fm-promote.sh share one naming and one refusal.
 #
-# A ship branch takes exactly one of three shapes:
+# A ship branch takes exactly one of four shapes:
 #   fm-issue-<n>[<suffix>]  --issue <n> [--issue-suffix <suffix>]: the task
 #                           delivers GitHub issue <n>; the suffix is an optional
 #                           retry marker such as `b` or `-r2`
 #                           (fm-issue-1596b, fm-issue-1596-r2).
+#   plan-issue-<p>          --issue <n> --plan-branch plan-issue-<p>: the task
+#                           delivers Phase <n> of a one-branch Plan
+#                           (digio-factory#55) as plain commits on the Plan's
+#                           own branch, which it shares with every other Phase
+#                           and does not create.
 #   fm-chore-<slug>         --chore <slug>: admin work too small for an issue.
 #   <prefix><task-id>       neither flag: the legacy shape, "fm/<task-id>" unless
 #                           --branch-prefix overrides it.
@@ -34,6 +39,11 @@ fm_ship_chore_slug_valid() {  # <slug>
   [[ $1 =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]
 }
 
+# 0 for a one-branch Plan's branch name: plan-issue-<n>, n a positive integer.
+fm_ship_plan_branch_valid() {  # <branch>
+  [[ $1 =~ ^plan-issue-[1-9][0-9]*$ ]]
+}
+
 # 0 for a non-empty retry suffix the ruleset accepts after issue-<n>: an
 # optional single letter, then any number of -<word> parts.
 fm_ship_issue_suffix_valid() {  # <suffix>
@@ -42,9 +52,10 @@ fm_ship_issue_suffix_valid() {  # <suffix>
 
 # Validate one flag combination and print the ship branch it names. Arguments
 # are the raw flag values, empty when the flag was not given; <prefix-set> is 1
-# when --branch-prefix was passed explicitly. Refusals name the flag to change.
-fm_ship_branch_resolve() {  # <task-id> <issue> <issue-suffix> <chore> <prefix> <prefix-set>
-  local id=$1 issue=$2 suffix=$3 chore=$4 prefix=$5 prefix_set=$6 branch
+# when --branch-prefix was passed explicitly; <plan-branch> is optional.
+# Refusals name the flag to change.
+fm_ship_branch_resolve() {  # <task-id> <issue> <issue-suffix> <chore> <prefix> <prefix-set> [<plan-branch>]
+  local id=$1 issue=$2 suffix=$3 chore=$4 prefix=$5 prefix_set=$6 plan=${7:-} branch
   if [ -n "$issue" ]; then
     case "$issue" in
       *[!0-9]*|0*) echo "error: --issue must be a positive integer issue number (got '$issue')" >&2; return 1 ;;
@@ -62,7 +73,17 @@ fm_ship_branch_resolve() {  # <task-id> <issue> <issue-suffix> <chore> <prefix> 
     echo "error: --issue and --chore name the ship branch themselves; drop --branch-prefix" >&2
     return 1
   fi
-  if [ -n "$issue" ]; then
+  if [ -n "$plan" ]; then
+    if [ -z "$issue" ] || [ -n "$suffix" ]; then
+      echo "error: --plan-branch needs --issue <n> naming the Phase, and no --issue-suffix: the Phase's commits go on the Plan's one shared branch" >&2
+      return 1
+    fi
+    if ! fm_ship_plan_branch_valid "$plan"; then
+      echo "error: --plan-branch must name a Plan's branch, plan-issue-<n> (got '$plan')" >&2
+      return 1
+    fi
+    branch=$plan
+  elif [ -n "$issue" ]; then
     if [ -n "$suffix" ] && ! fm_ship_issue_suffix_valid "$suffix"; then
       echo "error: --issue-suffix must be an optional letter then -<word> parts in lowercase letters and digits, such as b or -r2 (got '$suffix')" >&2
       return 1
