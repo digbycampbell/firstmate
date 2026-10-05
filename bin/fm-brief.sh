@@ -14,7 +14,7 @@
 # charters still use a single `{TASK}` charter fill. Firstmate may adjust other
 # sections when the task genuinely deviates (e.g. working an existing external
 # PR instead of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix> | --issue <n> [--issue-suffix <s>] | --chore <slug>] [--fleet-process] [--forge <none|gerrit> [--shape squash]] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix> | --issue <n> [--issue-suffix <s>] | --chore <slug>] [--fleet-process] [--base-branch <branch>] [--forge <none|gerrit> [--shape squash]] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -72,6 +72,11 @@
 # bin/fm-project-mode.sh), resolved at intake and passed here exactly as --forge
 # is, needs --issue or --chore, and records " process=fleet" on the Delivery
 # contract line, which bin/fm-spawn.sh checks against the registry.
+# --base-branch <branch> names the integration branch a no-mistakes ship's PR
+# targets when it is not the default branch - a Phase's plan-issue-<n> branch.
+# The rendered start instruction then passes `--base-branch <branch>` to every
+# `no-mistakes axi run`, which sets the run's rebase, PR, and CI base; without it
+# the pipeline rebased Phase work onto main. Refused outside no-mistakes ships.
 # --forge names the project's forge, defaults to none, and is orthogonal to --mode
 # exactly as the registry's `forge=` token is. It is the captain's confirmed
 # registry binding, read from data/projects.md at intake and passed here; this
@@ -214,6 +219,8 @@ ISSUE_SET=0
 ISSUE_SUFFIX=
 CHORE=
 PROCESS=none
+BASE_BRANCH=
+BASE_BRANCH_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -229,6 +236,7 @@ for a in "$@"; do
       issue) ISSUE=$a; ISSUE_SET=1 ;;
       issue-suffix) ISSUE_SUFFIX=$a ;;
       chore) CHORE=$a ;;
+      base-branch) BASE_BRANCH=$a; BASE_BRANCH_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -254,6 +262,8 @@ for a in "$@"; do
     --chore) want_value=chore ;;
     --chore=*) CHORE=${a#--chore=} ;;
     --fleet-process) PROCESS=fleet ;;
+    --base-branch) want_value="base-branch" ;;
+    --base-branch=*) BASE_BRANCH=${a#--base-branch=}; BASE_BRANCH_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -322,6 +332,17 @@ if [ "$KIND" = ship ]; then
 elif [ "$FORGE_SET" -eq 1 ] || [ "$SHAPE_SET" -eq 1 ]; then
   echo "error: --forge and --shape apply only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
+fi
+if [ "$BASE_BRANCH_SET" -eq 1 ]; then
+  { [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; } || {
+    echo "error: --base-branch applies only to no-mistakes ship briefs, where it sets the pipeline's rebase, PR, and CI base" >&2
+    exit 1
+  }
+  case "$BASE_BRANCH" in
+    ''|-*|*' '*) echo "error: --base-branch must name a branch (got '$BASE_BRANCH')" >&2; exit 1 ;;
+  esac
+  git check-ref-format --branch "$BASE_BRANCH" >/dev/null 2>&1 \
+    || { echo "error: --base-branch is not a valid branch name (got '$BASE_BRANCH')" >&2; exit 1; }
 fi
 ID=${POS[0]}
 # bin/fm-spawn.sh selects the same branch from the same flags.
@@ -654,7 +675,7 @@ case "$MODE" in
     ;;
 esac
 RULE1=$(fm_ship_rule_one "$MODE" "$ID" "$BRANCH" "$FORGE") || exit 1
-DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$PROCESS") || exit 1
+DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$PROCESS" "$BASE_BRANCH") || exit 1
 if [ "$PROCESS" = fleet ]; then
   SETUP1="First action: $(fm_fleet_branch_step "$BRANCH")" || exit 1
 else

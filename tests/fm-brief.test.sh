@@ -221,6 +221,31 @@ test_ship_modes_generate_clean_briefs() {
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
 }
 
+# A Phase ship's PR targets its plan branch, and the pipeline rebased Phase work
+# onto main when its start instruction did not pass --base-branch (2026-10-05).
+test_phase_brief_passes_its_plan_base_branch() {
+  local home brief out
+  home="$TMP_ROOT/base-branch-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
+    phase-a1 firstmate --mode no-mistakes --issue 61 --base-branch plan-issue-57 >/dev/null 2>&1 \
+    || { fail "fm-brief.sh should scaffold a Phase brief with --base-branch"; return; }
+  brief="$home/data/phase-a1/brief.md"
+  # shellcheck disable=SC2016  # the backticks are literal brief text
+  assert_grep 'pass `--base-branch plan-issue-57` on every `no-mistakes axi run` for this task' "$brief" \
+    "the Phase brief does not pass its plan branch to the pipeline"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
+    phase-a2 firstmate --mode direct-PR --issue 62 --base-branch plan-issue-57 2>&1) \
+    && fail "fm-brief.sh accepted --base-branch on a direct-PR ship"
+  assert_contains "$out" "applies only to no-mistakes ship briefs" "the direct-PR --base-branch refusal did not say why"
+  assert_absent "$home/data/phase-a2/brief.md" "a refused --base-branch scaffold still wrote a brief"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
+    phase-a3 firstmate --mode no-mistakes --issue 63 --base-branch 'bad..name' 2>&1) \
+    && fail "fm-brief.sh accepted an invalid --base-branch"
+  assert_contains "$out" "not a valid branch name" "the invalid --base-branch refusal did not name the problem"
+  pass "a Phase brief passes its plan base branch to the pipeline, and only a no-mistakes ship takes one"
+}
+
 test_issue_based_branch_names() {
   local home issue_brief fallback_brief out
   home="$TMP_ROOT/issue-branch-home"
@@ -1513,3 +1538,4 @@ test_branch_prefix_is_refused_where_it_does_not_apply
 test_branch_prefix_value_is_validated
 test_branch_prefix_command_is_shell_safe
 test_crewmate_scaffolds_forbid_pool_administration
+test_phase_brief_passes_its_plan_base_branch

@@ -6,7 +6,7 @@
 # receives. Both paths must hand the worker the same contract: a promoted
 # no-mistakes worker that never received the ask-user escalation rule or the
 # `--yes` ban is the exact delivery hole this single owner exists to close.
-# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> <branch> [<forge>] [<process>]
+# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> <branch> [<forge>] [<process>] [<base-branch>]
 # prints the block on stdout with no trailing blank line. The caller validates the
 # mode; an unknown mode is refused rather than silently rendered as the pipeline
 # contract.
@@ -453,9 +453,16 @@ State what you verified.
 FM_DOD_VERIFY_EOF
 FM_DOD_VERIFY=${FM_DOD_VERIFY%$'\n'}
 
-fm_dod_block() {  # <mode> <task-id> <branch> [<forge>] [<process>]
-  local mode=$1 id=$2 forge=${4:-none} process=${5:-none}
-  local branch=${3:-}
+fm_dod_block() {  # <mode> <task-id> <branch> [<forge>] [<process>] [<base-branch>]
+  local mode=$1 id=$2 forge=${4:-none} process=${5:-none} base=${6:-}
+  local branch=${3:-} nm_start=$FM_DOD_NM_START
+  if [ -n "$base" ]; then
+    [ "$mode" = no-mistakes ] || { echo "error: fm_dod_block: a base branch applies only to a no-mistakes ship" >&2; return 1; }
+    # A Phase PR targets its plan branch; without the flag the pipeline rebases,
+    # opens the PR, and watches CI against the default branch instead.
+    nm_start="$nm_start
+This task's PR targets \`$base\`, not the default branch: pass \`--base-branch $base\` on every \`no-mistakes axi run\` for this task, so the pipeline rebases onto, opens the PR against, and runs CI for \`$base\`."
+  fi
   [ -n "$branch" ] || { echo "error: fm_dod_block: task $id needs its ship branch" >&2; return 1; }
   fm_forge_valid_for_mode "$forge" "$mode" fm_dod_block || return 1
   fm_process_valid "$process" "$mode" "$forge" "$branch" fm_dod_block || return 1
@@ -485,7 +492,7 @@ Delivery contract: mode=no-mistakes process=fleet
 Ship branch: $branch
 $FM_DOD_VERIFY
 
-$FM_DOD_NM_START
+$nm_start
 
 EOF
       fm_nm_driving_block "$forge"
@@ -525,7 +532,7 @@ $FM_DOD_VERIFY
 This project's review server is Gerrit: it has no pull requests and no forge CI the pipeline can watch, so **no-mistakes runs here as a review pass that ends at a ready branch**, and you then publish that branch as one change.
 Pass \`--skip push,pr,ci\` on every \`no-mistakes axi run\` for this task, and skip nothing else: \`review\`, \`test\`, \`document\`, and \`lint\` are the whole point of the run.
 Those three are the only steps that reach a forge, and skipping them is a supported outcome, not a degraded one.
-$FM_DOD_NM_START
+$nm_start
 
 EOF
       fm_nm_driving_block "$forge"
@@ -586,7 +593,7 @@ Delivery contract: mode=no-mistakes
 Ship branch: $branch
 $FM_DOD_VERIFY
 
-$FM_DOD_NM_START
+$nm_start
 
 EOF
       fm_nm_driving_block "$forge"
