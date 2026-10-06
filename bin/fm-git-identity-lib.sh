@@ -18,12 +18,17 @@
 # arming and the fail-closed launch assertion).
 
 # Crewmates and scouts working in a task worktree.
-FM_GIT_CREW_NAME='digio crew'
+FM_GIT_CREW_NAME='Crewmate'
 FM_GIT_CREW_EMAIL='crew@digio.nz'
 
 # Firstmate itself, committing directly under one of its guarded exceptions.
-FM_GIT_FIRSTMATE_NAME='firstmate'
+FM_GIT_FIRSTMATE_NAME='Firstmate'
 FM_GIT_FIRSTMATE_EMAIL='firstmate@digio.nz'
+
+# Config scopes a task worktree's identity is armed in. git ranks author.* and
+# committer.* above user.* at every level, so arming user.* alone lets a global
+# author.* include decide the commit.
+FM_GIT_IDENTITY_SCOPES='user author committer'
 
 # fm_git_identity_for_role: print "<name>\t<email>" for a role, or fail.
 fm_git_identity_for_role() {  # <crew|firstmate>

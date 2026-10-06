@@ -12,8 +12,9 @@
 #
 # Commands:
 #   apply-worktree <worktree> --hooks-dir <dir>
-#       Arm one task worktree: set the crew identity and the commit guard so
-#       they apply to THAT worktree only. Refuses rather than half-arming.
+#       Arm one task worktree: set the crew identity (user.*, author.* and
+#       committer.*) and the commit guard so they apply to THAT worktree only.
+#       Refuses rather than half-arming.
 #   disarm-worktree <worktree> --hooks-dir <dir>
 #       Return a pooled worktree to unarmed: drop the per-worktree identity and
 #       hooksPath, then remove the hooks directory. Run at teardown so a
@@ -47,7 +48,8 @@
 # relabel the captain's own commits in that clone. Everything this script sets
 # per worktree goes through git's worktree-config extension
 # (extensions.worktreeConfig + `git config --worktree`), which is per-worktree
-# for user.* and for core.hooksPath alike.
+# for user.*, author.*, committer.* and core.hooksPath alike. All three
+# identity scopes are armed because author.*/committer.* outrank user.*.
 #
 # Fail-closed: every prerequisite is checked and every failure exits non-zero
 # with the concrete missing requirement. There is no path through this script
@@ -133,20 +135,38 @@ remove_hook() {  # <hooks-real> <hook-name>
   rm -f -- "$target" || die "cannot remove the stale hook '$target'"
 }
 
-# Effective identity git would use for a commit made in <dir>, honouring the
-# same precedence git itself uses, including the GIT_AUTHOR_*/GIT_COMMITTER_*
-# environment overrides a caller could otherwise slip past config-only checks.
+# Identity git would use for a commit made in <dir> right now, resolved by git
+# itself (`git var`), so the precedence is git's own: GIT_AUTHOR_*/
+# GIT_COMMITTER_* environment, then author.*/committer.* at any config level,
+# then user.*. Reading user.* alone missed a global author.* include, which
+# outranks a worktree's user.*. An identity git cannot resolve prints empty.
+resolved_ident() {  # <dir> <AUTHOR|COMMITTER> -> "<name>\t<email>"
+  local ident name email
+  ident=$(git -C "$1" var "GIT_${2}_IDENT" 2>/dev/null) || ident=''
+  ident=$(printf '%s' "$ident" | sed -E 's/ [0-9]+ [-+][0-9]{4}$//')
+  case $ident in
+    *' <'*'>') name=${ident% <*}; email=${ident##* <}; email=${email%>} ;;
+    *) name=''; email='' ;;
+  esac
+  printf '%s\t%s\n' "$name" "$email"
+}
+
 effective_identity() {  # <dir> -> author line then committer line
-  local dir=$1 an ae cn ce
-  an=${GIT_AUTHOR_NAME:-$(git -C "$dir" config --get user.name 2>/dev/null || true)}
-  ae=${GIT_AUTHOR_EMAIL:-$(git -C "$dir" config --get user.email 2>/dev/null || true)}
-  cn=${GIT_COMMITTER_NAME:-$(git -C "$dir" config --get user.name 2>/dev/null || true)}
-  ce=${GIT_COMMITTER_EMAIL:-$(git -C "$dir" config --get user.email 2>/dev/null || true)}
-  printf '%s\t%s\n%s\t%s\n' "$an" "$ae" "$cn" "$ce"
+  resolved_ident "$1" AUTHOR
+  resolved_ident "$1" COMMITTER
+}
+
+# The same resolution with the caller's environment overrides removed: what the
+# worktree's configuration alone would commit as.
+configured_identity() {  # <dir> -> author line then committer line
+  (
+    unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+    effective_identity "$1"
+  )
 }
 
 cmd_guard_commit() {  # <worktree>
-  local dir=${1:-.} top line name email i=0
+  local dir=${1:-.} top line name email configured i=0
   local roles=(author committer)
   local -a bad=()
   top=$(require_worktree "$dir")
@@ -160,10 +180,14 @@ cmd_guard_commit() {  # <worktree>
   done < <(effective_identity "$top")
   if [ "${#bad[@]}" -gt 0 ]; then
     fm_git_identity_reject_message "${bad[@]}" >&2
-    if [ -n "${GIT_AUTHOR_NAME:-}${GIT_AUTHOR_EMAIL:-}${GIT_COMMITTER_NAME:-}${GIT_COMMITTER_EMAIL:-}" ]; then
+    # Name the environment as the cause only when configuration alone would
+    # have passed; git exports GIT_AUTHOR_* to every pre-commit hook, so the
+    # variables being set says nothing on its own.
+    configured=$(configured_identity "$top" | head -n 1)
+    if [ -n "${GIT_AUTHOR_NAME:-}${GIT_AUTHOR_EMAIL:-}${GIT_COMMITTER_NAME:-}${GIT_COMMITTER_EMAIL:-}" ] \
+      && fm_git_identity_allowed "${configured#*$'\t'}"; then
       printf 'This commit'"'"'s identity comes from a GIT_AUTHOR_*/GIT_COMMITTER_* override (git commit --author sets one too); this worktree is configured as %s <%s>.\n' \
-        "$(git -C "$top" config --get user.name 2>/dev/null || printf '<unset>')" \
-        "$(git -C "$top" config --get user.email 2>/dev/null || printf '<unset>')" >&2
+        "${configured%%$'\t'*}" "${configured#*$'\t'}" >&2
     fi
     exit 1
   fi
@@ -273,7 +297,7 @@ require_worktree_config_safe() {  # <worktree>
 }
 
 cmd_apply_worktree() {  # <worktree> --hooks-dir <dir>
-  local dir='' hooks_arg='' wt hooks chained shared_before shared_after name email
+  local dir='' hooks_arg='' wt hooks chained shared_before shared_after name email scope
   while [ $# -gt 0 ]; do
     case $1 in
       --hooks-dir) [ $# -ge 2 ] || die "--hooks-dir needs a value"; hooks_arg=$2; shift 2 ;;
@@ -296,10 +320,16 @@ cmd_apply_worktree() {  # <worktree> --hooks-dir <dir>
 
   git -C "$wt" config extensions.worktreeConfig true \
     || die "cannot enable extensions.worktreeConfig on this clone"
-  git -C "$wt" config --worktree user.name "$name" \
-    || die "cannot set the per-worktree user.name"
-  git -C "$wt" config --worktree user.email "$email" \
-    || die "cannot set the per-worktree user.email"
+  # author.* and committer.* outrank user.* at every config level, so arming
+  # user.* alone loses to a global include that sets author.* (dotfiles routes
+  # identities that way). The worktree level outranks global, so arming all
+  # three makes this worktree's identity win whatever the machine routes.
+  for scope in $FM_GIT_IDENTITY_SCOPES; do
+    git -C "$wt" config --worktree "$scope.name" "$name" \
+      || die "cannot set the per-worktree $scope.name"
+    git -C "$wt" config --worktree "$scope.email" "$email" \
+      || die "cannot set the per-worktree $scope.email"
+  done
 
   chained=$(git -C "$wt" config --get core.hooksPath 2>/dev/null || true)
   if [ -n "$chained" ]; then
@@ -342,7 +372,7 @@ cmd_apply_worktree() {  # <worktree> --hooks-dir <dir>
 # the worktree may already be gone by the time teardown reaches this; the
 # removal side keeps every ownership constraint remove_hook enforces.
 cmd_disarm_worktree() {  # <worktree> --hooks-dir <dir>
-  local dir='' hooks_arg='' hooks wt hook
+  local dir='' hooks_arg='' hooks wt hook scope
   while [ $# -gt 0 ]; do
     case $1 in
       --hooks-dir) [ $# -ge 2 ] || die "--hooks-dir needs a value"; hooks_arg=$2; shift 2 ;;
@@ -355,8 +385,10 @@ cmd_disarm_worktree() {  # <worktree> --hooks-dir <dir>
   if [ -n "$dir" ] && wt=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null); then
     git -C "$wt" config --worktree --unset-all core.hooksPath 2>/dev/null || true
     git -C "$wt" config --worktree --unset-all firstmate.chainedHooksPath 2>/dev/null || true
-    git -C "$wt" config --worktree --unset-all user.name 2>/dev/null || true
-    git -C "$wt" config --worktree --unset-all user.email 2>/dev/null || true
+    for scope in $FM_GIT_IDENTITY_SCOPES; do
+      git -C "$wt" config --worktree --unset-all "$scope.name" 2>/dev/null || true
+      git -C "$wt" config --worktree --unset-all "$scope.email" 2>/dev/null || true
+    done
   fi
   [ -d "$hooks_arg" ] || return 0
   hooks=$(resolve_dir "$hooks_arg") || die "cannot resolve hooks directory '$hooks_arg'"
@@ -369,17 +401,19 @@ cmd_disarm_worktree() {  # <worktree> --hooks-dir <dir>
 }
 
 cmd_verify_worktree() {  # <worktree>
-  local dir=${1:-.} wt hooks name email
+  local dir=${1:-.} wt hooks name email scope
   wt=$(require_worktree "$dir")
-  email=$(git -C "$wt" config --worktree --get user.email 2>/dev/null || true)
-  name=$(git -C "$wt" config --worktree --get user.name 2>/dev/null || true)
-  [ -n "$email" ] \
-    || die "this worktree has no per-worktree user.email; it would fall back to the machine's identity. bin/fm-spawn.sh arms task worktrees with apply-worktree; a hand-run apply-worktree needs a --hooks-dir outside any repository's tracked tree"
-  fm_git_identity_allowed "$email" || {
-    fm_git_identity_reject_message \
-      "commits in '$wt' would be ${name:-<unset>} <$email>" >&2
-    exit 1
-  }
+  for scope in $FM_GIT_IDENTITY_SCOPES; do
+    email=$(git -C "$wt" config --worktree --get "$scope.email" 2>/dev/null || true)
+    name=$(git -C "$wt" config --worktree --get "$scope.name" 2>/dev/null || true)
+    [ -n "$email" ] \
+      || die "this worktree has no per-worktree $scope.email; the machine's own identity routing could decide its commits. bin/fm-spawn.sh arms task worktrees with apply-worktree; a hand-run apply-worktree needs a --hooks-dir outside any repository's tracked tree"
+    fm_git_identity_allowed "$email" || {
+      fm_git_identity_reject_message \
+        "commits in '$wt' would carry $scope ${name:-<unset>} <$email>" >&2
+      exit 1
+    }
+  done
   hooks=$(git -C "$wt" config --worktree --get core.hooksPath 2>/dev/null || true)
   [ -n "$hooks" ] \
     || die "this worktree has no per-worktree core.hooksPath; the commit-time guard is not armed"

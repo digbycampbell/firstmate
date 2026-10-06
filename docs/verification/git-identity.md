@@ -10,8 +10,8 @@ This record supports the current guarantee that a firstmate-managed commit carri
 
 | Role | Identity |
 | --- | --- |
-| Crewmates and scouts, per task worktree | `digio crew <crew@digio.nz>` |
-| Firstmate's own direct commits | `firstmate <firstmate@digio.nz>` |
+| Crewmates and scouts, per task worktree | `Crewmate <crew@digio.nz>` |
+| Firstmate's own direct commits | `Firstmate <firstmate@digio.nz>` |
 
 Neither address belongs to a GitHub account, which is deliberate: an unlinked address renders as a plain name rather than attributing agent work to a person.
 Verified against a pre-existing example on 2026-08-21: `digio-nz/digio-os` commit `a253621`, authored `crewmate@digio.nz`, returns `author: null` from the GitHub commits API.
@@ -34,7 +34,7 @@ $ git rev-parse --git-dir --git-common-dir
 /home/digby/devs/firstmate/.git
 ```
 
-Git's worktree-config extension is per-worktree for `user.*` and for `core.hooksPath` alike, so both can be set without touching the shared config:
+Git's worktree-config extension is per-worktree for `user.*`, `author.*`, `committer.*` and `core.hooksPath` alike, so all can be set without touching the shared config:
 
 ```console
 $ git config extensions.worktreeConfig true
@@ -53,17 +53,37 @@ $ git config --worktree core.hooksPath /tmp/wtx/hooks   # hook fires in the work
 It enables the mechanism and carries no identity.
 Git treats `core.bare` and `core.worktree` as always-worktree-specific once the extension is on, so `apply-worktree` refuses a clone that carries either in shared config rather than migrating someone else's configuration.
 
+## A global `author.*` outranks a worktree's `user.*`
+
+Checked 2026-10-06 with git 2.53.0 on Linux 6.18.40.1 (WSL2).
+
+Git ranks `author.*` and `committer.*` above `user.*` at every config level, so a global include that sets them (as path-routed dotfiles identity files do) decides the commit even in a worktree whose `user.*` is armed.
+`apply-worktree` therefore arms all three scopes at the worktree level, which outranks global, and the guard resolves the identity with `git var`, which applies git's own precedence.
+With a global include setting `author.*` and `committer.*` to `Digby <digby@example.invalid>`:
+
+```console
+$ git -C /tmp/idt/wt1 config --worktree user.email crew@digio.nz   # user.* only
+$ git -C /tmp/idt/wt1 var GIT_AUTHOR_IDENT
+Digby <digby@example.invalid>
+$ bin/fm-git-identity.sh verify-worktree /tmp/idt/wt1
+fm-git-identity: this worktree has no per-worktree author.email; the machine's own identity routing could decide its commits. ...
+$ bin/fm-git-identity.sh apply-worktree /tmp/idt/wt1 --hooks-dir /tmp/idt/hooks
+fm-git-identity: /tmp/idt/wt1 is armed as Crewmate <crew@digio.nz>, guard at /tmp/idt/hooks
+$ git -C /tmp/idt/wt1 log -1 --format='%an <%ae> | %cn <%ce>'
+Crewmate <crew@digio.nz> | Crewmate <crew@digio.nz>
+```
+
 ## End-to-end exercise
 
 Run 2026-08-21 against a scratch clone configured exactly like the machine that produced the incident: the captain's identity in the clone, one linked worktree, and a repo that already sets `core.hooksPath=.githooks`.
 
 ```console
 $ bin/fm-git-identity.sh apply-worktree /tmp/idt/wt1 --hooks-dir /tmp/idt/hooks-task1
-fm-git-identity: /tmp/idt/wt1 is armed as digio crew <crew@digio.nz>, guard at /tmp/idt/hooks-task1
+fm-git-identity: /tmp/idt/wt1 is armed as Crewmate <crew@digio.nz>, guard at /tmp/idt/hooks-task1
 $ git -C /tmp/idt/wt1 commit -m 'crew commit'
 REPO-PRE-COMMIT RAN
 $ git -C /tmp/idt/wt1 log -1 --format='%an <%ae> | %cn <%ce>'
-digio crew <crew@digio.nz> | digio crew <crew@digio.nz>
+Crewmate <crew@digio.nz> | Crewmate <crew@digio.nz>
 $ git -C /tmp/idt/parent log -1 --format='%an <%ae>'
 digbycampbell <96467498+digbycampbell@users.noreply.github.com>
 ```
@@ -78,8 +98,8 @@ $ git -C /tmp/idt/wt1 commit -m 'should be refused'
 refusing: this commit's author would be digbycampbell <96467498+digbycampbell@users.noreply.github.com>
 refusing: this commit's committer would be digbycampbell <96467498+digbycampbell@users.noreply.github.com>
 Only firstmate identities may author a firstmate-managed commit:
-  digio crew <crew@digio.nz>   (crewmates and scouts, set per task worktree)
-  firstmate <firstmate@digio.nz>   (firstmate itself, via bin/fm-git-identity.sh commit)
+  Crewmate <crew@digio.nz>   (crewmates and scouts, set per task worktree)
+  Firstmate <firstmate@digio.nz>   (firstmate itself, via bin/fm-git-identity.sh commit)
 ...
 $ echo $?
 1
@@ -100,7 +120,7 @@ Firstmate's own direct commit in the same clone:
 ```console
 $ bin/fm-git-identity.sh commit -m 'firstmate direct'
 $ git log -1 --format='%an <%ae> | %cn <%ce>'
-firstmate <firstmate@digio.nz> | firstmate <firstmate@digio.nz>
+Firstmate <firstmate@digio.nz> | Firstmate <firstmate@digio.nz>
 $ git config --local user.email
 96467498+digbycampbell@users.noreply.github.com
 ```

@@ -26,6 +26,13 @@ export GIT_CONFIG_GLOBAL="$TMP_ROOT/gitconfig-global"
 : >"$GIT_CONFIG_GLOBAL"
 git config --global user.email "$CAPTAIN_EMAIL"
 git config --global user.name "$CAPTAIN_NAME"
+# And route author.*/committer.* the way dotfiles' path-routed identity files
+# do: git ranks them above user.* at every level, so a spawn that armed user.*
+# alone would still commit as the captain here.
+git config --global author.email "$CAPTAIN_EMAIL"
+git config --global author.name "$CAPTAIN_NAME"
+git config --global committer.email "$CAPTAIN_EMAIL"
+git config --global committer.name "$CAPTAIN_NAME"
 git config --global init.defaultBranch master
 
 make_fakebin() {  # <dir> -> fake tmux/treehouse that reports the worktree pane
@@ -97,9 +104,9 @@ test_spawn_arms_the_crew_identity_without_touching_the_clone() {
     || fail "could not commit in the spawned worktree"
   author=$(git -C "$WT_DIR" log -1 --format='%an <%ae>')
   committer=$(git -C "$WT_DIR" log -1 --format='%cn <%ce>')
-  [ "$author" = "digio crew <crew@digio.nz>" ] \
+  [ "$author" = "Crewmate <crew@digio.nz>" ] \
     || fail "a commit in the spawned worktree is authored as $author"
-  [ "$committer" = "digio crew <crew@digio.nz>" ] \
+  [ "$committer" = "Crewmate <crew@digio.nz>" ] \
     || fail "a commit in the spawned worktree is committed as $committer"
 
   after=$(git -C "$PROJ_DIR" config --local --list | LC_ALL=C sort \
@@ -112,7 +119,7 @@ test_spawn_arms_the_crew_identity_without_touching_the_clone() {
 }
 
 test_spawned_worktree_refuses_a_captain_identity_commit() {
-  local id out status
+  local id out status key
   id=spawn-identity-refuses-z2
   make_case refuses "$id"
   out=$(run_spawn "$id")
@@ -121,8 +128,9 @@ test_spawned_worktree_refuses_a_captain_identity_commit() {
 
   # Reproduce the incident: the worktree loses its own identity and falls back
   # to the machine's, which here is the captain's private address.
-  git -C "$WT_DIR" config --worktree --unset-all user.email
-  git -C "$WT_DIR" config --worktree --unset-all user.name
+  for key in user.name user.email author.name author.email committer.name committer.email; do
+    git -C "$WT_DIR" config --worktree --unset-all "$key"
+  done
   out=$( ( cd "$WT_DIR" && printf 'leak\n' > leak.txt && git add leak.txt \
     && git commit -m "leak" ) 2>&1 )
   # shellcheck disable=SC2181 # the message is captured above, so the status is read separately

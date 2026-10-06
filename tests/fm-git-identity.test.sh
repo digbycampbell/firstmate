@@ -54,6 +54,28 @@ commit_in() {  # <dir> <message>
     && git commit -m "$msg" ) >/dev/null 2>&1
 }
 
+# Drop every identity key apply-worktree arms, leaving the worktree to fall back
+# on whatever the machine's own configuration says.
+strip_worktree_identity() {  # <worktree>
+  local key
+  for key in user.name user.email author.name author.email committer.name committer.email; do
+    git -C "$1" config --worktree --unset-all "$key" 2>/dev/null || true
+  done
+}
+
+# Reproduce dotfiles' path-routed identity: a global include whose file sets
+# author.* and committer.*, which git ranks above user.* at every level.
+install_global_author_override() {  # <dir>
+  local file=$1/identity-override
+  printf '[author]\n\tname = %s\n\temail = %s\n[committer]\n\tname = %s\n\temail = %s\n' \
+    "$CAPTAIN_NAME" "$CAPTAIN_EMAIL" "$CAPTAIN_NAME" "$CAPTAIN_EMAIL" >"$file"
+  git config --global include.path "$file"
+}
+
+remove_global_author_override() {
+  git config --global --unset-all include.path 2>/dev/null || true
+}
+
 author_of() {  # <dir>
   git -C "$1" log -1 --format='%an <%ae>'
 }
@@ -71,9 +93,9 @@ test_worktree_identity_does_not_leak_into_the_parent_clone() {
     || { fail "apply-worktree failed on a linked worktree"; return; }
 
   commit_in "$d/wt" "crew work" || { fail "could not commit in the armed worktree"; return; }
-  [ "$(author_of "$d/wt")" = "digio crew <crew@digio.nz>" ] \
+  [ "$(author_of "$d/wt")" = "Crewmate <crew@digio.nz>" ] \
     || fail "worktree commit author is $(author_of "$d/wt"), expected the crew identity"
-  [ "$(committer_of "$d/wt")" = "digio crew <crew@digio.nz>" ] \
+  [ "$(committer_of "$d/wt")" = "Crewmate <crew@digio.nz>" ] \
     || fail "worktree commit committer is $(committer_of "$d/wt"), expected the crew identity"
 
   # The property that actually matters: the shared clone config the captain's
@@ -99,8 +121,7 @@ test_commit_carrying_the_captain_identity_is_refused() {
 
   # Reproduce the incident state exactly: the worktree loses its own identity
   # and falls back to the machine's, which is the captain's private address.
-  git -C "$d/wt" config --worktree --unset-all user.email
-  git -C "$d/wt" config --worktree --unset-all user.name
+  strip_worktree_identity "$d/wt"
 
   before_count=$(git -C "$d/wt" rev-list --count HEAD)
   out=$( ( cd "$d/wt" && printf 'x\n' >>log.txt && git add log.txt \
@@ -154,9 +175,59 @@ test_environment_identity_cannot_bypass_the_guard() {
   # The 2026-10-04 reviewer case: the override is the cause, so the refusal
   # must say so and name the identity the worktree would commit as without it.
   case $out in
-    *'GIT_AUTHOR_*/GIT_COMMITTER_* override'*'configured as digio crew <crew@digio.nz>'*)
+    *'GIT_AUTHOR_*/GIT_COMMITTER_* override'*'configured as Crewmate <crew@digio.nz>'*)
       pass "an override refusal names the override as the cause and the worktree's own identity" ;;
     *) fail "the refusal does not name the override as the cause: $out" ;;
+  esac
+}
+
+test_global_author_override_cannot_change_the_crew_identity() {
+  local d="$TMP/global-author"
+  make_fixture "$d"
+  install_global_author_override "$d"
+  "$ID_BIN" apply-worktree "$d/wt" --hooks-dir "$d/hooks" >/dev/null 2>&1 \
+    || { fail "apply-worktree failed under a global author.* override"; remove_global_author_override; return; }
+  commit_in "$d/wt" "crew work" \
+    || { fail "could not commit in a worktree armed under a global author.* override"; remove_global_author_override; return; }
+  remove_global_author_override
+  [ "$(author_of "$d/wt")" = "Crewmate <crew@digio.nz>" ] \
+    || { fail "a global author.* override won: the crew commit is authored as $(author_of "$d/wt")"; return; }
+  [ "$(committer_of "$d/wt")" = "Crewmate <crew@digio.nz>" ] \
+    || { fail "a global committer.* override won: the crew commit is committed as $(committer_of "$d/wt")"; return; }
+  pass "a global author.*/committer.* override cannot change an armed worktree's commit identity"
+}
+
+test_guard_resolves_author_config_as_git_does() {
+  local d="$TMP/author-config" out before_count after_count
+  make_fixture "$d"
+  "$ID_BIN" apply-worktree "$d/wt" --hooks-dir "$d/hooks" >/dev/null 2>&1 \
+    || { fail "apply-worktree failed"; return; }
+  # An allowlisted user.* that git does NOT use for the commit, because a
+  # global author.*/committer.* outranks it. A guard reading user.* alone
+  # passes this; the commit still lands as the captain.
+  strip_worktree_identity "$d/wt"
+  git -C "$d/wt" config --worktree user.name Crewmate
+  git -C "$d/wt" config --worktree user.email crew@digio.nz
+  install_global_author_override "$d"
+  before_count=$(git -C "$d/wt" rev-list --count HEAD)
+  out=$( ( cd "$d/wt" && printf 'z\n' >>log.txt && git add log.txt \
+    && git commit -m "author config override" ) 2>&1 )
+  # shellcheck disable=SC2181 # the message is captured above, so the status is read separately
+  if [ $? -eq 0 ]; then
+    remove_global_author_override
+    fail "a commit whose author.* config resolves to the captain was accepted as $(author_of "$d/wt")"
+    return
+  fi
+  "$ID_BIN" verify-worktree "$d/wt" >/dev/null 2>&1 \
+    && fail "verify-worktree reports a worktree armed when author.* config would win"
+  remove_global_author_override
+  after_count=$(git -C "$d/wt" rev-list --count HEAD)
+  [ "$before_count" = "$after_count" ] \
+    || fail "the refused commit still landed on the branch"
+  case $out in
+    *"refusing: this commit's author would be $CAPTAIN_NAME <$CAPTAIN_EMAIL>"*)
+      pass "the guard resolves author.*/committer.* config the way git does" ;;
+    *) fail "the refusal does not name the author.* identity git would use: $out" ;;
   esac
 }
 
@@ -287,6 +358,8 @@ test_disarm_returns_the_worktree_to_unarmed() {
   [ ! -d "$d/hooks" ] || fail "disarm-worktree left the hooks directory behind"
   [ -z "$(git -C "$d/wt" config --worktree --get core.hooksPath 2>/dev/null || true)" ] \
     || fail "disarm-worktree left core.hooksPath pointing at a deleted directory"
+  [ -z "$(git -C "$d/wt" config --worktree --get-regexp '^(user|author|committer)\.' 2>/dev/null || true)" ] \
+    || fail "disarm-worktree left a per-worktree identity behind"
   "$ID_BIN" verify-worktree "$d/wt" >/dev/null 2>&1 \
     && fail "verify-worktree still reports a disarmed worktree as armed"
   pass "disarm leaves no hooksPath pointing at a directory git would treat as no hooks"
@@ -347,9 +420,9 @@ test_firstmate_direct_commit_uses_the_firstmate_identity() {
   ( cd "$d/parent" && printf 'f\n' >>log.txt && git add log.txt \
     && "$ID_BIN" commit -q -m "firstmate direct" ) >/dev/null 2>&1 \
     || { fail "fm-git-identity.sh commit failed"; return; }
-  [ "$(author_of "$d/parent")" = "firstmate <firstmate@digio.nz>" ] \
+  [ "$(author_of "$d/parent")" = "Firstmate <firstmate@digio.nz>" ] \
     || fail "a firstmate direct commit is authored as $(author_of "$d/parent")"
-  [ "$(committer_of "$d/parent")" = "firstmate <firstmate@digio.nz>" ] \
+  [ "$(committer_of "$d/parent")" = "Firstmate <firstmate@digio.nz>" ] \
     || fail "a firstmate direct commit is committed as $(committer_of "$d/parent")"
   # The clone the captain also commits in keeps its own identity.
   [ "$(git -C "$d/parent" config --local --get user.email)" = "$CAPTAIN_EMAIL" ] \
@@ -390,6 +463,8 @@ git config --global --unset-all user.name 2>/dev/null || true
 test_worktree_identity_does_not_leak_into_the_parent_clone
 test_commit_carrying_the_captain_identity_is_refused
 test_environment_identity_cannot_bypass_the_guard
+test_global_author_override_cannot_change_the_crew_identity
+test_guard_resolves_author_config_as_git_does
 test_hooks_dir_inside_a_tracked_tree_is_refused
 test_rearming_into_a_new_guard_dir_does_not_chain_guards
 test_guard_refuses_when_its_own_prerequisites_are_missing
