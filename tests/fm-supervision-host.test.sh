@@ -1120,9 +1120,9 @@ test_resurface_the_engine_turn_consumed_stays_off_main() {
     "a resurface whose rows the engine turn consumed was passed to main: $(resurface_logs "$home")"
   [ "$(main_pending "$home")" -eq 0 ] || fail "the drop left a main-actionable row queued: $(cat "$home/state/.wake-queue")"
   # Parked, not stranded: a recorded arm is alive and the lock names a live watcher.
-  for pid in $(awk -F '\t' '$1 == "arm" { print $2 }' "$home/state/.supervision-host"); do
-    kill -0 "$pid" 2>/dev/null && live=1
-  done
+  while IFS= read -r pid; do
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && live=1
+  done < <(awk -F '\t' '$1 == "arm" { print $2 }' "$home/state/.supervision-host")
   [ "$live" -eq 1 ] || fail "the host dropped the resurface but parks on no live arm: $(cat "$home/state/.supervision-host")"$'\n'"$(resurface_logs "$home")"
   watcher_live "$home" || fail "the host dropped the resurface with no live watcher: $(resurface_logs "$home")"
   pass "host: a resurface whose queued rows the engine turn already consumed stays off main, and the host stays parked on a live arm"
