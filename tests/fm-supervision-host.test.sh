@@ -166,6 +166,27 @@ stop_home_processes() {  # <home>
   [ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null || true
   while IFS= read -r pid; do
     if [ -e "$home/session.stop" ]; then
+      local stop_i=0 stop_pid stop_arms stop_lock
+      while [ "$stop_i" -lt 100 ] && kill -0 "$pid" 2>/dev/null; do
+        if [ -f "$home/state/.supervision-host" ]; then
+          stop_pid=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
+          [ -z "$stop_pid" ] || kill -TERM "$stop_pid" 2>/dev/null || true
+          stop_arms=$(awk -F '\t' '$1 == "arm" { print $2 }' "$home/state/.supervision-host")
+          for stop_pid in $stop_arms; do
+            kill -TERM "$stop_pid" 2>/dev/null || true
+          done
+        fi
+        stop_lock=$(cat "$home/state/.watch.lock/pid" 2>/dev/null || true)
+        [ -z "$stop_lock" ] || kill -TERM "$stop_lock" 2>/dev/null || true
+        sleep 0.1
+        stop_i=$((stop_i + 1))
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -TERM "$pid" 2>/dev/null || true
+        local still_alive
+        still_alive=$(pgrep -af -- "$home" || true)
+        fail "stop_home_processes: claude pid $pid in $home never exited"$'\n'"$still_alive"
+      fi
       wait "$pid" 2>/dev/null || true
     else
       kill -TERM "$pid" 2>/dev/null || true
