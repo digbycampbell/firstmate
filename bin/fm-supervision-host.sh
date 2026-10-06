@@ -1044,7 +1044,10 @@ while :; do
   # resurfacing.
   if [ "$REASON" = "check: rearm-resurface" ] \
     && [ "$(fm_wake_actor_pending_count main)" -eq 0 ] 2>/dev/null; then
-    if start_successor "" && [ "$(fm_wake_actor_pending_count main)" -eq 0 ] 2>/dev/null; then
+    # Test seam, inert unless set: queue a row inside that gap.
+    if start_successor "" \
+      && { [ -z "${FM_SUPERVISION_HOST_TEST_BEFORE_RECOUNT:-}" ] || "$FM_SUPERVISION_HOST_TEST_BEFORE_RECOUNT"; } \
+      && [ "$(fm_wake_actor_pending_count main)" -eq 0 ] 2>/dev/null; then
       log_line "dropped	stale resurface: no main-actionable row is queued"
       ARM_PID=$SUCCESSOR_PID
       ARM_OUT=$SUCCESSOR_OUT
