@@ -28,6 +28,7 @@ FM_GIT_FIRSTMATE_EMAIL='firstmate@digio.nz'
 # Config scopes a task worktree's identity is armed in. git ranks author.* and
 # committer.* above user.* at every level, so arming user.* alone lets a global
 # author.* include decide the commit.
+# shellcheck disable=SC2034 # Read by bin/fm-git-identity.sh, which sources this file.
 FM_GIT_IDENTITY_SCOPES='user author committer'
 
 # fm_git_identity_for_role: print "<name>\t<email>" for a role, or fail.
