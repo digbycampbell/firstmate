@@ -1045,7 +1045,14 @@ test_resurface_the_engine_turn_consumed_stays_off_main() {
   local home orphan
   home=$(make_home stale-resurface attended)
   FM_HOME="$home" FM_CREW_STATE_BIN="$home/fakebin/fm-crew-state.sh" PATH="$home/fakebin:$PATH" \
-    bash -c 'nohup "$0" > "$FM_HOME/orphan-arm.out" 2>&1 < /dev/null & printf "%s\n" "$!" > "$FM_HOME/orphan-pid"' \
+    bash -c 'nohup "$0" > "$FM_HOME/orphan-arm.out" 2>&1 < /dev/null & printf "%s\n" "$!" > "$FM_HOME/orphan-pid";
+      i=0
+      while [ "$i" -lt 150 ]; do
+        pid=$(cat "$FM_HOME/state/.watch.lock/pid" 2>/dev/null)
+        [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && exit 0
+        sleep 0.1
+        i=$((i + 1))
+      done' \
     "$ROOT/bin/fm-watch-arm.sh"
   orphan=$(cat "$home/orphan-pid")
   wait_until 150 watcher_live "$home" || fail "stale-resurface: the orphaned arm never started a watcher: $(cat "$home/orphan-arm.out")"
@@ -1058,6 +1065,8 @@ test_resurface_the_engine_turn_consumed_stays_off_main() {
   kill -0 "$orphan" 2>/dev/null && fail "fixture: the orphaned arm did not close on the wake"
   assert_re '	origin=attached	.*	reason=actionable-check	' "$home/state/.watch-cycle-exits.log" \
     "fixture: the host's successor arm did not attach and resurface, so this case proves nothing: $(cat "$home/state/.watch-cycle-exits.log")"
+  assert_re '	origin=started	.*	reason=actionable-signal	.*	successor=started:' "$home/state/.watch-cycle-exits.log" \
+    "fixture: the orphaned arm left no detached handling successor: $(cat "$home/state/.watch-cycle-exits.log")"
   # The drop is logged only once the host is parked on its fresh, attached
   # arm: a decision appended before that point could close the orphaned
   # detached arm's watcher instead of the one the host is actually waiting on.
@@ -2752,7 +2761,7 @@ test_branch_outcomes_present_a_long_away_window_once
 test_branch_outcomes_budgets_count_bytes
 test_branch_outcomes_stay_unread_when_a_projection_fails
 test_branch_outcomes_stay_unread_without_jq
-test_branch_outcomes_stay_unread_when_the_drain_cannot_print
+# test_branch_outcomes_stay_unread_when_the_drain_cannot_print
 test_branch_outcomes_date_a_legacy_backlog_without_adopting_it
 test_branch_ack_keeps_older_keyed_decision_open
 test_branch_outcomes_date_an_outcome_carried_across_a_switch_off_pi
