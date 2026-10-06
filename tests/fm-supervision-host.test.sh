@@ -1589,9 +1589,10 @@ SH
 }
 
 # Park again after a host was stopped mid-park: the new cycle's first close is
-# the watcher's downtime resurface, which main drains before the next park.
-# That close can end the park before its cycle is ever seen live, so this
-# waits for the exit itself.
+# the watcher's downtime resurface. With nothing main-actionable queued the host
+# drops it and stays parked on a fresh arm; with a row still queued (a turn
+# stopped before its acknowledgement) the resurface reaches main, which drains
+# it before the next park.
 # The resurface pass-through leaves its successor running. Stop that watcher
 # and acknowledge the downtime its exit records, so the next park starts a
 # watcher it owns. Attaching instead would not observe the exit until the
@@ -1619,13 +1620,26 @@ quiet_pass_through_successor() {  # <home>
 }
 
 park_after_stop() {  # <home>
+  local before pending
+  before=$(grep -c '	dropped	stale resurface' "$1/state/.supervision-host.log" 2>/dev/null)
+  pending=$(main_pending "$1")
   rm -f "$1/host.rc"
   : > "$1/park.go"
-  wait_until 150 host_exited "$1" || fail "the watcher's downtime resurface did not reach main: $(cat "$1/host.out")"
-  assert_re '^check: rearm-resurface' "$1/host.out" "fixture: the first close after the watcher stopped was not its resurface"
-  main_drain_and_ack "$1"
-  quiet_pass_through_successor "$1"
-  park_again "$1"
+  if [ "$pending" -gt 0 ]; then
+    wait_until 150 host_exited "$1" \
+      || fail "after a stop with $pending row(s) queued for main, the downtime resurface did not reach main: $(cat "$1/host.out"; tail -n 5 "$1/state/.supervision-host.log" 2>/dev/null)"
+    assert_re '^check: rearm-resurface' "$1/host.out" "fixture: the first close after the watcher stopped was not its resurface"
+    main_drain_and_ack "$1"
+    quiet_pass_through_successor "$1"
+    park_again "$1"
+    return
+  fi
+  wait_until 150 bash -c '[ -s "$1/host.rc" ] || [ "$(grep -c "	dropped	stale resurface" "$1/state/.supervision-host.log" 2>/dev/null)" -gt "$2" ]' \
+    _ "$1" "${before:-0}" \
+    || fail "after a stop, the host neither dropped its downtime resurface nor woke main: $(cat "$1/host.out"; tail -n 5 "$1/state/.supervision-host.log" 2>/dev/null)"
+  [ ! -s "$1/host.rc" ] \
+    || fail "after a stop with nothing queued for main, the host woke main instead of dropping its downtime resurface: $(cat "$1/host.out")"
+  watcher_live "$1" || fail "after dropping the downtime resurface the host is parked on no live watcher: $(tail -n 5 "$1/state/.supervision-host.log" 2>/dev/null)"
 }
 
 # Dialog counts as delivered only once the turn that carried it is accepted
