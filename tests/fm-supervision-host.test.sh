@@ -2408,7 +2408,10 @@ test_first_cycle_status_streams_and_owner_options_reach_it() {
   fresh=$(sed -n 's/^watcher: started pid=\([0-9]*\).*/\1/p' "$home/host.out")
   [ "$fresh" != "$stale" ] || fail "stream: --restart attached to the watcher it should have replaced"
   wait_until 100 sh -c '! kill -0 "$1" 2>/dev/null' _ "$stale" || fail "stream: --restart left the old watcher running"
-  wait_until 200 host_exited "$home" || append_status "$home" 'second close' 'done'
+  # The resurface either reaches main or, with nothing queued for main, is
+  # dropped once the host is parked on a fresh arm, which a second close ends.
+  wait_until 200 sh -c '[ -s "$1/host.rc" ] || grep -qs "	dropped	stale resurface" "$1/state/.supervision-host.log"' _ "$home" || true
+  host_exited "$home" || append_status "$home" 'second close' 'done'
   wait_until 200 host_exited "$home" || fail "stream: the restarting host's close did not reach main"
   assert_re '^(signal: .*demo.status|check: rearm-resurface)$' "$home/host.out" "stream: the restarting host's close must reach main"
 
