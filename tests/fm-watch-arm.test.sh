@@ -65,9 +65,9 @@ start_seed_watcher() {  # <state> <fakebin> <watch-out> [poll-seconds]
 }
 
 # Attach a real arm to the live cycle.
-start_attached_arm() {  # <state> <fakebin> <arm-out> <confirm-timeout>
-  local state=$1 fakebin=$2 armout=$3 confirm=$4 i
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_ARM_ATTACH_POLL=0.1 \
+start_attached_arm() {  # <state> <fakebin> <arm-out> <confirm-timeout> [attach-poll]
+  local state=$1 fakebin=$2 armout=$3 confirm=$4 poll=${5:-0.1} i
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_ARM_ATTACH_POLL="$poll" \
     FM_ARM_CONFIRM_TIMEOUT="$confirm" "$WATCH_ARM" > "$armout" &
   ARM_PID=$!
   i=0
@@ -209,6 +209,43 @@ test_attached_arm_reports_the_delivered_wake() {
   grep -q 'reason=attached-delivered-wake' "$state/.watch-cycle-exits.log" \
     || fail "the delivered-wake close was not classified in the lifecycle ledger"
   pass "watch-arm: an attached arm reports the wake its cycle delivered instead of a false failure"
+}
+
+# The followed holder delivers and exits, and a successor takes the lock before
+# the attached arm's next poll, so the arm's first look finds a different live
+# watcher. It must still report the close its holder delivered rather than
+# follow the successor and lose it. A long attach poll holds the arm inside one
+# poll across the whole handover; the successor is a handling successor, so it
+# does not resurface and exit before the arm looks.
+test_attached_arm_reports_the_delivered_wake_when_the_lock_is_replaced_first() {
+  local dir state fakebin out armout status successor
+  dir=$(make_case attached-lock-replaced)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  armout="$dir/arm.out"
+  start_seed_watcher "$state" "$fakebin" "$out"
+  start_attached_arm "$state" "$fakebin" "$armout" 1 20
+  printf 'done: fixture finished\n' > "$state/demo.status"
+  wait_for_exit "$SEED_PID" 120
+  grep -q '^signal:' "$out" || fail "seed watcher did not surface the signal wake: $(cat "$out")"
+  FM_WATCH_HANDLING_SUCCESSOR=1 start_seed_watcher "$state" "$fakebin" "$dir/successor.out"
+  successor=$SEED_PID
+  is_live_non_zombie "$ARM_PID" \
+    || fail "fixture: the arm closed before the successor took the lock, so this case proves nothing: $(cat "$armout")"
+  ! grep -q 'reason=attached' "$state/.watch-cycle-exits.log" 2>/dev/null \
+    || fail "fixture: the arm looked before the successor took the lock: $(cat "$state/.watch-cycle-exits.log")"
+  wait_for_exit "$ARM_PID" 400
+  status=$?
+  grep -q '^signal:' "$armout" \
+    || fail "an attached arm whose holder was replaced within one poll lost the close it delivered: $(cat "$armout"; cat "$state/.watch-cycle-exits.log")"
+  expect_code 0 "$status" "the arm must close successfully with the delivered close"
+  grep -q 'reason=attached-delivered-wake' "$state/.watch-cycle-exits.log" \
+    || fail "the delivered close was not classified in the lifecycle ledger: $(cat "$state/.watch-cycle-exits.log")"
+  is_live_non_zombie "$successor" || fail "the successor watcher must be left running"
+  kill -TERM "$successor" 2>/dev/null || true
+  wait_for_exit "$successor" 100 || true
+  pass "watch-arm: an attached arm reports its holder's close even when a successor took the lock before its next poll"
 }
 
 test_attached_arm_reports_the_delivered_wake_after_drain() {
@@ -1430,6 +1467,7 @@ test_reaper_stops_a_tracked_watcher() {
 }
 
 test_attached_arm_reports_the_delivered_wake
+test_attached_arm_reports_the_delivered_wake_when_the_lock_is_replaced_first
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_arm_refuses_an_unusable_launch_confirm_window
 test_arm_refuses_a_disposable_validation_checkout
