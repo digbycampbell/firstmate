@@ -1033,6 +1033,39 @@ while :; do
     emit
     exit 0
   fi
+  # A resurface reports the queue as it stood when its arm attached, and the
+  # host can read it only after an engine turn has consumed that row: the
+  # successor arm can attach to a live watcher before the turn's grant exists.
+  # With no main-actionable row left it is no wake, so start a fresh arm and
+  # re-judge the queue only once that arm is attached: a decision that closed
+  # between the first count and the attach would otherwise be delivered to the
+  # orphaned detached arm instead of the one the host parks on, stranding it
+  # under a handling marker that a following arm just follows rather than
+  # resurfacing.
+  if [ "$REASON" = "check: rearm-resurface" ] \
+    && [ "$(fm_wake_actor_pending_count main)" -eq 0 ] 2>/dev/null; then
+    # Test seam, inert unless set: queue a row inside that gap.
+    if start_successor "" \
+      && { [ -z "${FM_SUPERVISION_HOST_TEST_BEFORE_RECOUNT:-}" ] || "$FM_SUPERVISION_HOST_TEST_BEFORE_RECOUNT"; } \
+      && [ "$(fm_wake_actor_pending_count main)" -eq 0 ] 2>/dev/null; then
+      log_line "dropped	stale resurface: no main-actionable row is queued"
+      ARM_PID=$SUCCESSOR_PID
+      ARM_OUT=$SUCCESSOR_OUT
+      SUCCESSOR_PID=
+      SUCCESSOR_OUT=
+      ARM_TEXT=
+      continue
+    fi
+    # A failed start, or a recount that found a row queued after the fresh arm
+    # attached, falls through on purpose: the close continues down the
+    # ordinary path so the resurface still reaches main instead of the host
+    # dropping a wake with no arm parked.
+    if [ -n "${SUCCESSOR_PID:-}" ]; then
+      retire_arm "$SUCCESSOR_PID" "$SUCCESSOR_OUT"
+      SUCCESSOR_PID=
+      SUCCESSOR_OUT=
+    fi
+  fi
   # Attended: the close reaches main exactly as the plain arm delivers it,
   # unless the supervision session may take it (attended_acceptor).
   if ! fm_afk_contract_away_present "$STATE"; then

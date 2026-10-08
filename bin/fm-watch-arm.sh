@@ -433,6 +433,17 @@ attach_and_wait() {
   while :; do
     if healthy_watcher; then
       if [ "$HEALTHY_PID" != "$attached_pid" ] || [ "$HEALTHY_IDENTITY" != "$cycle_watcher_identity" ]; then
+        # A successor can take the lock within one poll of the followed
+        # holder's close: report that close exactly as the branch below does.
+        if ! delivery=$(lookup_ended_cycle_delivery); then
+          fail_unexplained_cycle
+          return 1
+        fi
+        if [ -n "$delivery" ]; then
+          cycle_log_append unknown unknown attached-delivered-wake "attached:$HEALTHY_PID"
+          printf '%s\n' "$delivery"
+          return 0
+        fi
         cycle_log_append unknown unknown lock-replaced "attached:$HEALTHY_PID"
         attached_pid=$HEALTHY_PID
         cycle_begin "$attached_pid" attached "$HEALTHY_IDENTITY"
