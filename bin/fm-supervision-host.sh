@@ -22,7 +22,9 @@
 #
 # OUTPUT, the contract every owner reads. The first cycle's status line
 # ("watcher: started ..." or "watcher: attached ...") is printed as soon as the
-# arm prints it, so an owner that waits for arm readiness sees it at once;
+# arm prints it, so an owner that waits for arm readiness sees it at once; when
+# that cycle closes on a dropped stale resurface before printing it, the status
+# line of the fresh arm the host parks on is printed instead;
 # everything else is printed in one write when the host exits: the close as
 # the arm printed it (without that status line), then any "supervision-host:"
 # lines. A "supervision-host:" line is a wake in its own right (the park
@@ -251,9 +253,12 @@ ENGINE_RUNNING=0
 TURN_RESULT=
 TURN_ERRORS=
 # The first cycle's status line, printed as soon as the arm prints it
-# (header, OUTPUT) and left out of that cycle's close.
+# (header, OUTPUT) and left out of that cycle's close. READY_STREAMED records
+# that the owner has seen one, so a first cycle that closed before printing
+# its own can hand the duty to the arm the host parks on next.
 READY_PENDING=1
 READY_LINE=
+READY_STREAMED=0
 
 log_line() {  # <text>
   local tmp
@@ -486,6 +491,7 @@ stream_ready_line() {
   printf '%s\n' "$line"
   READY_LINE=$line
   READY_PENDING=0
+  READY_STREAMED=1
 }
 
 # Wait for the current arm to close. Returns 0 with ARM_TEXT set,
@@ -1051,6 +1057,9 @@ while :; do
       log_line "dropped	stale resurface: no main-actionable row is queued"
       ARM_PID=$SUCCESSOR_PID
       ARM_OUT=$SUCCESSOR_OUT
+      # A first cycle that closed on this resurface before printing its status
+      # line leaves the owner without one: the parked arm's line is that status.
+      [ "$READY_STREAMED" -eq 1 ] || READY_PENDING=1
       SUCCESSOR_PID=
       SUCCESSOR_OUT=
       ARM_TEXT=
