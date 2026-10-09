@@ -60,6 +60,28 @@
 # it later grows replies, the adapter's own channel-window scan tracks it the
 # first time a reply naming it is captured. A home with no captain-channel
 # configuration simply skips this step.
+#
+# QUOTE BAR. Every body is posted as a Slack blockquote, so consecutive long
+# messages are easy to tell apart: each line gains a `> ` prefix and a blank
+# line becomes a bare `>`, so the bar stays unbroken, and a fenced code block
+# keeps working because each of its lines is prefixed the same way. The
+# `--worker-details` stamp sits inside the quote. `quote_replies=off` in
+# config/slack-captain posts bodies as written. A captain's terminal prompt
+# that the mirror relays is never quoted: it is the one post with `--origin
+# mirror` whose body starts with the mirror's prompt label, read the way the
+# installed agent-slack-mirror core reads it (SLACK_MIRROR_PROMPT_LABEL, then
+# FM_SLACK_MIRROR_PROMPT_LABEL, then `mirror_prompt_label` in
+# config/slack-captain). A home that configures no label cannot tell that post
+# apart, so it is quoted like the rest.
+#
+# REPLIED REACTION. A successful post to the configured captain channel, from
+# either origin, calls bin/fm-procevent-slack-captain.sh `mark-replied` with the
+# thread it posted into, so the captain messages it answers swap their `eyes`
+# reaction for a check mark, except the relayed terminal prompt above, which
+# answers nothing. That adapter owns which messages a reply answers
+# and the `reactions` switch. The call runs detached, so it never delays or
+# fails a post Slack already accepted; FM_SLACK_POST_REACTIONS_SYNC=1 runs it
+# inline instead, for tests.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -88,7 +110,7 @@ case "$HARD_TIMEOUT" in ''|*[!0-9]*|0) HARD_TIMEOUT=$((CURL_MAX_TIME + 5)) ;; es
 MAX_BODY_BYTES=${FM_SLACK_POST_MAX_BYTES:-40000}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 config_dir()  { printf '%s\n' "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"; }
 env_file()    { printf '%s\n' "$FM_HOME/.env"; }
@@ -137,6 +159,37 @@ resolve_channel() {  # <channel>
   [ -n "$id" ] || die "config/slack-channels has no entry for '$name'"
   valid_slack_id "$id" || die "config/slack-channels maps '$name' to an invalid channel id"
   printf '%s\n' "$id"
+}
+
+# One free-text key from config/slack-captain, inner spacing kept and only the
+# surrounding whitespace trimmed; empty when absent or unsafe.
+captain_config_text() {  # <key>
+  local file value
+  file="$(config_dir)/slack-captain"
+  [ -f "$file" ] && [ ! -L "$file" ] || return 0
+  value=$(sed -n "s/^[[:space:]]*$1=//p" "$file" | tail -n1)
+  value=${value#"${value%%[![:space:]]*}"}
+  value=${value%"${value##*[![:space:]]}"}
+  printf '%s\n' "$value"
+}
+
+# 0 when this post is the mirror relaying the captain's own terminal prompt.
+is_mirrored_prompt() {  # <text>
+  local label
+  [ "$ORIGIN" = mirror ] || return 1
+  label=${SLACK_MIRROR_PROMPT_LABEL:-${FM_SLACK_MIRROR_PROMPT_LABEL:-}}
+  [ -n "$label" ] || label=$(captain_config_text mirror_prompt_label)
+  [ -n "$label" ] || return 1
+  case "$1" in
+    "$label"*) return 0 ;;
+  esac
+  return 1
+}
+
+# The body as a Slack blockquote: `> ` before each line, a bare `>` for a blank
+# one, so the bar is continuous through paragraphs and code fences.
+quote_body() {  # <text>
+  printf '%s\n' "$1" | awk '{ if ($0 ~ /^[[:space:]]*$/) print ">"; else print "> " $0 }'
 }
 
 # The configured captain channel, or empty when this home watches none.
@@ -205,6 +258,13 @@ fi
 [ -n "$text" ] || die "the message is empty"
 [ "${#text}" -le "$MAX_BODY_BYTES" ] || die "the message is longer than $MAX_BODY_BYTES characters"
 [ -z "$DETAILS" ] || text=$(printf '%s\n\n_worker: %s_' "$text" "$DETAILS")
+mirrored_prompt=0
+! is_mirrored_prompt "$text" || mirrored_prompt=1
+case "$(captain_config_text quote_replies)" in
+  ''|on) [ "$mirrored_prompt" = 1 ] || text=$(quote_body "$text") ;;
+  off) ;;
+  *) die "config/slack-captain has an invalid quote_replies value; use on or off" ;;
+esac
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-slack-post.XXXXXX") || die "cannot create a staging directory"
 trap 'rm -rf -- "$TMP"' EXIT
@@ -257,6 +317,17 @@ fi
 if [ -n "$watched" ] && [ "$watched" = "$channel" ] && [ -n "$THREAD" ]; then
   "$SCRIPT_DIR/fm-procevent-slack-captain.sh" track-thread "$channel" "$THREAD" >/dev/null 2>&1 \
     || printf 'fm-slack-post: could not register thread %s for capture\n' "$THREAD" >&2
+fi
+if [ -n "$watched" ] && [ "$watched" = "$channel" ] && [ "$mirrored_prompt" = 0 ]; then
+  mark=( env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-procevent-slack-captain.sh"
+    mark-replied "$channel" "${THREAD:-none}" )
+  if [ "${FM_SLACK_POST_REACTIONS_SYNC:-}" = 1 ]; then
+    "${mark[@]}" </dev/null >/dev/null 2>&1 || true
+  elif command -v setsid >/dev/null 2>&1; then
+    setsid "${mark[@]}" </dev/null >/dev/null 2>&1 &
+  else
+    "${mark[@]}" </dev/null >/dev/null 2>&1 &
+  fi
 fi
 
 printf '%s\n' "$ts"

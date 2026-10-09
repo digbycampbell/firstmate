@@ -85,6 +85,39 @@ case "$*" in
     exit 0
     ;;
 esac
+# A reaction call is logged as `<method> <channel> <timestamp> <name>` and
+# answered with FAKE_REACTION_RESPONSE; a post is answered with a fixed ts.
+# Neither counts as a history call.
+case "$*" in
+  *reactions.add*|*reactions.remove*|*chat.postMessage*)
+    out=
+    prev=
+    method=
+    rchannel=
+    rts=
+    rname=
+    for arg in "$@"; do
+      [ "$prev" = -o ] && out=$arg
+      case "$arg" in
+        */reactions.add) method=add ;;
+        */reactions.remove) method=remove ;;
+        channel=*) rchannel=${arg#channel=} ;;
+        timestamp=*) rts=${arg#timestamp=} ;;
+        name=*) rname=${arg#name=} ;;
+      esac
+      prev=$arg
+    done
+    if [ -n "$method" ]; then
+      printf '%s %s %s %s\n' "$method" "$rchannel" "$rts" "$rname" >> "$FAKE_REACTIONS"
+      body=${FAKE_REACTION_RESPONSE-}
+      [ -n "$body" ] || body='{"ok":true}'
+      [ -z "$out" ] || printf '%s\n' "$body" > "$out"
+      exit "${FAKE_REACTION_EXIT:-0}"
+    fi
+    [ -z "$out" ] || printf '{"ok":true,"ts":"900.000900"}\n' > "$out"
+    exit 0
+    ;;
+esac
 # Each endpoint counts its own calls, so a canned history sequence stays
 # call-for-call predictable no matter how many thread reads happen beside it.
 case "$*" in
@@ -116,6 +149,8 @@ export FAKE_CURL_COUNT="$TMP_ROOT/curl.count"
 export FAKE_REPLIES_COUNT="$TMP_ROOT/replies.count"
 export FAKE_SLACK_REPLIES="$TMP_ROOT/slack-replies.json"
 export FAKE_FILES="$TMP_ROOT/files"
+export FAKE_REACTIONS="$TMP_ROOT/reactions.log"
+: > "$FAKE_REACTIONS"
 mkdir -p "$FAKE_FILES"
 export FM_SLACK_CAPTAIN_FILES_HOST=https://files.example.test/
 # Canned message timestamps are tiny epochs, so stored attachments would age
@@ -951,3 +986,165 @@ rc=0
 [ "$rc" -ne 0 ] || fail "an invalid poll_interval must be refused"
 assert_grep 'poll_interval' "$TMP_ROOT/interval.err" "the refusal names poll_interval"
 pass "poll_interval sets the listening interval and the environment still overrides it"
+
+# --- seen and replied reactions ---------------------------------------------
+#
+# Reactions are bounded by message age, so these cases use current timestamps.
+
+POST="$ROOT/bin/fm-slack-post.sh"
+NOW=$(date +%s)
+M1="$NOW.000101"
+M2="$NOW.000102"
+OLD=100.000100
+reactions_of() {  # <ts>
+  awk -v ts="$1" '$3 == ts { print $1, $4 }' "$FAKE_REACTIONS"
+}
+
+home=$(new_home reactseen)
+printf 'peer_bots=%s\n' U0PEERBOT1 >> "$home/config/slack-captain"
+slack_response "$(ok_body '[
+  {"type":"message","user":"'"$CAPTAIN"'","ts":"'"$M1"'","text":"captain"},
+  {"type":"message","user":"'"$CAPTAIN"'","ts":"'"$OLD"'","text":"long ago"},
+  {"type":"message","user":"'"$STRANGER"'","ts":"'"$NOW"'.000103","text":"stranger"},
+  {"type":"message","bot_id":"B901","user":"U0PEERBOT1","ts":"'"$NOW"'.000104","text":"peer"},
+  {"type":"message","bot_id":"B902","user":"U0OTHERBOT","ts":"'"$NOW"'.000105","text":"other bot"},
+  {"type":"message","user":"'"$BOT"'","ts":"'"$NOW"'.000106","text":"own post"}
+]')"
+: > "$FAKE_REACTIONS"
+out="$TMP_ROOT/reactseen.result"
+"$ADAPTER" poll "$home" "$CHANNEL" > "$out" 2>/dev/null || fail "a poll with reactions should succeed"
+[ "$(reactions_of "$M1")" = 'add eyes' ] || fail "a trusted captain message gets eyes once: $(cat "$FAKE_REACTIONS")"
+[ "$(wc -l < "$FAKE_REACTIONS")" -eq 1 ] \
+  || fail "untrusted, bot, and old messages must get no reaction: $(cat "$FAKE_REACTIONS")"
+assert_grep "channel=$CHANNEL" "$FAKE_CURL_ARGV" "the reaction names the captain channel"
+assert_no_grep "$TOKEN" "$FAKE_CURL_ARGV" "the token never reaches a reaction call's argv"
+pass "eyes goes on a trusted captain message at first sight, and on nothing else"
+
+# A restarted poll that sees the same message again does not react again.
+"$ADAPTER" poll "$home" "$CHANNEL" >/dev/null 2>&1 || fail "a repeat poll should succeed"
+[ "$(wc -l < "$FAKE_REACTIONS")" -eq 1 ] || fail "a restarted poll must not react again: $(cat "$FAKE_REACTIONS")"
+pass "a message is reacted to once across poll restarts"
+
+# Every recollection in a debounce hold reacts only to what is new.
+home=$(new_home reacthold)
+printf '%s\n' "$(ok_body '[{"type":"message","user":"'"$CAPTAIN"'","ts":"'"$M1"'","text":"one"}]')" \
+  > "$FAKE_SLACK_RESPONSE.1"
+printf '%s\n' "$(ok_body '[{"type":"message","user":"'"$CAPTAIN"'","ts":"'"$M2"'","text":"two"},
+  {"type":"message","user":"'"$CAPTAIN"'","ts":"'"$M1"'","text":"one"}]')" > "$FAKE_SLACK_RESPONSE.2"
+cp "$FAKE_SLACK_RESPONSE.2" "$FAKE_SLACK_RESPONSE.3"
+cp "$FAKE_SLACK_RESPONSE.2" "$FAKE_SLACK_RESPONSE"
+rm -f "$FAKE_CURL_COUNT"
+: > "$FAKE_REACTIONS"
+out="$TMP_ROOT/reacthold.result"
+FM_SLACK_CAPTAIN_MAX_QUIET_WINDOWS=3 "$ADAPTER" poll "$home" "$CHANNEL" > "$out" 2>/dev/null \
+  || fail "a held poll with reactions should succeed"
+rm -f "$FAKE_SLACK_RESPONSE".[0-9] "$FAKE_CURL_COUNT"
+assert_grep 'count=2' "$out" "the held burst carries both messages"
+[ "$(reactions_of "$M1")" = 'add eyes' ] || fail "the first message is reacted to once: $(cat "$FAKE_REACTIONS")"
+[ "$(reactions_of "$M2")" = 'add eyes' ] || fail "a message arriving in the hold is reacted to once"
+[ "$(wc -l < "$FAKE_REACTIONS")" -eq 2 ] || fail "recollections must not react again: $(cat "$FAKE_REACTIONS")"
+pass "eyes is added once per message across debounce recollections"
+
+# A reply swaps eyes for the check mark on each message the reply answers.
+FM_HOME="$home" "$ADAPTER" handle "$SID" 1 "$out" >/dev/null 2>&1 || true
+: > "$FAKE_REACTIONS"
+posted=$(FM_HOME="$home" FM_SLACK_POST_REACTIONS_SYNC=1 "$POST" "$CHANNEL" 'the answer' 2>/dev/null) \
+  || fail "the reply post should succeed"
+[ "$posted" = 900.000900 ] || fail "the post must still print only its timestamp, got: $posted"
+[ "$(reactions_of "$M1" | sort | tr '\n' ' ')" = 'add white_check_mark remove eyes ' ] \
+  || fail "a reply must swap eyes for the check mark: $(cat "$FAKE_REACTIONS")"
+[ "$(reactions_of "$M2" | sort | tr '\n' ' ')" = 'add white_check_mark remove eyes ' ] \
+  || fail "every message of the burst is marked: $(cat "$FAKE_REACTIONS")"
+: > "$FAKE_REACTIONS"
+FM_HOME="$home" FM_SLACK_POST_REACTIONS_SYNC=1 "$POST" "$CHANNEL" 'another' >/dev/null 2>&1 \
+  || fail "a second post should succeed"
+[ ! -s "$FAKE_REACTIONS" ] || fail "an answered message is not swapped again: $(cat "$FAKE_REACTIONS")"
+pass "a reply swaps eyes for the check mark on every captured message it answers"
+
+# The mirror's relay of the captain's own terminal prompt answers nothing.
+home=$(new_home reactprompt)
+printf 'mirror_prompt_label=Captain (terminal):\n' >> "$home/config/slack-captain"
+slack_response "$(ok_body '[{"type":"message","user":"'"$CAPTAIN"'","ts":"'"$M1"'","text":"from slack"}]')"
+out="$TMP_ROOT/reactprompt.result"
+"$ADAPTER" poll "$home" "$CHANNEL" > "$out" 2>/dev/null || fail "a poll for the prompt case should succeed"
+FM_HOME="$home" "$ADAPTER" handle "$SID" 1 "$out" >/dev/null 2>&1 || true
+: > "$FAKE_REACTIONS"
+FM_HOME="$home" FM_SLACK_POST_REACTIONS_SYNC=1 "$POST" "$CHANNEL" --origin mirror \
+  'Captain (terminal): typed at the desk' >/dev/null 2>&1 || fail "a mirrored prompt should post"
+[ ! -s "$FAKE_REACTIONS" ] || fail "a mirrored prompt must not swap reactions: $(cat "$FAKE_REACTIONS")"
+FM_HOME="$home" FM_SLACK_POST_REACTIONS_SYNC=1 "$POST" "$CHANNEL" --origin mirror 'The answer.' >/dev/null 2>&1 \
+  || fail "a mirrored reply should post"
+[ "$(reactions_of "$M1" | sort | tr '\n' ' ')" = 'add white_check_mark remove eyes ' ] \
+  || fail "the mirror's reply still swaps: $(cat "$FAKE_REACTIONS")"
+pass "a mirrored terminal prompt swaps no reaction, and the mirror's reply does"
+
+# A reply goes only to the messages in the thread it posts into.
+home=$(new_home reactthread)
+ROOT_TS="$NOW.000200"
+REPLY_IN="$NOW.000201"
+FM_HOME="$home" "$ADAPTER" track-thread "$CHANNEL" "$ROOT_TS" >/dev/null
+slack_response "$(ok_body '[{"type":"message","user":"'"$CAPTAIN"'","ts":"'"$M1"'","text":"top"}]')"
+printf '%s\n' "$(ok_body '[{"type":"message","user":"'"$CAPTAIN"'","ts":"'"$REPLY_IN"'","thread_ts":"'"$ROOT_TS"'","text":"in thread"}]')" \
+  > "$FAKE_SLACK_REPLIES"
+: > "$FAKE_REACTIONS"
+"$ADAPTER" poll "$home" "$CHANNEL" >/dev/null 2>&1 || fail "a poll with a thread reply should succeed"
+rm -f "$FAKE_SLACK_REPLIES"
+[ "$(reactions_of "$REPLY_IN")" = 'add eyes' ] || fail "a captain thread reply gets eyes: $(cat "$FAKE_REACTIONS")"
+: > "$FAKE_REACTIONS"
+FM_HOME="$home" FM_SLACK_POST_REACTIONS_SYNC=1 "$POST" "$CHANNEL" --thread "$ROOT_TS" 'in thread' >/dev/null 2>&1 \
+  || fail "the threaded reply should succeed"
+[ -z "$(reactions_of "$M1")" ] || fail "a threaded reply must not mark a top-level message: $(cat "$FAKE_REACTIONS")"
+[ "$(reactions_of "$REPLY_IN" | sort | tr '\n' ' ')" = 'add white_check_mark remove eyes ' ] \
+  || fail "a threaded reply marks the message in its thread: $(cat "$FAKE_REACTIONS")"
+: > "$FAKE_REACTIONS"
+FM_HOME="$home" FM_SLACK_POST_REACTIONS_SYNC=1 "$POST" "$CHANNEL" --thread "$M1" 'on the top' >/dev/null 2>&1 \
+  || fail "a reply threaded on a top-level message should succeed"
+[ "$(reactions_of "$M1" | sort | tr '\n' ' ')" = 'add white_check_mark remove eyes ' ] \
+  || fail "a reply in a message's own thread marks that message: $(cat "$FAKE_REACTIONS")"
+pass "a reply marks only the messages in the thread it answers"
+
+# A Slack reaction error changes neither the capture nor the post.
+home=$(new_home reacterror)
+slack_response "$(ok_body '[{"type":"message","user":"'"$CAPTAIN"'","ts":"'"$M1"'","text":"hi"}]')"
+: > "$FAKE_REACTIONS"
+out="$TMP_ROOT/reacterror.result"
+rc=0
+FAKE_REACTION_EXIT=7 "$ADAPTER" poll "$home" "$CHANNEL" > "$out" 2>"$TMP_ROOT/reacterror.err" || rc=$?
+expect_code 0 "$rc" "a failed reaction does not fail the poll"
+assert_grep 'count=1' "$out" "a failed reaction does not drop the message"
+[ ! -s "$TMP_ROOT/reacterror.err" ] || fail "a failed reaction must be silent: $(cat "$TMP_ROOT/reacterror.err")"
+[ "$(wc -l < "$FAKE_REACTIONS")" -eq 1 ] || fail "the reaction was attempted"
+FM_HOME="$home" "$ADAPTER" handle "$SID" 1 "$out" >/dev/null 2>&1 || true
+rc=0
+posted=$(FM_HOME="$home" FM_SLACK_POST_REACTIONS_SYNC=1 \
+  FAKE_REACTION_RESPONSE='{"ok":false,"error":"no_reaction"}' "$POST" "$CHANNEL" 'reply' 2>"$TMP_ROOT/reacterror.err") || rc=$?
+expect_code 0 "$rc" "a reaction error does not fail the post"
+[ "$posted" = 900.000900 ] || fail "a reaction error must not change the post's output, got: $posted"
+[ ! -s "$TMP_ROOT/reacterror.err" ] || fail "a reaction error must be silent: $(cat "$TMP_ROOT/reacterror.err")"
+[ "$(reactions_of "$M1" | sort | tr '\n' ' ')" = 'add eyes add white_check_mark remove eyes ' ] \
+  || fail "the swap was attempted despite the error: $(cat "$FAKE_REACTIONS")"
+pass "a Slack reaction error affects neither the capture nor the post"
+
+# reactions=off adds and swaps nothing.
+home=$(new_home reactoff)
+printf 'reactions=off\n' >> "$home/config/slack-captain"
+slack_response "$(ok_body '[{"type":"message","user":"'"$CAPTAIN"'","ts":"'"$M1"'","text":"hi"}]')"
+: > "$FAKE_REACTIONS"
+out="$TMP_ROOT/reactoff.result"
+"$ADAPTER" poll "$home" "$CHANNEL" > "$out" 2>/dev/null || fail "a poll with reactions off should succeed"
+assert_grep 'count=1' "$out" "reactions off still captures"
+[ ! -s "$FAKE_REACTIONS" ] || fail "reactions=off must add no eyes: $(cat "$FAKE_REACTIONS")"
+FM_HOME="$home" "$ADAPTER" handle "$SID" 1 "$out" >/dev/null 2>&1 || true
+printf 'reactions=on\n' >> "$home/config/slack-captain"
+"$ADAPTER" poll "$home" "$CHANNEL" >/dev/null 2>&1 || true
+printf 'reactions=off\n' >> "$home/config/slack-captain"
+FM_HOME="$home" FM_SLACK_POST_REACTIONS_SYNC=1 "$POST" "$CHANNEL" 'reply' >/dev/null 2>&1 \
+  || fail "a post with reactions off should succeed"
+[ "$(cat "$FAKE_REACTIONS")" = "add $CHANNEL $M1 eyes" ] \
+  || fail "reactions=off must add and swap nothing: $(cat "$FAKE_REACTIONS")"
+printf 'reactions=maybe\n' >> "$home/config/slack-captain"
+rc=0
+"$ADAPTER" poll "$home" "$CHANNEL" >/dev/null 2>"$TMP_ROOT/reactoff.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "an invalid reactions value must be refused"
+assert_grep 'reactions' "$TMP_ROOT/reactoff.err" "the refusal names reactions"
+pass "reactions=off adds and swaps nothing"

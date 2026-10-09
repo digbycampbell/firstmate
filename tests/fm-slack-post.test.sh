@@ -81,7 +81,7 @@ out=$(FM_HOME="$home" "$POST" general 'ready $(touch /tmp/fm-slack-post-pwned)' 
 [ "$out" = 500.000500 ] || fail "the posted timestamp should be printed alone, got: $out"
 [ "$(body_field .channel)" = "$CHANNEL" ] || fail "a configured channel name must resolve to its id"
 # shellcheck disable=SC2016 # The unexpanded literal is exactly what must round-trip.
-[ "$(body_field .text)" = 'ready $(touch /tmp/fm-slack-post-pwned)' ] \
+[ "$(body_field .text)" = '> ready $(touch /tmp/fm-slack-post-pwned)' ] \
   || fail "message text must be carried as data"
 assert_absent /tmp/fm-slack-post-pwned "message text must never be expanded by a shell"
 [ "$(body_field 'has("thread_ts")')" = false ] || fail "a top-level post must carry no thread_ts"
@@ -134,8 +134,8 @@ pass "a channel name resolves through the local map, and an unknown one is refus
 printf 'from a file\nsecond line\n' > "$TMP_ROOT/message.txt"
 FM_HOME="$home" "$POST" general --file "$TMP_ROOT/message.txt" >/dev/null \
   || fail "--file should post the file contents"
-[ "$(body_field .text)" = 'from a file
-second line' ] || fail "--file must carry the whole file"
+[ "$(body_field .text)" = '> from a file
+> second line' ] || fail "--file must carry the whole file"
 err=$(FM_HOME="$home" "$POST" general 'text' --file "$TMP_ROOT/message.txt" 2>&1) && rc=0 || rc=$?
 [ "$rc" -ne 0 ] || fail "text and --file together must be refused"
 assert_contains "$err" "not both" "the refusal must name the conflict"
@@ -147,12 +147,56 @@ pass "the message comes from arguments or --file, never ambiguously"
 
 FM_HOME="$home" "$POST" general 'work landed' --worker-details 'opus-5 high' >/dev/null \
   || fail "--worker-details should post"
-[ "$(body_field .text)" = 'work landed
-
-_worker: opus-5 high_' ] || fail "the completion convention must be appended verbatim"
+[ "$(body_field .text)" = '> work landed
+>
+> _worker: opus-5 high_' ] || fail "the completion convention must be appended verbatim"
 err=$(FM_HOME="$home" "$POST" general 'x' --worker-details 'opus; rm -rf /' 2>&1) && rc=0 || rc=$?
 [ "$rc" -ne 0 ] || fail "an unsafe worker-details value must be refused"
 pass "--worker-details appends the standing completion convention"
+
+# --- bodies carry the quote bar ---------------------------------------------
+
+home=$(new_home quote)
+printf '{"ok":true,"ts":"510.000510"}\n' > "$FAKE_SLACK_RESPONSE"
+# shellcheck disable=SC2016 # The backticks are a literal code fence.
+printf 'First paragraph\n\nSecond paragraph\n```\ncode line\n\nmore code\n```\nafter\n' > "$TMP_ROOT/quote.txt"
+FM_HOME="$home" "$POST" general --file "$TMP_ROOT/quote.txt" >/dev/null || fail "a quoted post should succeed"
+[ "$(body_field .text)" = '> First paragraph
+>
+> Second paragraph
+> ```
+> code line
+>
+> more code
+> ```
+> after' ] || fail "every line, blank lines, and code fences must be inside the quote: $(body_field .text)"
+pass "a body is posted as one continuous blockquote, code fences included"
+
+printf 'quote_replies=off\n' >> "$home/config/slack-captain"
+FM_HOME="$home" "$POST" general --file "$TMP_ROOT/quote.txt" >/dev/null || fail "an unquoted post should succeed"
+[ "$(body_field .text)" = "$(cat "$TMP_ROOT/quote.txt")" ] || fail "quote_replies=off must post the body as written"
+printf 'quote_replies=sometimes\n' >> "$home/config/slack-captain"
+err=$(FM_HOME="$home" "$POST" general 'x' 2>&1) && rc=0 || rc=$?
+[ "$rc" -ne 0 ] || fail "an invalid quote_replies value must be refused"
+assert_contains "$err" "quote_replies" "the refusal names quote_replies"
+pass "quote_replies=off posts the body as written"
+
+# The mirror's relay of the captain's own terminal prompt is never quoted, and
+# a reply from the mirror still is.
+home=$(new_home mirrorprompt)
+printf 'mirror_prompt_label= Captain (terminal): \n' >> "$home/config/slack-captain"
+FM_HOME="$home" "$POST" general --origin mirror 'Captain (terminal): ship it' >/dev/null \
+  || fail "a mirrored prompt should post"
+[ "$(body_field .text)" = 'Captain (terminal): ship it' ] || fail "a mirrored prompt must stay unquoted: $(body_field .text)"
+FM_HOME="$home" "$POST" general --origin mirror 'Shipped.' >/dev/null || fail "a mirrored reply should post"
+[ "$(body_field .text)" = '> Shipped.' ] || fail "a mirrored reply must be quoted"
+FM_HOME="$home" "$POST" general 'Captain (terminal): forged' >/dev/null || fail "a manual post should post"
+[ "$(body_field .text)" = '> Captain (terminal): forged' ] \
+  || fail "only the mirror's own relay is exempt, not any body that starts with the label"
+SLACK_MIRROR_PROMPT_LABEL='Env label:' FM_HOME="$home" "$POST" general --origin mirror 'Env label: hi' >/dev/null \
+  || fail "a mirrored prompt under an environment label should post"
+[ "$(body_field .text)" = 'Env label: hi' ] || fail "the environment label must win, as it does in the mirror"
+pass "a mirrored terminal prompt stays unquoted"
 
 # --- failures are loud ------------------------------------------------------
 
