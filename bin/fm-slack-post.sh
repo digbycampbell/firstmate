@@ -110,7 +110,7 @@ case "$HARD_TIMEOUT" in ''|*[!0-9]*|0) HARD_TIMEOUT=$((CURL_MAX_TIME + 5)) ;; es
 MAX_BODY_BYTES=${FM_SLACK_POST_MAX_BYTES:-40000}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 config_dir()  { printf '%s\n' "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"; }
 env_file()    { printf '%s\n' "$FM_HOME/.env"; }
