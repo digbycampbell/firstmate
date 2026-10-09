@@ -30,9 +30,13 @@ BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 TMP_ROOT=$(fm_test_tmproot fm-bootstrap-tests)
 export FM_BACKEND_CMUX_BUNDLE_BIN="$TMP_ROOT/no-bundled-cmux"
 export SLACK_MIRROR_HOME="$TMP_ROOT/agent-slack-mirror"
-mkdir -p "$SLACK_MIRROR_HOME"
+mkdir -p "$SLACK_MIRROR_HOME/bin"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$SLACK_MIRROR_HOME/slack-mirror.sh"
-chmod +x "$SLACK_MIRROR_HOME/slack-mirror.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SLACK_MIRROR_HOME/bin/slack-captain.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SLACK_MIRROR_HOME/bin/slack-post.sh"
+chmod +x "$SLACK_MIRROR_HOME/slack-mirror.sh" \
+  "$SLACK_MIRROR_HOME/bin/slack-captain.sh" \
+  "$SLACK_MIRROR_HOME/bin/slack-post.sh"
 
 # Hermetic runtime-backend detection. These cases pin the backend per-home via
 # config/backend; the dev shell's ambient runtime markers ($TMUX inside tmux,
@@ -546,6 +550,25 @@ test_agent_slack_mirror_is_required_with_exact_install_instruction() {
   [ "$out" = "$expected" ] \
     || fail "missing agent-slack-mirror should report its exact install command, got: $out"
   pass "bootstrap requires the external Slack mirror with an exact clone command"
+}
+
+test_agent_slack_mirror_requires_listener_and_poster() {
+  local case_dir fakebin out incomplete expected
+  case_dir="$TMP_ROOT/agent-slack-mirror-incomplete"
+  incomplete="$case_dir/partial"
+  mkdir -p "$case_dir/home/config" "$incomplete"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$incomplete/slack-mirror.sh"
+  chmod +x "$incomplete/slack-mirror.sh"
+  fakebin=$(make_fake_toolchain "$case_dir")
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    SLACK_MIRROR_HOME="$incomplete" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    "$ROOT/bin/fm-bootstrap.sh")
+  expected="MISSING: agent-slack-mirror (install: git clone https://github.com/digbycampbell/agent-slack-mirror.git $incomplete)"
+  [ "$out" = "$expected" ] \
+    || fail "a core without listener and poster should report the same install command, got: $out"
+  pass "bootstrap requires the Slack listener and poster beside the core"
 }
 
 test_orca_backend_gates_orca_tool_only_when_selected() {
@@ -1274,6 +1297,7 @@ test_tasks_axi_min_version
 test_quota_axi_min_version
 test_git_is_required_with_supported_install_instruction
 test_agent_slack_mirror_is_required_with_exact_install_instruction
+test_agent_slack_mirror_requires_listener_and_poster
 test_orca_backend_gates_orca_tool_only_when_selected
 test_session_provider_backends_do_not_require_tmux
 test_session_provider_backends_gate_own_cli_not_tmux

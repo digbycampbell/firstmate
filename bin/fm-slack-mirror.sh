@@ -19,9 +19,9 @@
 # and the state files. This file adds only what is firstmate's, and forwards
 # everything else unchanged:
 #
-#   - it resolves this home's `config/slack-captain`, `state/slack-captain/`, and
-#     bin/fm-slack-post.sh as the tool's environment contract, so the tool itself
-#     never learns firstmate's layout and lifts out of this repo unchanged;
+#   - it resolves this home's `config/slack-captain`, `state/slack-captain/`,
+#     and the installed package poster as the tool's environment contract, so
+#     the tool itself never learns firstmate's layout;
 #   - it applies firstmate's own primary scope, so a crewmate or scout worktree
 #     is inert exactly like the turn-end guard;
 #   - it stands a Claude-shaped payload down when a foreign host delivered it,
@@ -40,7 +40,9 @@
 # INSTALLATION. SLACK_MIRROR_HOME selects the agent-slack-mirror checkout or
 # install directory. It defaults to
 # `${XDG_DATA_HOME:-$HOME/.local/share}/agent-slack-mirror`; fm-bootstrap reports
-# the exact clone command when that directory has no executable core.
+# the exact clone command when that directory has no executable core, listener,
+# or poster. Non-hook commands report the same clone command rather than
+# failing obscurely; `stop` stays silent so a missing package cannot gate a turn.
 #
 # NEVER A GATE. This entry point exits 0 on every path, prints nothing to
 # stdout, and hands delivery to a detached child, so it cannot change the exit
@@ -52,20 +54,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
-CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
-MIRROR_HOME="${SLACK_MIRROR_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/agent-slack-mirror}"
-MIRROR="$MIRROR_HOME/slack-mirror.sh"
 
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
 # shellcheck source=bin/fm-hook-host-lib.sh
 . "$SCRIPT_DIR/fm-hook-host-lib.sh"
+# shellcheck source=bin/fm-slack-package-lib.sh
+. "$SCRIPT_DIR/fm-slack-package-lib.sh"
 
 usage() { sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
-export SLACK_MIRROR_STATE_DIR="$STATE/slack-captain"
-export SLACK_MIRROR_CONFIG_FILE="$CONFIG/slack-captain"
-export SLACK_MIRROR_POST_CMD="$SCRIPT_DIR/fm-slack-post.sh"
+fm_slack_package_export_env
+MIRROR_HOME=$(fm_slack_package_home)
+MIRROR="$MIRROR_HOME/slack-mirror.sh"
 
 cmd_stop() {
   local payload
@@ -83,7 +84,11 @@ cmd_stop() {
 }
 
 forward() {
-  [ -x "$MIRROR" ] || return 0
+  if ! fm_slack_package_ready; then
+    printf 'error: agent-slack-mirror is not installed at %s; install: %s\n' \
+      "$MIRROR_HOME" "$(fm_slack_package_install_cmd)" >&2
+    return 0
+  fi
   "$MIRROR" "$@" || true
   return 0
 }
