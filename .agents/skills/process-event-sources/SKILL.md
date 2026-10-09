@@ -25,7 +25,9 @@ For a Lavish review artifact firstmate owns:
 bin/fm-procevent-lavish.sh arm <artifact.html>
 ```
 
-A configured Slack captain channel is armed and handled through `bin/fm-procevent-slack-captain.sh`, whose header owns its configuration, token handling, thread tracking, debounce, read-position, and attachment rules; its `handle <source-id> <sequence> <result-file>` is the required handling command, because only it advances the channel and per-thread read positions along with the acknowledgement.
+A configured Slack captain channel is armed and handled through `bin/fm-procevent-slack-captain.sh`, firstmate's thin caller over the installed agent-slack-mirror listener.
+The listener header owns configuration, token handling, thread tracking, debounce, read-position, and attachment rules.
+The wrapper's `handle <source-id> <sequence> <result-file>` is the required handling command, because it advances those read positions and then records the acknowledgement.
 Each `attachment:` line it prints names a captured file: open a `saved` image at its local path with the file reader, and read a voice clip's transcript from its message in the result.
 A captured message carrying `thread_ts` is a reply inside that thread, so read it against the topic that thread is about rather than as a fresh request.
 Answer in the terminal and let the mirror carry your reply into Slack rather than hand-posting each turn's reply yourself; the mirror auto-detects the captain message that opened the turn and files your reply into its thread with no manual step, even when captain messages interleave, so you do not normally record anything.

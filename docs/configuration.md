@@ -1850,7 +1850,7 @@ This start-to-start governor is a no-op after a normally blocking poll but caps 
 
 Real feedback, ended and missing sessions, any other `SERVER_ERROR`, and that same interruption still standing once the bound is spent are all captured and announced normally; `FM_LAVISH_POLL_RETRY_DELAY` is a bounded 1 to 60 second test override for the interval only, and the runner itself stays adapter-agnostic.
 An already-armed Lavish source keeps its registered listener command until it is retired and armed again, so retire the source, then arm it again to adopt this retry policy.
-`bin/fm-procevent-slack-captain.sh` is the Slack captain-channel adapter; its configuration keys are below and its header owns everything else.
+`bin/fm-procevent-slack-captain.sh` is the Slack captain-channel adapter; its configuration keys are below, the installed agent-slack-mirror listener header owns Slack behaviour, and the wrapper header owns home mapping, arm, retire, and the handled acknowledgement.
 `bin/fm-procevent-quota-topic.sh` is the live quota channel-topic adapter; its configuration keys are below and its header owns the topic format, the quota sources, and everything else.
 `bin/fm-procevent-github-assigned.sh` is the GitHub assignment and Jev pickup adapter; its configuration keys are below and its header owns the rate-limit design, the two-surface fetch, and everything else.
 
@@ -2241,15 +2241,16 @@ git clone https://github.com/digbycampbell/agent-slack-mirror.git ~/.local/share
 The core tracks `agent-slack-mirror`'s `main` branch: there is no version pin, so CI clones it fresh and unpinned on every run, and a breaking upstream change surfaces as a behavior change in the installed checkout rather than a version mismatch.
 Bootstrap never clones or fast-forwards the core; it only diagnoses a missing installation (see below).
 `SLACK_MIRROR_HOME` selects another checkout or install directory, and `XDG_DATA_HOME` changes the default parent in the usual way.
-Bootstrap reports `MISSING: agent-slack-mirror` with the exact clone command when the resolved directory has no executable `slack-mirror.sh`.
+Bootstrap reports `MISSING: agent-slack-mirror` with the exact clone command when the resolved directory has no executable `slack-mirror.sh`, `bin/slack-captain.sh`, or `bin/slack-post.sh`.
 The installed core's `slack-mirror.sh` header owns the substantive-content and repeat suppression rules, how a deliberate post suppresses the mirror for that turn, how a reply is threaded back into the captain thread it answers, its own state under `state/slack-captain/`, and which primary harnesses it covers.
-`bin/fm-slack-mirror.sh` is firstmate's thin caller over it and owns only the installed-core resolution, this home's paths, primary scope, and the per-harness turn-end registrations.
+`bin/fm-slack-mirror.sh` is firstmate's thin caller over it and owns only the installed-package resolution, this home's paths, primary scope, and the per-harness turn-end registrations.
 Threading is resolved in three layers: an explicit `note-reply-target` firstmate records for the turn, then automatic detection of the captain message that triggered the turn (correlated through the wake that opened it and the per-capture thread the adapter records with `note-trigger`, so no manual step is needed and an interleaved fresh message cannot misroute the reply), then the newest-inbound guess only as a last resort when the trigger cannot be read at all.
 It adds the optional keys `mirror`, `mirror_ack_max_chars`, `mirror_thread_window`, `mirror_turn_window`, `mirror_max_chars`, and `mirror_worker_details` to this same file, each with an `FM_SLACK_MIRROR_*` environment override, and mirrors nothing at all in a home with no `channel=` above.
 Every path through it exits 0 and stays silent, so Slack can never block, delay, or fail a turn in the terminal.
 
-`bin/fm-procevent-slack-captain.sh` and its `--help` own the commands, the thread-tracking and read-position rules, the debounce shape, the reaction rules, and the tuning variables `FM_SLACK_CAPTAIN_MAX_LOOPS`, `FM_SLACK_CAPTAIN_INTERVAL`, `FM_SLACK_CAPTAIN_MAX_TIME`, `FM_SLACK_CAPTAIN_PAGE_LIMIT`, `FM_SLACK_CAPTAIN_MAX_PAGES`, `FM_SLACK_CAPTAIN_QUIET_WINDOW`, `FM_SLACK_CAPTAIN_MAX_QUIET_WINDOWS`, `FM_SLACK_CAPTAIN_MAX_THREADS`, `FM_SLACK_CAPTAIN_THREAD_MAX_AGE`, `FM_SLACK_CAPTAIN_FILES_HOST`, `FM_SLACK_CAPTAIN_FILE_MAX_BYTES`, `FM_SLACK_CAPTAIN_FILE_MAX_TIME`, `FM_SLACK_CAPTAIN_MAX_FILES`, `FM_SLACK_CAPTAIN_FILE_MAX_AGE`, `FM_SLACK_CAPTAIN_REACTION_MAX_TIME`, and `FM_SLACK_CAPTAIN_REACTION_MAX_AGE`.
-`bin/fm-slack-post.sh` and its `--help` own the quote-bar shape and how the relayed terminal prompt is recognised.
+`bin/fm-procevent-slack-captain.sh` and its `--help` own the firstmate command names, arm, retire, and the handled acknowledgement.
+The installed agent-slack-mirror `bin/slack-captain.sh` header owns the thread-tracking and read-position rules, the debounce shape, the reaction rules, and the tuning variables `FM_SLACK_CAPTAIN_MAX_LOOPS`, `FM_SLACK_CAPTAIN_INTERVAL`, `FM_SLACK_CAPTAIN_MAX_TIME`, `FM_SLACK_CAPTAIN_PAGE_LIMIT`, `FM_SLACK_CAPTAIN_MAX_PAGES`, `FM_SLACK_CAPTAIN_QUIET_WINDOW`, `FM_SLACK_CAPTAIN_MAX_QUIET_WINDOWS`, `FM_SLACK_CAPTAIN_MAX_THREADS`, `FM_SLACK_CAPTAIN_THREAD_MAX_AGE`, `FM_SLACK_CAPTAIN_FILES_HOST`, `FM_SLACK_CAPTAIN_FILE_MAX_BYTES`, `FM_SLACK_CAPTAIN_FILE_MAX_TIME`, `FM_SLACK_CAPTAIN_MAX_FILES`, `FM_SLACK_CAPTAIN_FILE_MAX_AGE`, `FM_SLACK_CAPTAIN_REACTION_MAX_TIME`, and `FM_SLACK_CAPTAIN_REACTION_MAX_AGE`.
+`bin/fm-slack-post.sh` is the firstmate command name; the installed `bin/slack-post.sh` header owns the quote-bar shape and how the relayed terminal prompt is recognised.
 
 ## Slack channel names (config/slack-channels)
 

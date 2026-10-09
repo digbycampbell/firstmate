@@ -173,7 +173,8 @@ PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
-SLACK_MIRROR_HOME_RESOLVED="${SLACK_MIRROR_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/agent-slack-mirror}"
+# shellcheck source=bin/fm-slack-package-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-slack-package-lib.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-backlog-transition-lib.sh disable=SC1091
@@ -827,11 +828,6 @@ missing_tool_diagnostic() {
   echo "MISSING: $tool (install: $(install_cmd "$tool"))"
 }
 
-slack_mirror_install_cmd() {
-  printf 'git clone https://github.com/digbycampbell/agent-slack-mirror.git %q\n' \
-    "$SLACK_MIRROR_HOME_RESOLVED"
-}
-
 # Required-tool detection follows the RESOLVED backend, not a one-size default:
 # a universal toolchain every home needs plus the backend-specific delta owned by
 # fm_backend_required_tools (bin/fm-backend.sh). So a herdr/zellij/cmux home is
@@ -1420,8 +1416,8 @@ detect_local_tools() {
   for t in $COMMON_TOOLS; do
     command -v "$t" >/dev/null || missing_tool_diagnostic "$t"
   done
-  if [ ! -x "$SLACK_MIRROR_HOME_RESOLVED/slack-mirror.sh" ]; then
-    echo "MISSING: agent-slack-mirror (install: $(slack_mirror_install_cmd))"
+  if ! fm_slack_package_ready; then
+    echo "MISSING: agent-slack-mirror (install: $(fm_slack_package_install_cmd))"
   fi
   # The treehouse lease-support upgrade check is only relevant when the resolved
   # backend actually requires treehouse (every backend except orca, which owns its

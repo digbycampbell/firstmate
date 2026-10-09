@@ -17,8 +17,23 @@ TMP_ROOT=$(fm_test_tmproot fm-slack-mirror)
 trap fm_test_cleanup EXIT
 export TMPDIR="$TMP_ROOT/tmp"
 mkdir -p "$TMPDIR"
+
+missing="$TMP_ROOT/missing package"
+err=$(SLACK_MIRROR_HOME="$missing" "$MIRROR" adapters 2>&1) && rc=0 || rc=$?
+expect_code 0 "$rc" "a missing package must not fail adapters"
+assert_contains "$err" "agent-slack-mirror is not installed at $missing" \
+  "adapters must name the missing checkout"
+assert_contains "$err" "git clone https://github.com/digbycampbell/agent-slack-mirror.git" \
+  "adapters must name the clone command"
+out=$(printf '{}' | SLACK_MIRROR_HOME="$missing" "$MIRROR" stop 2>&1) && rc=0 || rc=$?
+expect_code 0 "$rc" "stop must stay a non-gate when the package is missing"
+[ -z "$out" ] || fail "stop reported a missing package into the turn: $out"
+pass "a missing package is reported on adapters and silent on stop"
+
 export SLACK_MIRROR_HOME="${SLACK_MIRROR_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/agent-slack-mirror}"
-if [ ! -x "$SLACK_MIRROR_HOME/slack-mirror.sh" ]; then
+if [ ! -x "$SLACK_MIRROR_HOME/slack-mirror.sh" ] \
+  || [ ! -x "$SLACK_MIRROR_HOME/bin/slack-captain.sh" ] \
+  || [ ! -x "$SLACK_MIRROR_HOME/bin/slack-post.sh" ]; then
   if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
     fail "agent-slack-mirror is not installed at $SLACK_MIRROR_HOME; install: git clone https://github.com/digbycampbell/agent-slack-mirror.git $SLACK_MIRROR_HOME"
   fi
