@@ -61,6 +61,30 @@ cat > "$FAKEBIN/curl" <<'SH'
 set -u
 printf '%s\n' "$*" >> "$FAKE_CURL_ARGV"
 cat >> "$FAKE_CURL_STDIN"
+# A private file fetch from the stub file host serves FAKE_FILES/<last path
+# segment> and prints the `-w` status line a real curl would: a .vtt as
+# text/vtt, anything else as FAKE_FILE_TYPE. FAKE_FILE_FAIL makes it a
+# transport failure.
+case "$*" in
+  *https://files.example.test/*)
+    out=
+    prev=
+    for arg in "$@"; do
+      [ "$prev" = -o ] && out=$arg
+      prev=$arg
+    done
+    url=$prev
+    name=${url##*/}
+    [ -z "${FAKE_FILE_FAIL-}" ] || exit 7
+    [ -n "$out" ] && [ -f "$FAKE_FILES/$name" ] || exit 22
+    cat "$FAKE_FILES/$name" > "$out"
+    case "$name" in
+      *.vtt) printf '200 text/vtt' ;;
+      *) printf '200 %s' "${FAKE_FILE_TYPE:-image/png}" ;;
+    esac
+    exit 0
+    ;;
+esac
 # Each endpoint counts its own calls, so a canned history sequence stays
 # call-for-call predictable no matter how many thread reads happen beside it.
 case "$*" in
@@ -91,6 +115,12 @@ export FAKE_SLACK_RESPONSE="$TMP_ROOT/slack.json"
 export FAKE_CURL_COUNT="$TMP_ROOT/curl.count"
 export FAKE_REPLIES_COUNT="$TMP_ROOT/replies.count"
 export FAKE_SLACK_REPLIES="$TMP_ROOT/slack-replies.json"
+export FAKE_FILES="$TMP_ROOT/files"
+mkdir -p "$FAKE_FILES"
+export FM_SLACK_CAPTAIN_FILES_HOST=https://files.example.test/
+# Canned message timestamps are tiny epochs, so stored attachments would age
+# out at once; the bound is exercised deliberately in its own case below.
+export FM_SLACK_CAPTAIN_FILE_MAX_AGE=99999999999
 : > "$FAKE_CURL_ARGV"
 : > "$FAKE_CURL_STDIN"
 
@@ -733,3 +763,191 @@ FM_SLACK_CAPTAIN_THREAD_MAX_AGE=60 "$ADAPTER" poll "$home" "$CHANNEL" >/dev/null
 assert_grep 'conversations.replies' "$FAKE_CURL_ARGV" \
   "a thread rooted long ago but replied to just now must still be polled"
 pass "thread retention is keyed on last activity, not the root's age"
+
+# --- attachments: images are fetched, clips carry their transcript ----------
+# The canned files[] objects follow the shape conversations.history returns:
+# an image carries url_private_download; a voice clip carries Slack's
+# transcription object and, when its preview is cut short, a WebVTT track.
+
+FILE_HOST=https://files.example.test
+printf 'PNGDATA\n' > "$FAKE_FILES/shot.png"
+printf 'WEBVTT\n\n1\n00:00:00.000 --> 00:00:02.000\nhello there\n\n2\n00:00:02.000 --> 00:00:04.000\nthe whole clip\n' \
+  > "$FAKE_FILES/long.vtt"
+attachments_body() {
+  ok_body '[
+  {"type":"message","user":"'"$CAPTAIN"'","ts":"900.000900","text":"look at this","files":[
+    {"id":"F0IMAGE1","name":"../../../../escape me.png","title":"shot","mimetype":"image/png",
+     "filetype":"png","size":8,"mode":"hosted","media_display_type":"unknown",
+     "url_private":"'"$FILE_HOST"'/files-pri/T1-F0IMAGE1/shot.png",
+     "url_private_download":"'"$FILE_HOST"'/files-pri/T1-F0IMAGE1/download/shot.png"},
+    {"id":"../F0EVIL","name":"evil.png","mimetype":"image/png","filetype":"png","size":8,
+     "url_private_download":"'"$FILE_HOST"'/files-pri/T1-EVIL/download/shot.png"},
+    {"id":"F0ELSEWHERE","name":"far.png","mimetype":"image/png","filetype":"png","size":8,
+     "url_private_download":"https://attacker.example.test/steal/shot.png"}
+  ]},
+  {"type":"message","user":"'"$CAPTAIN"'","ts":"901.000901","text":"","files":[
+    {"id":"F0AUDIO1","name":"audio_message.webm","mimetype":"audio/webm","filetype":"webm",
+     "subtype":"slack_audio","media_display_type":"audio","size":5000,
+     "url_private_download":"'"$FILE_HOST"'/files-pri/T1-F0AUDIO1/download/clip.webm",
+     "transcription":{"status":"complete","locale":"en-US",
+       "preview":{"content":"short voice note","has_more":false}}},
+    {"id":"F0AUDIO2","name":"audio_message.webm","mimetype":"audio/webm","filetype":"webm",
+     "subtype":"slack_audio","media_display_type":"audio","size":9000,
+     "vtt":"'"$FILE_HOST"'/files-tmb/T1-F0AUDIO2/long.vtt",
+     "transcription":{"status":"complete","locale":"en-US",
+       "preview":{"content":"hello","has_more":true}}},
+    {"id":"F0AUDIO3","name":"audio_message.webm","mimetype":"audio/webm","filetype":"webm",
+     "subtype":"slack_audio","media_display_type":"audio","size":9000,
+     "transcription":{"status":"processing"}},
+    {"id":"F0VIDEO1","name":"clip.mp4","mimetype":"video/mp4","filetype":"mp4",
+     "subtype":"slack_video","media_display_type":"video","size":90000,
+     "url_private_download":"'"$FILE_HOST"'/files-pri/T1-F0VIDEO1/download/clip.mp4"}
+  ]}
+]'
+}
+
+home=$(new_home attachments)
+: > "$FAKE_CURL_ARGV"
+slack_response "$(attachments_body)"
+out="$TMP_ROOT/attachments.result"
+"$ADAPTER" poll "$home" "$CHANNEL" > "$out" 2>"$TMP_ROOT/attachments.err" \
+  || fail "a poll that sees attachments should succeed: $(cat "$TMP_ROOT/attachments.err")"
+store="$home/state/slack-captain/files/$CHANNEL"
+image="$store/900.000900/F0IMAGE1.png"
+msg() { LC_ALL=C awk 'body { print } $0 == "" { body = 1 }' "$out" | jq -c --arg ts "$1" 'select(.ts == $ts)'; }
+file_of() { msg "$1" | jq -c --arg id "$2" '.files[] | select(.id == $id)'; }
+
+assert_grep 'count=2' "$out" "both messages are captured, including one with no text"
+[ "$(file_of 900.000900 F0IMAGE1 | jq -c '{id, name, mimetype, size, kind}')" \
+  = '{"id":"F0IMAGE1","name":"../../../../escape me.png","mimetype":"image/png","size":8,"kind":"image"}' ] \
+  || fail "the image's identity is not projected: $(file_of 900.000900 F0IMAGE1)"
+pass "each attached file keeps its id, name, mimetype, size, and kind"
+
+[ "$(cat "$image" 2>/dev/null)" = PNGDATA ] || fail "the image bytes were not stored under its id"
+[ "$(file_of 900.000900 F0IMAGE1 | jq -r '.download + " " + .path')" = "saved $image" ] \
+  || fail "the stored path is not recorded next to the file entry"
+[ "$(file_mode "$image")" = 600 ] || fail "a stored image must be private"
+[ "$(file_mode "$store/900.000900")" = 700 ] || fail "the per-message directory must be private"
+[ "$(file_mode "$home/state/slack-captain/files")" = 700 ] || fail "the attachment store must be private"
+assert_grep "file=900.000900 F0IMAGE1 image saved $image" "$out" \
+  "the stored image is named in the result header"
+assert_grep "Authorization: Bearer $TOKEN" "$FAKE_CURL_STDIN" "the file fetch carries the token on stdin"
+assert_no_grep "$TOKEN" "$FAKE_CURL_ARGV" "the token never reaches a file fetch's argv"
+pass "an image is downloaded into the private store and its path recorded"
+
+[ -z "$(find "$TMP_ROOT" -name 'escape me.png' 2>/dev/null)" ] \
+  || fail "a file name chose a path on disk"
+[ -z "$(find "$home" -path '*F0EVIL*' 2>/dev/null)" ] || fail "an invalid file id chose a path on disk"
+[ "$(file_of 900.000900 ../F0EVIL | jq -r '.download + " " + .download_error')" = 'failed invalid-id' ] \
+  || fail "an invalid file id must be recorded as a failure, not fetched"
+[ "$(file_of 900.000900 F0ELSEWHERE | jq -r '.download + " " + .download_error')" = 'failed untrusted-url' ] \
+  || fail "a file URL off Slack's file host must not be fetched"
+assert_no_grep 'attacker.example.test' "$FAKE_CURL_ARGV" "the token is never sent to another host"
+assert_grep 'file=900.000900 invalid image failed invalid-id' "$out" \
+  "an invalid id never reaches the header verbatim"
+pass "file names and ids never pick a path, and the token goes only to Slack's file host"
+
+[ "$(file_of 901.000901 F0AUDIO1 | jq -c '{kind, transcript, transcript_truncated, download}')" \
+  = '{"kind":"audio","transcript":"short voice note","transcript_truncated":false,"download":"skipped"}' ] \
+  || fail "a voice clip's transcript is not carried: $(file_of 901.000901 F0AUDIO1)"
+[ "$(file_of 901.000901 F0AUDIO2 | jq -c '{transcript, transcript_truncated}')" \
+  = '{"transcript":"hello there the whole clip","transcript_truncated":false}' ] \
+  || fail "a truncated preview is not completed from the clip's WebVTT track: $(file_of 901.000901 F0AUDIO2)"
+[ "$(file_of 901.000901 F0AUDIO3 | jq -c '{transcript, transcript_status}')" \
+  = '{"transcript":null,"transcript_status":"processing"}' ] \
+  || fail "a clip with no finished transcript must say so"
+[ "$(file_of 901.000901 F0VIDEO1 | jq -c '{kind, download}')" = '{"kind":"video","download":"skipped"}' ] \
+  || fail "a video clip is identified but not fetched"
+assert_no_grep 'clip.webm\|clip.mp4' "$FAKE_CURL_ARGV" "clip bytes are never downloaded"
+assert_grep 'file=901.000901 F0AUDIO1 audio skipped transcript-in-message' "$out" \
+  "the header points at a clip's transcript"
+assert_grep 'file=901.000901 F0AUDIO3 audio skipped no-transcript' "$out" \
+  "the header says when a clip has no transcript"
+assert_no_grep '"_url"\|"_vtt"\|"_ext"' "$out" "internal fetch fields never reach the result"
+pass "a voice clip carries Slack's transcript; video is identified only"
+
+handled=$(FM_HOME="$home" "$ADAPTER" autohandle "$SID" 1 "$out" 2>&1) || true
+assert_grep "attachment: 900.000900 F0IMAGE1 image saved $image" <(printf '%s\n' "$handled") \
+  "handling a result lists the stored image"
+pass "applying a result surfaces each attachment"
+
+# --- a failed download never loses the message -------------------------------
+
+home=$(new_home attachfail)
+slack_response "$(attachments_body)"
+out="$TMP_ROOT/attachfail.result"
+FAKE_FILE_FAIL=1 "$ADAPTER" poll "$home" "$CHANNEL" > "$out" 2>/dev/null \
+  || fail "a failed file fetch must not fail the capture"
+assert_grep 'count=2' "$out" "both messages survive a failed file fetch"
+assert_grep '"text":"look at this"' "$out" "the text survives a failed file fetch"
+[ "$(file_of 900.000900 F0IMAGE1 | jq -r '.download + " " + .download_error')" = 'failed fetch-failed' ] \
+  || fail "the failure is recorded next to the file entry"
+[ "$(file_of 901.000901 F0AUDIO2 | jq -c '{transcript, transcript_truncated}')" \
+  = '{"transcript":"hello","transcript_truncated":true}' ] \
+  || fail "a failed WebVTT fetch must keep Slack's preview"
+assert_grep 'file=900.000900 F0IMAGE1 image failed fetch-failed' "$out" "the header records the failure"
+[ -z "$(find "$home/state/slack-captain/files" -type f 2>/dev/null)" ] \
+  || fail "a failed fetch must leave no partial file"
+pass "a failed download still captures the message and records the failure"
+
+home=$(new_home attachhtml)
+slack_response "$(attachments_body)"
+out="$TMP_ROOT/attachhtml.result"
+FAKE_FILE_TYPE='text/html; charset=utf-8' "$ADAPTER" poll "$home" "$CHANNEL" > "$out" 2>/dev/null \
+  || fail "an HTML file response must not fail the capture"
+[ "$(file_of 900.000900 F0IMAGE1 | jq -r '.download_error')" = bad-response ] \
+  || fail "Slack's HTML sign-in page must not be stored as the image"
+pass "an HTML sign-in page is refused as a download"
+
+home=$(new_home attachbig)
+slack_response "$(attachments_body)"
+out="$TMP_ROOT/attachbig.result"
+: > "$FAKE_CURL_ARGV"
+FM_SLACK_CAPTAIN_FILE_MAX_BYTES=4 "$ADAPTER" poll "$home" "$CHANNEL" > "$out" 2>/dev/null \
+  || fail "an oversized file must not fail the capture"
+[ "$(file_of 900.000900 F0IMAGE1 | jq -r '.download + " " + .download_error')" = 'skipped too-large' ] \
+  || fail "a file over the size cap must be skipped"
+assert_no_grep 'T1-F0IMAGE1' "$FAKE_CURL_ARGV" "an oversized file is never requested"
+pass "a file over the size cap is skipped"
+
+# --- stored attachments expire ----------------------------------------------
+
+home=$(new_home attachprune)
+slack_response "$(attachments_body)"
+out="$TMP_ROOT/attachprune.result"
+"$ADAPTER" poll "$home" "$CHANNEL" > "$out" 2>/dev/null || fail "poll for the expiry case should succeed"
+store="$home/state/slack-captain/files/$CHANNEL"
+[ -d "$store/900.000900" ] || fail "the expiry case needs a stored attachment"
+FM_HOME="$home" "$ADAPTER" autohandle "$SID" 1 "$out" >/dev/null 2>&1 || true
+[ -d "$store/900.000900" ] || fail "a stored attachment inside the age bound must be kept"
+FM_HOME="$home" FM_SLACK_CAPTAIN_FILE_MAX_AGE=60 "$ADAPTER" autohandle "$SID" 1 "$out" >/dev/null 2>&1 || true
+[ ! -e "$store/900.000900" ] || fail "a stored attachment past the age bound must be removed"
+pass "stored attachments are removed once past their age bound"
+
+# --- poll_interval is configurable, the environment still wins ---------------
+
+SLEEPBIN="$TMP_ROOT/sleepbin"
+mkdir -p "$SLEEPBIN"
+cat > "$SLEEPBIN/sleep" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_SLEEP_LOG"
+SH
+chmod +x "$SLEEPBIN/sleep"
+export FAKE_SLEEP_LOG="$TMP_ROOT/sleep.log"
+home=$(new_home pollinterval)
+printf 'poll_interval=7\n' >> "$home/config/slack-captain"
+slack_response "$(ok_body '[]')"
+: > "$FAKE_SLEEP_LOG"
+(unset FM_SLACK_CAPTAIN_INTERVAL; PATH="$SLEEPBIN:$PATH" FM_SLACK_CAPTAIN_MAX_LOOPS=2 \
+  "$ADAPTER" poll "$home" "$CHANNEL" >/dev/null 2>&1) || true
+[ "$(cat "$FAKE_SLEEP_LOG")" = 7 ] || fail "poll_interval must set the listening interval: $(cat "$FAKE_SLEEP_LOG")"
+: > "$FAKE_SLEEP_LOG"
+(PATH="$SLEEPBIN:$PATH" FM_SLACK_CAPTAIN_INTERVAL=3 FM_SLACK_CAPTAIN_MAX_LOOPS=2 \
+  "$ADAPTER" poll "$home" "$CHANNEL" >/dev/null 2>&1) || true
+[ "$(cat "$FAKE_SLEEP_LOG")" = 3 ] || fail "the environment override must win over poll_interval"
+printf 'poll_interval=soon\n' >> "$home/config/slack-captain"
+rc=0
+(unset FM_SLACK_CAPTAIN_INTERVAL; "$ADAPTER" poll "$home" "$CHANNEL" >/dev/null 2>"$TMP_ROOT/interval.err") || rc=$?
+[ "$rc" -ne 0 ] || fail "an invalid poll_interval must be refused"
+assert_grep 'poll_interval' "$TMP_ROOT/interval.err" "the refusal names poll_interval"
+pass "poll_interval sets the listening interval and the environment still overrides it"

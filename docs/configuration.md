@@ -2221,11 +2221,13 @@ The file is one `key=value` per line, and every id is validated as uppercase alp
 - `allowed_user=<user id>` is optional and names the captain's Slack user; every other author is marked untrusted in the captured result, and an absent key marks every author untrusted because trust is granted only by configuration.
 - `peer_bots=<id>[,<id>...]` is optional and lists other bots (for example a second agent sharing the channel) whose posts are captured despite their `bot_id`; each is validated like the other ids, marked `peer_bot` and always untrusted, so it is input to read and never authority, and it never becomes the reply target unless it is the only captured message. Firstmate's own `bot_user` and every unlisted bot stay excluded.
 - `quiet_window=<seconds>` is optional and sets the debounce hold, default 90: new traffic is held open until a quiet window adds nothing, so a burst of captain messages becomes one capture rather than one wake each.
+- `poll_interval=<seconds>` is optional and sets how often the listener checks the channel while it is quiet, default 20; `FM_SLACK_CAPTAIN_INTERVAL` overrides it.
 
 An absent or invalid file is a refusal at arming time, not a default.
 The bot token is separate configuration and never lives here: it is `SLACK_BOT_TOKEN` in the home's gitignored `.env`, read inside the poll child and passed to curl on stdin so it never reaches argv, a registration record, a captured result, or a diagnostic.
 This configuration is local to each Firstmate home and is not part of secondmate inherited configuration.
 Channel history alone cannot see a reply written inside a thread, so the adapter also reads `conversations.replies` for the threads it tracks, keeping a per-thread read position under `state/slack-captain/threads/` that advances by the same capture-first rule as the channel position.
+A captured message keeps its attached files: each image is downloaded with the bot token, which needs the `files:read` scope, into a private store under `state/slack-captain/files/` and named by a `file=` line in the result header, and a voice clip carries the transcript Slack attaches to it; the adapter header owns the captured message shape, the size and age bounds, and what is never fetched.
 Firstmate's own final captain-facing message of each turn is mirrored into the same channel automatically, so Slack carries the whole conversation rather than the subset firstmate remembered to post by hand.
 The mirror core is the external [`agent-slack-mirror`](https://github.com/digbycampbell/agent-slack-mirror) checkout.
 Install it at the default location with:
@@ -2244,7 +2246,7 @@ Threading is resolved in three layers: an explicit `note-reply-target` firstmate
 It adds the optional keys `mirror`, `mirror_ack_max_chars`, `mirror_thread_window`, `mirror_turn_window`, `mirror_max_chars`, and `mirror_worker_details` to this same file, each with an `FM_SLACK_MIRROR_*` environment override, and mirrors nothing at all in a home with no `channel=` above.
 Every path through it exits 0 and stays silent, so Slack can never block, delay, or fail a turn in the terminal.
 
-`bin/fm-procevent-slack-captain.sh` and its `--help` own the commands, the thread-tracking and read-position rules, the debounce shape, and the tuning variables `FM_SLACK_CAPTAIN_MAX_LOOPS`, `FM_SLACK_CAPTAIN_INTERVAL`, `FM_SLACK_CAPTAIN_MAX_TIME`, `FM_SLACK_CAPTAIN_PAGE_LIMIT`, `FM_SLACK_CAPTAIN_MAX_PAGES`, `FM_SLACK_CAPTAIN_QUIET_WINDOW`, `FM_SLACK_CAPTAIN_MAX_QUIET_WINDOWS`, `FM_SLACK_CAPTAIN_MAX_THREADS`, and `FM_SLACK_CAPTAIN_THREAD_MAX_AGE`.
+`bin/fm-procevent-slack-captain.sh` and its `--help` own the commands, the thread-tracking and read-position rules, the debounce shape, and the tuning variables `FM_SLACK_CAPTAIN_MAX_LOOPS`, `FM_SLACK_CAPTAIN_INTERVAL`, `FM_SLACK_CAPTAIN_MAX_TIME`, `FM_SLACK_CAPTAIN_PAGE_LIMIT`, `FM_SLACK_CAPTAIN_MAX_PAGES`, `FM_SLACK_CAPTAIN_QUIET_WINDOW`, `FM_SLACK_CAPTAIN_MAX_QUIET_WINDOWS`, `FM_SLACK_CAPTAIN_MAX_THREADS`, `FM_SLACK_CAPTAIN_THREAD_MAX_AGE`, `FM_SLACK_CAPTAIN_FILES_HOST`, `FM_SLACK_CAPTAIN_FILE_MAX_BYTES`, `FM_SLACK_CAPTAIN_FILE_MAX_TIME`, `FM_SLACK_CAPTAIN_MAX_FILES`, and `FM_SLACK_CAPTAIN_FILE_MAX_AGE`.
 
 ## Slack channel names (config/slack-channels)
 
