@@ -72,6 +72,7 @@ A `--secondmate` launch omits the statement because a secondmate operates under 
 This differs from the worker hook, which only touches a task marker through `.claude/settings.local.json`.
 
 Primary `.claude/settings.json` registers `../../../bin/fm-turnend-guard.sh --claude` and `../../../bin/fm-claude-stop-autoarm.sh` with `asyncRewake: true` and `timeout: 28800`.
+It also registers the Slack mirror `../../../bin/fm-slack-mirror.sh stop`, which calls the separately installed `agent-slack-mirror` core and stays outside this guard; `../../../docs/turnend-guard.md` owns it.
 Guard exit 2 plus stderr forces continuation.
 Stop payload `stop_hook_active=true` follows any hook-driven continuation, including async reawakening, so Claude mode ignores it and uses cooperative claim and epoch plus bounded re-block; default Codex mode keeps it as a one-block loop guard.
 

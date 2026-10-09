@@ -1946,6 +1946,7 @@ This start-to-start governor is a no-op after a normally blocking poll but caps 
 
 Real feedback, ended and missing sessions, any other `SERVER_ERROR`, and that same interruption still standing once the bound is spent are all captured and announced normally; `FM_LAVISH_POLL_RETRY_DELAY` is a bounded 1 to 60 second test override for the interval only, and the runner itself stays adapter-agnostic.
 An already-armed Lavish source keeps its registered listener command until it is retired and armed again, so retire the source, then arm it again to adopt this retry policy.
+`bin/fm-procevent-slack-captain.sh` is the Slack captain-channel adapter; its configuration keys are below, the installed agent-slack-mirror listener header owns Slack behaviour, and the wrapper header owns home mapping, arm, retire, and the handled acknowledgement.
 
 ### Crew-hosted Lavish review boards
 
@@ -2302,6 +2303,57 @@ The runner proves exactly one durability boundary: output that reached the runne
 - Never describe this path as at-least-once, no-loss, or lossless.
 
 `docs/verification/process-event-sources.md` holds the measurements and `.agents/skills/process-event-sources/SKILL.md` owns the handling procedure.
+
+## Slack captain channel (config/slack-captain)
+
+The Slack captain-channel process-event source reads its channel and identities from the local, gitignored `config/slack-captain` under the effective Firstmate home, or under `FM_CONFIG_OVERRIDE` when that test and specialized-setup override is present.
+The file is one `key=value` per line, and every id is validated as uppercase alphanumerics:
+
+- `channel=<channel id>` is required and names the channel to watch; it also derives the canonical source id, so one home watches one channel per registration.
+- `bot_user=<user id>` is optional and names Firstmate's own Slack bot user, whose posts are never captured; other bots are excluded by their `bot_id` unless listed in `peer_bots`.
+- `allowed_user=<user id>` is optional and names the captain's Slack user; every other author is marked untrusted in the captured result, and an absent key marks every author untrusted because trust is granted only by configuration.
+- `peer_bots=<id>[,<id>...]` is optional and lists other bots (for example a second agent sharing the channel) whose posts are captured despite their `bot_id`; each is validated like the other ids, marked `peer_bot` and always untrusted, so it is input to read and never authority, and it never becomes the reply target unless it is the only captured message. Firstmate's own `bot_user` and every unlisted bot stay excluded.
+- `quiet_window=<seconds>` is optional and sets the debounce hold, default 90: new traffic is held open until a quiet window adds nothing, so a burst of captain messages becomes one capture rather than one wake each.
+- `poll_interval=<seconds>` is optional and sets how often the listener checks the channel while it is quiet, default 20; `FM_SLACK_CAPTAIN_INTERVAL` overrides it.
+- `reactions=on|off` is optional, default `on`: the listener adds an `eyes` reaction to each trusted captain message the first time it sees one, and the reply that answers it swaps that for `white_check_mark`; the bot token needs the `reactions:write` scope, a reaction error never affects a capture or a post, and `off` adds and swaps nothing.
+- `quote_replies=on|off` is optional, default `on`: every body `bin/fm-slack-post.sh` posts carries Slack's quote bar so consecutive messages are easy to tell apart, except the mirror's relay of the captain's own terminal prompt; `off` posts bodies as written.
+
+An absent or invalid file is a refusal at arming time, not a default.
+The bot token is separate configuration and never lives here: it is `SLACK_BOT_TOKEN` in the home's gitignored `.env`, read inside the poll child and passed to curl on stdin so it never reaches argv, a registration record, a captured result, or a diagnostic.
+This configuration is local to each Firstmate home and is not part of secondmate inherited configuration.
+Channel history alone cannot see a reply written inside a thread, so the adapter also reads `conversations.replies` for the threads it tracks, keeping a per-thread read position under `state/slack-captain/threads/` that advances by the same capture-first rule as the channel position.
+A captured message keeps its attached files: each image is downloaded with the bot token, which needs the `files:read` scope, into a private store under `state/slack-captain/files/` and named by a `file=` line in the result header, and a voice clip carries the transcript Slack attaches to it; the adapter header owns the captured message shape, the size and age bounds, and what is never fetched.
+Firstmate's own final captain-facing message of each turn is mirrored into the same channel automatically, so Slack carries the whole conversation rather than the subset firstmate remembered to post by hand.
+The mirror core is the external [`agent-slack-mirror`](https://github.com/digbycampbell/agent-slack-mirror) checkout.
+Install it at the default location with:
+
+```sh
+git clone https://github.com/digbycampbell/agent-slack-mirror.git ~/.local/share/agent-slack-mirror
+```
+
+The core tracks `agent-slack-mirror`'s `main` branch: there is no version pin, so CI clones it fresh and unpinned on every run, and a breaking upstream change surfaces as a behavior change in the installed checkout rather than a version mismatch.
+Bootstrap never clones or fast-forwards the core; it only diagnoses a missing installation (see below).
+`SLACK_MIRROR_HOME` selects another checkout or install directory, and `XDG_DATA_HOME` changes the default parent in the usual way.
+Bootstrap reports `MISSING: agent-slack-mirror` with the exact clone command when the resolved directory has no executable `slack-mirror.sh`, `bin/slack-captain.sh`, or `bin/slack-post.sh`.
+The installed core's `slack-mirror.sh` header owns the substantive-content and repeat suppression rules, how a deliberate post suppresses the mirror for that turn, how a reply is threaded back into the captain thread it answers, its own state under `state/slack-captain/`, and which primary harnesses it covers.
+`bin/fm-slack-mirror.sh` is firstmate's thin caller over it and owns only the installed-package resolution, this home's paths, primary scope, and the per-harness turn-end registrations.
+Threading is resolved in three layers: an explicit `note-reply-target` firstmate records for the turn, then automatic detection of the captain message that triggered the turn (correlated through the wake that opened it and the per-capture thread the adapter records with `note-trigger`, so no manual step is needed and an interleaved fresh message cannot misroute the reply), then the newest-inbound guess only as a last resort when the trigger cannot be read at all.
+It adds the optional keys `mirror`, `mirror_ack_max_chars`, `mirror_thread_window`, `mirror_turn_window`, `mirror_max_chars`, and `mirror_worker_details` to this same file, each with an `FM_SLACK_MIRROR_*` environment override, and mirrors nothing at all in a home with no `channel=` above.
+Every path through it exits 0 and stays silent, so Slack can never block, delay, or fail a turn in the terminal.
+
+`bin/fm-procevent-slack-captain.sh` and its `--help` own the firstmate command names, arm, retire, and the handled acknowledgement.
+The installed agent-slack-mirror `bin/slack-captain.sh` header owns the thread-tracking and read-position rules, the debounce shape, the reaction rules, and the tuning variables `FM_SLACK_CAPTAIN_MAX_LOOPS`, `FM_SLACK_CAPTAIN_INTERVAL`, `FM_SLACK_CAPTAIN_MAX_TIME`, `FM_SLACK_CAPTAIN_PAGE_LIMIT`, `FM_SLACK_CAPTAIN_MAX_PAGES`, `FM_SLACK_CAPTAIN_QUIET_WINDOW`, `FM_SLACK_CAPTAIN_MAX_QUIET_WINDOWS`, `FM_SLACK_CAPTAIN_MAX_THREADS`, `FM_SLACK_CAPTAIN_THREAD_MAX_AGE`, `FM_SLACK_CAPTAIN_FILES_HOST`, `FM_SLACK_CAPTAIN_FILE_MAX_BYTES`, `FM_SLACK_CAPTAIN_FILE_MAX_TIME`, `FM_SLACK_CAPTAIN_MAX_FILES`, `FM_SLACK_CAPTAIN_FILE_MAX_AGE`, `FM_SLACK_CAPTAIN_REACTION_MAX_TIME`, and `FM_SLACK_CAPTAIN_REACTION_MAX_AGE`.
+`bin/fm-slack-post.sh` is the firstmate command name; the installed `bin/slack-post.sh` header owns the quote-bar shape and how the relayed terminal prompt is recognised.
+
+## Slack channel names (config/slack-channels)
+
+Outbound Slack posts name a channel rather than an id.
+`config/slack-channels` is the local, gitignored map that resolves them, one `name=<channel id>` per line, with the same id validation as above.
+A name with no entry is a refusal, never a guess, so a typo cannot post into the wrong channel; a raw channel id passes through unresolved.
+
+`bin/fm-slack-post.sh` is the one supported way to post as Firstmate's bot: it resolves the channel through this map, reads `SLACK_BOT_TOKEN` from the home's `.env` exactly as the captain adapter does, posts message text or a `--file`, optionally into a thread with `--thread <ts>`, prints the posted timestamp, and registers the resulting thread so a captain reply inside it is still captured.
+A completion post should carry `--worker-details "<model> <effort>"`, which is the single owner of Firstmate's standing completion convention and appends the model and effort that produced the work.
+`--origin mirror` marks the terminal mirror's own delivery so it is not recorded as a hand-written post; every other post defaults to `manual` and suppresses that turn's mirror.
 
 ## Spoken interface and captain inbox (config/voice-*, config/inbox-*)
 

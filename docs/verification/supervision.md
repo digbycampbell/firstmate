@@ -506,6 +506,80 @@ The timeout hook trapped `TERM`, backgrounded `sleep 300`, waited, and on `TERM`
 | Control, exit 2 before the timeout | started +2, exited 2 at +12 | `Stop hook feedback` followed by the requested reply |
 | Timeout, exit 2 from the `TERM` handler | started +2, `TERM` and exit 2 at +32 | no `Stop hook feedback` and no reply, still idle at +111 |
 
+## Slack mirror turn-end adapters
+
+The mirror's per-harness input is a vendor-emitted Stop payload, so the shape below was read out of a real hook's own stdin rather than assumed, and the end-to-end result was produced by a real agent turn.
+
+Verified 2026-08-25 on `grok 1.0.5 (5115b46bc9) [stable]`.
+The Grok Stop payload, dumped by a project `Stop` hook that wrote its stdin to a file in a scratch trusted checkout:
+
+```json
+{
+  "hookEventName": "stop",
+  "sessionId": "01a03913-6874-7fb2-8f94-34581e7c0542",
+  "cwd": "/tmp/grokstop2.wCq2HP",
+  "workspaceRoot": "/tmp/grokstop2.wCq2HP/",
+  "timestamp": "2026-08-25T13:19:31.141061028+00:00",
+  "transcriptPath": "/home/digby/.grok/sessions/%2Ftmp%2Fgrokstop2.wCq2HP/01a03913-6874-7fb2-8f94-34581e7c0542/updates.jsonl",
+  "promptId": "2110aa12-286a-4884-9954-197520b5dba8",
+  "permissionMode": "bypassPermissions",
+  "reason": "end_turn",
+  "stopHookActive": false,
+  "lastAssistantMessage": "hello two",
+  "backgroundTasks": [],
+  "sessionCrons": []
+}
+```
+
+One prompt fired the hook twice: the `end_turn` payload above, then a second payload with `reason` `shutdown` carrying neither `promptId` nor `lastAssistantMessage`.
+`transcriptPath` names the session's `updates.jsonl`, a JSON-RPC session-update log whose `user_message_chunk` entries carry `_meta.promptIndex` and whose `agent_message_chunk` entries carry `_meta.promptId` and `_meta.turnStartMs`.
+That is what the installed `agent-slack-mirror/adapters/grok.sh` reads, and it is the reason the Grok reply is bound to the finished turn's own prompt rather than to whatever text the log ends with.
+
+Codex was inspected on the same date and is a recorded gap rather than a registration: `codex-cli 0.149.0` embeds a `stop.command.input` JSON schema requiring `hook_event_name`, `last_assistant_message`, `transcript_path`, `model`, `session_id`, `stop_hook_active`, and `turn_id`, so the payload does carry the finished turn's final message, but its project hooks refuse to load without a per-hook `trusted_hash` entry in `~/.codex/config.toml`, which needs an interactive approval, so no live turn could be produced here.
+
+The live guard below runs the tracked registration against the installed harness in an isolated clone with Slack replaced by a fake `curl`, and it refuses to pass when the harness is absent.
+It is the command that refreshes this record after a harness upgrade.
+
+```sh
+FM_SLACK_MIRROR_LIVE_E2E=1 tests/fm-slack-mirror-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - grok (grok 1.0.5 (5115b46bc9) [stable]) fired the tracked Stop registration once, mirrored the turn's own reply, and threaded it by the wake that opened the turn
+```
+
+The single post that turn produced, as the fake Slack transport recorded it, threaded into the capture the turn answered:
+
+```json
+{
+  "text": "Captain, the mirror is live: https://example.invalid/pr/99\ncheck: procevent slack-captain-C0TESTCHAN 77",
+  "thread_ts": "300.000300",
+  "channel": "C0TESTCHAN"
+}
+```
+
+Rechecked 2026-10-05 on `grok 1.0.46 (2765805b9442)`: the guard is red.
+`-p` mode still dispatches the project `Stop` hook twice per prompt, once with `reason` `end_turn` and `lastAssistantMessage`, then once with `reason` `shutdown`.
+The payload now also carries Claude-compatible keys alongside the camel-case ones:
+
+```json
+{"hookEventName":"stop","reason":"end_turn","hook_event_name":"Stop","session_id":"…","transcript_path":"…/updates.jsonl","permission_mode":"bypassPermissions"}
+```
+
+The installed core tries `adapters/claude.sh` first, its `claims` predicate accepts any `hook_event_name` of `Stop`, and its `extract` finds no Claude transcript text, so the turn is dropped as having nothing to mirror.
+The fix belongs in agent-slack-mirror's adapter selection, not in this repository's registration.
+The guard now runs through the runner:
+
+```sh
+FM_SLACK_MIRROR_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-slack-mirror-live-e2e.test.sh
+```
+
+```text
+not ok - grok grok 1.0.46 (2765805b9442): expected exactly one mirrored post from one turn, saw 0
+```
+
 ## Watcher continuity
 
 The cross-harness evidence combines the 2026-07-17 live pass with Claude's replacement Stop-owned path revalidated on 2026-09-21, all against isolated project and home state.

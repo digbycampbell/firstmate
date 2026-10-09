@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc '[ -n \"${GROK_WORKSPACE_ROOT:-}\" ] || exit 0; exec \"${GROK_WORKSPACE_ROOT:-}/bin/fm-slack-mirror.sh\" stop'",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

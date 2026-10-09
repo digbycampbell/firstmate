@@ -117,6 +117,11 @@ jobs:
           set -eu
           npm install -g @earendil-works/pi-coding-agent
           npm ls -g --depth 0 @earendil-works/pi-coding-agent
+      - name: Install agent-slack-mirror
+        run: |
+          set -eu
+          git clone https://github.com/digbycampbell/agent-slack-mirror.git \
+            "${XDG_DATA_HOME:-$HOME/.local/share}/agent-slack-mirror"
       - name: Run portable parallel shard 1
         run: |
           set -eu
@@ -156,6 +161,11 @@ jobs:
           set -eu
           npm install -g tasks-axi
           tasks-axi --version
+      - name: Install agent-slack-mirror
+        run: |
+          set -eu
+          git clone https://github.com/digbycampbell/agent-slack-mirror.git \
+            "${XDG_DATA_HOME:-$HOME/.local/share}/agent-slack-mirror"
       - name: Run portable parallel shard 2
         run: |
           set -eu
@@ -221,6 +231,11 @@ jobs:
           set -eu
           npm install -g @earendil-works/pi-coding-agent
           npm ls -g --depth 0 @earendil-works/pi-coding-agent
+      - name: Install agent-slack-mirror
+        run: |
+          set -eu
+          git clone https://github.com/digbycampbell/agent-slack-mirror.git \
+            "${XDG_DATA_HOME:-$HOME/.local/share}/agent-slack-mirror"
       - name: Run portable serial shard ${{ matrix.shard }}
         env:
           # job-total rather than a literal, so shrinking or growing the matrix
@@ -328,6 +343,11 @@ jobs:
           echo "::error::default Herdr server did not become ready"
           cat "$RUNNER_TEMP/fm-herdr/default-server.log" || true
           exit 1
+      - name: Install agent-slack-mirror
+        run: |
+          set -eu
+          git clone https://github.com/digbycampbell/agent-slack-mirror.git \
+            "${XDG_DATA_HOME:-$HOME/.local/share}/agent-slack-mirror"
       - name: Snapshot pre-suite Herdr sessions
         run: |
           set -eu

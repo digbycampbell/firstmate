@@ -61,6 +61,7 @@ Full detail on every feature lives in [docs/architecture.md](docs/architecture.m
 - A verified primary agent harness: Claude Code, Grok, Pi, `pi-signed`, Oh My Pi (`omp`), Codex, OpenCode, or Cursor Agent CLI.
 - Git and the GitHub CLI, authenticated through `gh auth login`.
 - The CLI and dependencies for your selected runtime backend; tmux is the reference default.
+- The external [agent-slack-mirror](https://github.com/digbycampbell/agent-slack-mirror) core; [Slack captain-channel setup](docs/configuration.md#slack-captain-channel-configslack-captain) owns the install command and location override.
 
 The first mate detects and offers to install supported missing tools after you approve.
 Backend-specific setup is linked in [Documentation](#documentation).
