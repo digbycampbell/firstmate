@@ -80,7 +80,11 @@ run_lifecycle() {
   printf ' finished\ndone: ready in branch\n' >> "$HOME_DIR/state/$TASK.status"
   printf 'landed\n' > "$WT_DIR/landed.txt"
   git -C "$WT_DIR" add landed.txt
-  git -C "$WT_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+  # The spawn above armed bin/fm-git-identity.sh's commit guard on this
+  # worktree, so the commit must carry an identity it allows.
+  git -C "$WT_DIR" \
+    -c "user.name=$("$ROOT/bin/fm-git-identity.sh" allowlist | awk -F '\t' 'NR == 1 { print $1 }')" \
+    -c "user.email=$("$ROOT/bin/fm-git-identity.sh" allowlist | awk -F '\t' 'NR == 1 { print $2 }')" \
     commit -qm 'landed'
   out=$(in_home "$ROOT/bin/fm-merge-local.sh" "$TASK" 2>&1) || fail "local merge failed: $out"
   out=$(in_home "$ROOT/bin/fm-teardown.sh" "$TASK" 2>&1) || fail "teardown failed: $out"

@@ -502,7 +502,10 @@ test_chained_raw_launch_strips_ai_trailer_in_every_step() {
   (
     cd "$WT_DIR" || exit 1
     unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
-    fm_git_identity 'Captain Tests' 'captain@example.invalid'
+    # The spawn armed bin/fm-git-identity.sh's commit guard on this worktree,
+    # so the commit carries the crew identity it allows.
+    fm_git_identity "$("$ROOT/bin/fm-git-identity.sh" allowlist | awk -F '\t' 'NR == 1 { print $1 }')" \
+      "$("$ROOT/bin/fm-git-identity.sh" allowlist | awk -F '\t' 'NR == 1 { print $2 }')"
     bash -c "$launch"
   ) || fail "executing the chained raw launch failed"$'\n'"launch: $launch"
   body=$(git -C "$WT_DIR" log -1 --format=%B)

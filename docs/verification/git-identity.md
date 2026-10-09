@@ -1,0 +1,152 @@
+# Git identity verification
+
+Audience: maintainer verification.
+
+This record supports the current guarantee that a firstmate-managed commit carries a firstmate identity, and that arming a task worktree cannot relabel the captain's own commits in the same clone.
+`bin/fm-git-identity.sh`'s header owns the commands and the mechanism; `bin/fm-git-identity-lib.sh` owns the identities and the allowlist.
+`tests/fm-git-identity.test.sh` is the portable regression that keeps these properties enforced.
+
+## Identities
+
+| Role | Identity |
+| --- | --- |
+| Crewmates and scouts, per task worktree | `Crewmate <crew@digio.nz>` |
+| Firstmate's own direct commits | `Firstmate <firstmate@digio.nz>` |
+
+Neither address belongs to a GitHub account, which is deliberate: an unlinked address renders as a plain name rather than attributing agent work to a person.
+Verified against a pre-existing example on 2026-08-21: `digio-nz/digio-os` commit `a253621`, authored `crewmate@digio.nz`, returns `author: null` from the GitHub commits API.
+
+The captain's own `digbycampbell <96467498+digbycampbell@users.noreply.github.com>` is deliberately absent from the allowlist.
+It stays configured globally for his own terminal work; it is simply not an identity firstmate's tooling may create a commit with.
+
+## Per-worktree configuration applies in a pooled linked worktree
+
+Checked 2026-08-21 with git 2.53.0 on Linux 6.18.33.2 (WSL2).
+
+Firstmate's pooled task worktrees are linked worktrees: the worktree's `.git` is a file pointing at `<clone>/.git/worktrees/<name>`, so a plain `git config user.email` there writes the clone's shared config.
+Observed in a live treehouse pool worktree of this repo:
+
+```console
+$ cat .git
+gitdir: /home/digby/devs/firstmate/.git/worktrees/firstmate5
+$ git rev-parse --git-dir --git-common-dir
+/home/digby/devs/firstmate/.git/worktrees/firstmate5
+/home/digby/devs/firstmate/.git
+```
+
+Git's worktree-config extension is per-worktree for `user.*`, `author.*`, `committer.*` and `core.hooksPath` alike, so all can be set without touching the shared config:
+
+```console
+$ git config extensions.worktreeConfig true
+$ git config --worktree user.email crew@digio.nz
+$ git commit --allow-empty -m x
+$ git log -1 --format='%an <%ae>'
+Crew <crew@digio.nz>
+$ git -C ../parent log -1 --format='%an <%ae>'      # after its own commit
+Parent <parent@example.com>
+$ git -C ../parent config --local user.email
+parent@example.com
+$ git config --worktree core.hooksPath /tmp/wtx/hooks   # hook fires in the worktree only
+```
+
+`extensions.worktreeConfig` itself is the one key that lands in shared config.
+It enables the mechanism and carries no identity.
+Git treats `core.bare` and `core.worktree` as always-worktree-specific once the extension is on, so `apply-worktree` refuses a clone that carries either in shared config rather than migrating someone else's configuration.
+
+## A global `author.*` outranks a worktree's `user.*`
+
+Checked 2026-10-06 with git 2.53.0 on Linux 6.18.40.1 (WSL2).
+
+Git ranks `author.*` and `committer.*` above `user.*` at every config level, so a global include that sets them (as path-routed dotfiles identity files do) decides the commit even in a worktree whose `user.*` is armed.
+`apply-worktree` therefore arms all three scopes at the worktree level, which outranks global, and the guard resolves the identity with `git var`, which applies git's own precedence.
+With a global include setting `author.*` and `committer.*` to `Digby <digby@example.invalid>`:
+
+```console
+$ git -C /tmp/idt/wt1 config --worktree user.email crew@digio.nz   # user.* only
+$ git -C /tmp/idt/wt1 var GIT_AUTHOR_IDENT
+Digby <digby@example.invalid>
+$ bin/fm-git-identity.sh verify-worktree /tmp/idt/wt1
+fm-git-identity: this worktree has no per-worktree author.email; the machine's own identity routing could decide its commits. ...
+$ bin/fm-git-identity.sh apply-worktree /tmp/idt/wt1 --hooks-dir /tmp/idt/hooks
+fm-git-identity: /tmp/idt/wt1 is armed as Crewmate <crew@digio.nz>, guard at /tmp/idt/hooks
+$ git -C /tmp/idt/wt1 log -1 --format='%an <%ae> | %cn <%ce>'
+Crewmate <crew@digio.nz> | Crewmate <crew@digio.nz>
+```
+
+## Arming inside a worker pane chains the repository's own hooks
+
+Checked 2026-10-09 with git 2.53.0 on Linux 6.18.40.1 (WSL2).
+
+`bin/fm-spawn.sh` exports `core.hooksPath` through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0` into every worker pane, naming that task's AI-trailer strip hooks.
+Those wrappers dispatch to the worktree's own hooks, which are the identity guard once the worktree is armed.
+`apply-worktree` therefore reads the repository's hooks path with the `GIT_CONFIG_*` environment dropped, and never chains a fleet hooks directory: its own guard (marker file) or a strip directory (its `commit-msg` runs `fm-git-strip-ai-trailers.sh`).
+Before that rule, arming under the pane override chained the strip hooks and the first commit looped until killed:
+
+```console
+$ bin/fm-git-strip-ai-trailers.sh install /tmp/l/strip /tmp/l/wt
+$ env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/l/strip \
+    bin/fm-git-identity.sh apply-worktree /tmp/l/wt --hooks-dir /tmp/l/hooks
+$ env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/l/strip \
+    timeout 10 git -C /tmp/l/wt commit -qm x; echo rc=$?
+rc=124      # before the rule
+rc=0        # after; the commit is authored Crewmate <crew@digio.nz>
+```
+
+## End-to-end exercise
+
+Run 2026-08-21 against a scratch clone configured exactly like the machine that produced the incident: the captain's identity in the clone, one linked worktree, and a repo that already sets `core.hooksPath=.githooks`.
+
+```console
+$ bin/fm-git-identity.sh apply-worktree /tmp/idt/wt1 --hooks-dir /tmp/idt/hooks-task1
+fm-git-identity: /tmp/idt/wt1 is armed as Crewmate <crew@digio.nz>, guard at /tmp/idt/hooks-task1
+$ git -C /tmp/idt/wt1 commit -m 'crew commit'
+REPO-PRE-COMMIT RAN
+$ git -C /tmp/idt/wt1 log -1 --format='%an <%ae> | %cn <%ce>'
+Crewmate <crew@digio.nz> | Crewmate <crew@digio.nz>
+$ git -C /tmp/idt/parent log -1 --format='%an <%ae>'
+digbycampbell <96467498+digbycampbell@users.noreply.github.com>
+```
+
+The parent clone's `[user]` block was byte-identical before and after; the only added shared key was `extensions.worktreeConfig = true`.
+The repo's own `pre-commit` still ran and its `pre-push` was carried into the generated hooks directory, so taking over `hooksPath` adds the identity guard without disarming an existing one.
+
+Refusal, with the worktree identity removed to reproduce the incident state:
+
+```console
+$ git -C /tmp/idt/wt1 commit -m 'should be refused'
+refusing: this commit's author would be digbycampbell <96467498+digbycampbell@users.noreply.github.com>
+refusing: this commit's committer would be digbycampbell <96467498+digbycampbell@users.noreply.github.com>
+Only firstmate identities may author a firstmate-managed commit:
+  Crewmate <crew@digio.nz>   (crewmates and scouts, set per task worktree)
+  Firstmate <firstmate@digio.nz>   (firstmate itself, via bin/fm-git-identity.sh commit)
+...
+$ echo $?
+1
+```
+
+Missing prerequisite, with the guard executable made unreachable:
+
+```console
+$ git -C /tmp/idt/wt1 commit -m 'guard gone'
+refusing this commit: firstmate's identity guard (/tmp/idt/definitely-not-here.sh) is missing or not executable.
+The guard cannot verify who this commit would be authored as, so it refuses rather than passes.
+$ echo $?
+1
+```
+
+Firstmate's own direct commit in the same clone:
+
+```console
+$ bin/fm-git-identity.sh commit -m 'firstmate direct'
+$ git log -1 --format='%an <%ae> | %cn <%ce>'
+Firstmate <firstmate@digio.nz> | Firstmate <firstmate@digio.nz>
+$ git config --local user.email
+96467498+digbycampbell@users.noreply.github.com
+```
+
+## Layering against the dotfiles pre-push guard
+
+`digio-nz/.dotfiles` ships a shared `githooks/pre-push` secret guard, installed per repo and opt-in.
+It is complementary, not a duplicate: it runs at push time on repository content, while this guard runs at commit time on commit metadata.
+Push time is specifically the wrong place for the identity check, because the incident's commits existed for hours before anyone pushed them and the rejection only arrived after a validation run had been spent.
+The generated hooks directory chains every hook the repo already had, so a repo that has opted into the dotfiles guard keeps it while a firstmate task worktree is armed.

@@ -95,6 +95,10 @@ SH
   ln -s "$ROOT/bin/fm-pending-reply-lib.sh" "$fake/bin/fm-pending-reply-lib.sh"
   ln -s "$ROOT/bin/fm-marker-lib.sh" "$fake/bin/fm-marker-lib.sh"
   ln -s "$ROOT/bin/fm-operational-input.sh" "$fake/bin/fm-operational-input.sh"
+  # fm-git-identity.sh: teardown calls disarm-worktree on it for every non-secondmate
+  # kind (passing the worktree only when it owns the slot); symlink the real script so
+  # the call succeeds.
+  ln -s "$ROOT/bin/fm-git-identity.sh" "$fake/bin/fm-git-identity.sh"
   # Ordinary teardown reports any final ledger outcome before removing records.
   ln -s "$ROOT/bin/fm-inactive-reconcile.sh" "$fake/bin/fm-inactive-reconcile.sh"
   ln -s "$ROOT/bin/fm-parent-channel-lib.sh" "$fake/bin/fm-parent-channel-lib.sh"
@@ -198,6 +202,10 @@ SH
   ln -s "$ROOT/bin/fm-pending-reply-lib.sh" "$fake/bin/fm-pending-reply-lib.sh"
   ln -s "$ROOT/bin/fm-marker-lib.sh" "$fake/bin/fm-marker-lib.sh"
   ln -s "$ROOT/bin/fm-operational-input.sh" "$fake/bin/fm-operational-input.sh"
+  # fm-git-identity.sh: teardown calls disarm-worktree on it for every non-secondmate
+  # kind (passing the worktree only when it owns the slot); symlink the real script so
+  # the call succeeds.
+  ln -s "$ROOT/bin/fm-git-identity.sh" "$fake/bin/fm-git-identity.sh"
   ln -s "$ROOT/bin/fm-inactive-reconcile.sh" "$fake/bin/fm-inactive-reconcile.sh"
   ln -s "$ROOT/bin/fm-parent-channel-lib.sh" "$fake/bin/fm-parent-channel-lib.sh"
   cat > "$fake/bin/fm-guard.sh" <<'SH'
