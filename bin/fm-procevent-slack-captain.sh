@@ -9,6 +9,7 @@
 #   fm-procevent-slack-captain.sh classify <result-file>
 #   fm-procevent-slack-captain.sh terminal <result-file>
 #   fm-procevent-slack-captain.sh track-thread <channel> <thread-ts>
+#   fm-procevent-slack-captain.sh mark-replied <channel> <thread-ts|none>
 #   fm-procevent-slack-captain.sh source-id
 #   fm-procevent-slack-captain.sh retire
 #
@@ -42,6 +43,8 @@
 #   quiet_window=<seconds>      optional, the debounce hold below (default 90)
 #   poll_interval=<seconds>     optional, how often a quiet channel is checked
 #                               (default 20); FM_SLACK_CAPTAIN_INTERVAL overrides
+#   reactions=on|off            optional, the seen and replied reactions below
+#                               (default on)
 # Ids are validated as uppercase alphanumerics. An absent `allowed_user` marks
 # every message untrusted, because trust is granted only by configuration.
 #
@@ -106,6 +109,26 @@
 # the thread view; the keyed record is what lets the mirror route by the wake that
 # opened the reply turn rather than by whichever capture was newest. That helper
 # owns both records and their expiry; nothing here changes because of them.
+#
+# REACTIONS. So the captain can see a message was received before the reply
+# exists, the poll adds an `eyes` reaction to each trusted captain message the
+# first time it sees one, before the debounce hold. A message is reacted to once:
+# a marker under state/slack-captain/reactions/<channel>/ is claimed first, so a
+# recollection or a restarted poll never reacts again, and a message older than
+# FM_SLACK_CAPTAIN_REACTION_MAX_AGE (default 3600 seconds) is never reacted to,
+# so a first poll of a long history stays silent. Untrusted, peer-bot, and other
+# bot messages are never reacted to. When firstmate's reply posts,
+# bin/fm-slack-post.sh calls `mark-replied` with the thread the post went into
+# (`none` for the top level), and every seen message that reply answers swaps
+# `eyes` for `white_check_mark`: a message in that thread, the message that
+# thread is rooted at, or, for a top-level post, a top-level message. The thread
+# is the one the capture recorded, which is the same thread the mirror routes the
+# reply into. Every reaction call is best-effort and bounded by
+# FM_SLACK_CAPTAIN_REACTION_MAX_TIME (default 5 seconds): no Slack error, such as
+# already_reacted, no_reaction, ratelimited, or missing_scope (the bot token
+# needs `reactions:write`), can fail or hold up a capture or a post. Markers are
+# removed on the acknowledgement path once their message is older than the
+# tracked-thread age. `reactions=off` adds and swaps nothing.
 #
 # CAPTURED MESSAGE SHAPE. After the header and its blank line, each captured
 # message is one JSON object: {ts, user, trusted, text}, plus `peer_bot` and
@@ -174,6 +197,8 @@ FILE_MAX_TIME=${FM_SLACK_CAPTAIN_FILE_MAX_TIME:-60}
 MAX_FILES=${FM_SLACK_CAPTAIN_MAX_FILES:-20}
 FILE_MAX_AGE=${FM_SLACK_CAPTAIN_FILE_MAX_AGE:-1209600}
 TRANSCRIPT_MAX_BYTES=1048576
+REACTION_MAX_TIME=${FM_SLACK_CAPTAIN_REACTION_MAX_TIME:-5}
+REACTION_MAX_AGE=${FM_SLACK_CAPTAIN_REACTION_MAX_AGE:-3600}
 SCHEMA=fm-slack-captain.v1
 CURSOR_SCHEMA=fm-slack-captain-cursor.v1
 THREAD_SCHEMA=fm-slack-captain-thread-cursor.v1
@@ -196,6 +221,7 @@ cursor_path() { printf '%s/%s.cursor\n' "$(cursor_dir)" "$1"; }
 thread_dir()  { printf '%s/threads/%s\n' "$(cursor_dir)" "$1"; }
 thread_path() { printf '%s/%s.cursor\n' "$(thread_dir "$1")" "$2"; }
 files_dir()   { printf '%s/files/%s\n' "$(cursor_dir)" "$1"; }
+reactions_dir() { printf '%s/reactions/%s\n' "$(cursor_dir)" "$1"; }
 
 require_tools() {
   command -v curl >/dev/null 2>&1 || die "curl is not installed"
@@ -220,7 +246,8 @@ config_get() {  # <key>
 }
 
 # Sets CFG_CHANNEL, CFG_BOT_USER, CFG_ALLOWED_USER, CFG_PEER_BOTS (comma list,
-# validated, never containing the bot_user or allowed_user), QUIET_WINDOW.
+# validated, never containing the bot_user or allowed_user), CFG_REACTIONS (on
+# or off), QUIET_WINDOW, INTERVAL.
 load_config() {
   CFG_CHANNEL=$(config_get channel)
   CFG_BOT_USER=$(config_get bot_user)
@@ -241,6 +268,12 @@ load_config() {
     || die "config/slack-captain has an invalid bot_user id"
   [ -z "$CFG_ALLOWED_USER" ] || valid_slack_id "$CFG_ALLOWED_USER" \
     || die "config/slack-captain has an invalid allowed_user id"
+  CFG_REACTIONS=$(config_get reactions)
+  case "$CFG_REACTIONS" in
+    ''|on) CFG_REACTIONS=on ;;
+    off) ;;
+    *) die "config/slack-captain has an invalid reactions value; use on or off" ;;
+  esac
   # The environment override exists for tests and specialized setups; the
   # configured value is the captain-facing knob and the default is the floor.
   QUIET_WINDOW=${FM_SLACK_CAPTAIN_QUIET_WINDOW-}
@@ -867,6 +900,99 @@ prune_files() {  # <channel>
   return 0
 }
 
+# --- reactions ------------------------------------------------------------------
+
+# One best-effort reactions.add or reactions.remove call. The token reaches curl
+# on stdin; the message identity is not secret and travels as form data. The
+# response is never read, so no Slack error can change what the caller does.
+reaction_call() {  # <method> <channel> <message-ts> <name>
+  printf 'header = "Authorization: Bearer %s"\n' "$token" \
+    | curl -sS --config - --max-time "$REACTION_MAX_TIME" -o /dev/null \
+        "$SLACK_API/$1" --data-urlencode "channel=$2" \
+        --data-urlencode "timestamp=$3" --data-urlencode "name=$4" >/dev/null 2>&1 || true
+}
+
+# Add `eyes` to every trusted captain message in <payload> that has never been
+# reacted to. The marker is claimed with an exclusive create before the call, so
+# a message is reacted to at most once however many times a poll sees it. The
+# marker records the message's thread, which is what `mark-replied` matches.
+react_seen() {  # <channel> <payload>
+  local channel=$1 dir cutoff ts thread
+  [ "$CFG_REACTIONS" = on ] || return 0
+  dir=$(reactions_dir "$channel")
+  cutoff=$(( $(date +%s) - REACTION_MAX_AGE ))
+  while IFS=' ' read -r ts thread; do
+    valid_ts "$ts" || continue
+    [ "${ts%%.*}" -ge "$cutoff" ] || continue
+    [ -z "$thread" ] || valid_ts "$thread" || thread=
+    if ! private_dir "$(cursor_dir)" || ! private_dir "$(cursor_dir)/reactions" \
+      || ! private_dir "$dir"; then
+      return 0
+    fi
+    [ ! -e "$dir/$ts.done" ] && [ ! -L "$dir/$ts.done" ] || continue
+    (set -C; umask 077; printf 'thread=%s\n' "$thread" > "$dir/$ts.eyes") 2>/dev/null || continue
+    reaction_call reactions.add "$channel" "$ts" eyes
+  done < <(jq -r 'select(.trusted == true and (.peer_bot | not))
+      | "\(.ts) \(.thread_ts // "")"' "$2" 2>/dev/null)
+  return 0
+}
+
+# Swap `eyes` for `white_check_mark` on every seen message a reply posted into
+# <thread-ts> (or the top level, for `none`) answers. Each marker is claimed by
+# renaming it, so two posts racing never swap the same message twice. Never
+# fails: a reply that already posted must not be reported as failing.
+cmd_mark_replied() {  # <channel> <thread-ts|none>
+  local channel=${1-} target=${2-} dir marker ts thread token=
+  valid_slack_id "$channel" || die "invalid channel id"
+  case "$target" in
+    none) target= ;;
+    *) valid_ts "$target" || die "invalid thread timestamp" ;;
+  esac
+  load_config
+  [ "$channel" = "$CFG_CHANNEL" ] && [ "$CFG_REACTIONS" = on ] || return 0
+  dir=$(reactions_dir "$channel")
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 0
+  for marker in "$dir"/*.eyes; do
+    [ -f "$marker" ] && [ ! -L "$marker" ] || continue
+    ts=${marker##*/}
+    ts=${ts%.eyes}
+    valid_ts "$ts" || continue
+    thread=$(sed -n 's/^thread=//p' "$marker" | head -n1)
+    if [ -n "$target" ]; then
+      [ "$thread" = "$target" ] || [ "$ts" = "$target" ] || continue
+    else
+      [ -z "$thread" ] || continue
+    fi
+    if [ -z "$token" ]; then
+      token=$(read_token 2>/dev/null) || return 0
+    fi
+    mv -- "$marker" "$dir/$ts.done" 2>/dev/null || continue
+    reaction_call reactions.remove "$channel" "$ts" eyes
+    reaction_call reactions.add "$channel" "$ts" white_check_mark
+  done
+  return 0
+}
+
+# Drop reaction markers whose message is older than the tracked-thread age (or
+# the reaction age, if that is longer), on the acknowledgement path only, like
+# prune_threads. A message that old is never reacted to again.
+prune_reactions() {  # <channel>
+  local dir cutoff age entry ts
+  dir=$(reactions_dir "$1")
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 0
+  age=$THREAD_MAX_AGE
+  [ "$REACTION_MAX_AGE" -le "$age" ] || age=$REACTION_MAX_AGE
+  cutoff=$(( $(date +%s) - age ))
+  for entry in "$dir"/*.eyes "$dir"/*.done; do
+    [ -f "$entry" ] || continue
+    ts=${entry##*/}
+    ts=${ts%.*}
+    valid_ts "$ts" || continue
+    [ "${ts%%.*}" -lt "$cutoff" ] && rm -f -- "$entry"
+  done
+  return 0
+}
+
 cmd_poll() {
   local home=${1-} channel=${2-} resp raw traw payload threadlines token i=0
   local count untrusted held prev held_to_ts
@@ -899,6 +1025,7 @@ cmd_poll() {
       return 0
     fi
     if [ -s "$payload" ]; then
+      react_seen "$channel" "$payload"
       # Debounce: hold the burst open until a quiet window adds nothing, or the
       # bounded number of holds is spent. Every recollection reads from the same
       # unmoved cursor, so the held span is a superset, never a replacement.
@@ -920,6 +1047,7 @@ cmd_poll() {
           CHANNEL_TO_TS=$held_to_ts
           break
         fi
+        react_seen "$channel" "$payload"
         count=$(jq -s 'length' "$payload")
         [ "$count" -gt "$prev" ] || break
         prev=$count
@@ -1107,6 +1235,7 @@ apply_result() {  # <source-id> <sequence> <result-file> <mark-handled>
       advance_cursor "$channel" "$file"
       prune_threads "$channel"
       prune_files "$channel"
+      prune_reactions "$channel"
       ;;
     api-error) ;;
     *) die "captured Slack result needs firstmate's attention: $class" ;;
@@ -1150,6 +1279,7 @@ case "${1-}" in
   autohandle) shift; [ "$#" -eq 3 ] || usage; cmd_autohandle "$@" ;;
   classify)   shift; [ "$#" -eq 1 ] || usage; cmd_classify "$@" ;;
   track-thread) shift; [ "$#" -eq 2 ] || usage; cmd_track_thread "$@" ;;
+  mark-replied) shift; [ "$#" -eq 2 ] || usage; cmd_mark_replied "$@" ;;
   # This source never ends: the captain can always post again, so the runner
   # must keep it armed no matter what a result contained.
   terminal)   shift; [ "$#" -eq 1 ] || usage; exit 1 ;;
