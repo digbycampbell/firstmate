@@ -81,10 +81,26 @@ case "\${1-}" in
     exit 0
     ;;
   autohandle)
+    if [ -n "\${STUB_AUTOHANDLE_REFUSE:-}" ]; then
+      printf 'error: captured Slack messages do not continue the stored read position\n' >&2
+      exit 1
+    fi
     printf 'applied: %s read-position=1\n' "\$2"
     exit 1
     ;;
+  classify) printf 'messages\n' ;;
   poll)
+    # STUB_POLL_SCRIPT lists one outcome per poll: quiet, capture, or fail.
+    if [ -n "\${STUB_POLL_SCRIPT:-}" ]; then
+      n=\$(( \$(cat "\$STUB_POLL_COUNT" 2>/dev/null || echo 0) + 1 ))
+      printf '%s\n' "\$n" > "\$STUB_POLL_COUNT"
+      outcome=\$(printf '%s\n' \$STUB_POLL_SCRIPT | sed -n "\${n}p")
+      case "\$outcome" in
+        quiet) exit 75 ;;
+        capture) ;;
+        *) exit 1 ;;
+      esac
+    fi
     printf 'schema=fm-slack-captain.v1\nstatus=messages\nchannel=%s\nfrom_ts=0\nto_ts=1\ncount=1\nuntrusted=0\nreason=\n\n' "$CHANNEL"
     printf '{"ts":"1","user":"U0CAPTAIN","trusted":true,"text":"ahoy"}\n'
     exit 0
@@ -146,11 +162,40 @@ pass "handle records fm-procevent handled after the package applies"
 result4="$home/state/procevent-inbox/$SID.4.result"
 printf 'schema=fm-slack-captain.v1\nstatus=messages\n\n' > "$result4"
 printf '%s\n' "$ADAPTER" > "$home/state/procevent-inbox/$SID.4.adapter"
-out=$(FM_HOME="$home" "$ADAPTER" autohandle "$SID" 4 "$result4" 2>&1) && rc=0 || rc=$?
-[ "$rc" -ne 0 ] || fail "autohandle must keep the runner's unhandled exit: $out"
+out=$(FM_HOME="$home" "$ADAPTER" autohandle "$SID" 4 "$result4" 2>&1) \
+  || fail "autohandle must report an applied capture so the runner can poll again: $out"
+assert_contains "$out" "applied:" "autohandle must surface the package result"
 assert_absent "$home/state/procevent-inbox/$SID.4.handled" \
   "autohandle must not record the runner acknowledgement"
-pass "autohandle preserves the package nonzero exit and does not acknowledge"
+out=$(STUB_AUTOHANDLE_REFUSE=1 FM_HOME="$home" "$ADAPTER" autohandle "$SID" 4 "$result4" 2>&1) && rc=0 || rc=$?
+[ "$rc" -ne 0 ] || fail "autohandle must keep the package's refusal: $out"
+assert_absent "$home/state/procevent-inbox/$SID.4.handled" \
+  "a refused autohandle must not record the runner acknowledgement"
+pass "autohandle reports an applied capture, keeps a refusal, and never acknowledges"
+
+# --- the runner keeps polling the channel without a supervision cycle -------
+# A Slack poll used to release its claim after every quiet window and every
+# capture, so the channel went unpolled until the next supervision cycle ran
+# reconcile; with the watcher down, nothing polled Slack at all. The runner
+# must poll again on its own after a quiet window and after an applied capture,
+# and leave the capture announced and unacknowledged for firstmate.
+
+home=$(new_home relisten)
+FM_HOME="$home" "$ADAPTER" arm >/dev/null || fail "arm for the relisten case failed"
+rm -f "$TMP_ROOT/poll-count"
+STUB_POLL_SCRIPT="quiet capture quiet fail" STUB_POLL_COUNT="$TMP_ROOT/poll-count" \
+  FM_HOME="$home" "$ROOT/bin/fm-procevent.sh" start "$SID" \
+  > "$TMP_ROOT/relisten.out" 2>&1 || true
+[ "$(cat "$TMP_ROOT/poll-count" 2>/dev/null)" = 4 ] \
+  || fail "the runner stopped polling after $(cat "$TMP_ROOT/poll-count" 2>/dev/null) poll(s) instead of polling again: $(cat "$TMP_ROOT/relisten.out")"
+relisten_result=$(printf '%s\n' "$home/state/procevent-inbox/$SID".*.result | head -n 1)
+[ -f "$relisten_result" ] || fail "the relistening runner captured no result: $(cat "$TMP_ROOT/relisten.out")"
+assert_grep "procevent slack-captain $SID" "$home/state/.wake-queue" "the relistened capture publishes a wake"
+relisten_seq=${relisten_result%.result}
+relisten_seq=${relisten_seq##*.}
+assert_absent "$home/state/procevent-inbox/$SID.$relisten_seq.handled" \
+  "polling again must leave the capture unacknowledged for firstmate"
+pass "the runner polls the channel again after a quiet window and an applied capture"
 
 # --- arm registers this wrapper's poll with the home and channel ------------
 
@@ -203,9 +248,18 @@ home=$(new_home roundtrip)
 armed=$(SLACK_MIRROR_HOME="$REAL_MIRROR_HOME" FM_HOME="$home" "$ADAPTER" arm 2>&1) \
   || fail "arm against the installed package failed: $armed"
 assert_contains "$armed" "armed: $SID" "arm reports the registered source"
+# The runner relistens after the capture, so retire the source to end it.
 SLACK_MIRROR_HOME="$REAL_MIRROR_HOME" FM_HOME="$home" "$ROOT/bin/fm-procevent.sh" start "$SID" \
-  > "$TMP_ROOT/start.out" 2>&1 \
-  || fail "the runner failed: $(cat "$TMP_ROOT/start.out")"
+  > "$TMP_ROOT/start.out" 2>&1 &
+start_pid=$!
+for _ in $(seq 1 300); do
+  [ -e "$home/state/.wake-queue" ] && break
+  kill -0 "$start_pid" 2>/dev/null || break
+  sleep 0.1
+done
+FM_HOME="$home" "$ROOT/bin/fm-procevent.sh" retire "$SID" >/dev/null 2>&1 || true
+# Retirement stops the runner, so its exit status says nothing about the capture.
+wait "$start_pid" 2>/dev/null || true
 result=$(printf '%s\n' "$home/state/procevent-inbox/$SID".*.result | head -n 1)
 [ -f "$result" ] || fail "the runner captured no result: $(cat "$TMP_ROOT/start.out")"
 [ "$(SLACK_MIRROR_HOME="$REAL_MIRROR_HOME" "$ADAPTER" classify "$result")" = messages ] \

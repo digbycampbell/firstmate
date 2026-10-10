@@ -938,7 +938,10 @@ _fm_recovery_marker_arm_check() {
       FM_RECOVERY_MARKER_ACTION='recover'
       ;;
     acked:*)
-      if [ -s "$FM_WAKE_QUEUE" ]; then
+      # Only rows main can act on reopen recovery: a row a live supervision
+      # branch grant reserves is being handled there, and announcing it woke
+      # main to drain nothing.
+      if [ -s "$FM_WAKE_QUEUE" ] && [ "$(fm_wake_actor_pending_count main)" -gt 0 ] 2>/dev/null; then
         if ! _fm_recovery_marker_write_locked "$marker" downtime "" announced; then
           fm_lock_release "$lock"
           fm_lock_release "$FM_WAKE_QUEUE_LOCK"

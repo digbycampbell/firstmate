@@ -785,6 +785,54 @@ test_recovery_consumption_serializes_queue_publication() {
   pass "watch-arm: publication after recovery handoff is surfaced"
 }
 
+# A queued row a live supervision-branch grant reserves is the branch's to
+# handle. Resurfacing it after downtime woke main to drain nothing
+# (ack-through 0) while the downtime marker stayed acknowledged. The watcher
+# must resurface only rows main can act on; the same row with no grant still
+# resurfaces.
+test_branch_reserved_row_is_not_resurfaced_to_main() {
+  local dir state fakebin seq holder identity i
+  dir=$(make_case branch-reserved-resurface)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  sleep 300 &
+  holder=$!
+  identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$ROOT/bin/fm-wake-lib.sh" "$holder") \
+    || fail "could not read the grant holder's identity"
+  # The row and the grant reserving it are written directly, as the branch's own
+  # drain leaves them, so no watcher cycle is what moves them.
+  seq=41
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$seq" check startup-network 'check: startup-network' \
+    > "$state/.wake-queue"
+  printf '%s\n' "$seq" > "$state/.branch-eligible-rows"
+  printf '%s\n' fm-branch-eligible-owner-v1 "$holder" "$identity" fixture-gen > "$state/.branch-eligible-owner"
+  printf 'acked:downtime:fixture\n' > "$state/.watcher-down"
+
+  start_seed_watcher "$state" "$fakebin" "$dir/held.out" 1
+  # A beacon that reappears proves the first cycle, and its downtime
+  # resurface check, finished without waking.
+  rm -f "$state/.last-watcher-beat"
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$state/.last-watcher-beat" ] && is_live_non_zombie "$SEED_PID"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$SEED_PID" \
+    || fail "the watcher resurfaced a row the supervision branch holds: $(cat "$dir/held.out")"
+  [ -e "$state/.last-watcher-beat" ] || fail "the watcher never finished a cycle: $(cat "$dir/held.out")"
+  ! grep -F 'check: rearm-resurface' "$dir/held.out" >/dev/null \
+    || fail "a branch-held row was resurfaced to main"
+
+  # Control: the grant ends without consuming the row, so main owns it now.
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  wait_for_exit "$SEED_PID" 100 \
+    || fail "a row main owns was not resurfaced: $(cat "$dir/held.out")"
+  grep -F 'check: rearm-resurface' "$dir/held.out" >/dev/null \
+    || fail "a main-owned downtime row was not resurfaced: $(cat "$dir/held.out")"
+  pass "watch-arm: a row the supervision branch holds is not resurfaced to main"
+}
+
 test_restart_preserves_recovery_across_reused_pid_lock() {
   local dir home state fakebin armout unrelated owner
   dir=$(make_case restart-reused-pid-recovery)
@@ -1730,6 +1778,7 @@ test_delivery_gap_wake_is_recovered_once
 test_interrupted_handling_is_redrained_on_rearm
 test_malformed_marker_is_quarantined_once
 test_recovery_consumption_serializes_queue_publication
+test_branch_reserved_row_is_not_resurfaced_to_main
 test_restart_preserves_recovery_across_reused_pid_lock
 test_markerless_legacy_queue_is_recovered_on_arm
 test_idle_lavish_source_stays_quiet_until_result
