@@ -379,6 +379,12 @@ out=$(pe "$H2" reconcile)
 assert_contains "$out" "published=1" "a durably captured but unhandled result is announced after restart"
 assert_contains "$(wake_payloads "$H2")" "procevent lavish src-cut 7" "durable adapter identity survives without a registration"
 assert_absent "$H2/state/procevent-inbox/src-cut.7.handled" "recovery alone never marks the recovered result handled"
+# The handler drains a wake and only acknowledges it after `handled`, so a
+# reconcile in between must not queue a second row: that row outlived the
+# acknowledgement and re-delivered a result already handled.
+pe "$H2" reconcile >/dev/null
+[ "$(wake_payloads "$H2" | grep -c 'procevent lavish src-cut 7')" = 1 ] \
+  || fail "reconcile queued a second wake for a result whose wake is still queued: $(wake_payloads "$H2")"
 mv "$H2/state/.wake-queue" "$H2/state/.wake-queue.drained-1"
 out=$(pe "$H2" reconcile)
 assert_contains "$out" "published=1" "an unhandled result is re-announced on every reconcile, not only the first"

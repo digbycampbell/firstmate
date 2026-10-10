@@ -66,7 +66,8 @@
 #            registered until its owner concludes it with `handled`.
 # reconcile  Idempotent liveness entry the watcher calls on its ordinary cycle:
 #            republish every durably captured result with no handled
-#            acknowledgement yet - regardless of any earlier publication - and
+#            acknowledgement yet - regardless of any earlier publication,
+#            unless a wake for that result is still queued - and
 #            start a runner for any registered source that has no live owner and
 #            no open task-owned round. This is liveness repair only - it never
 #            discovers results by
@@ -889,9 +890,17 @@ EOF
       esac
     fi
     unset FM_PROCEVENT_CAPTURE_SOURCE_LOCK_HELD
-    if fm_wake_append check "procevent:$id:$seq" "check: $line"; then
+    # A wake still queued for this result already announces it. The handler
+    # acknowledges that wake only after `handled`, which takes the source lock
+    # held here, so a second row queued in between outlived the acknowledgement
+    # and re-delivered a handled result.
+    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+    if fm_wake_queued_keys_locked check | grep -Fxq -- "procevent:$id:$seq"; then
+      status=0
+    elif fm_wake_append_locked check "procevent:$id:$seq" "check: $line"; then
       status=0
     fi
+    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   fi
   fm_procevent_source_lock_release "$id"
   return "$status"

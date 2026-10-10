@@ -222,6 +222,7 @@ The first recovery marks that generation announced, and later empty-queue arms l
 A non-successor watcher start checks the durable queue and recovery marker under their locks.
 If an announced-but-unacknowledged episode has an empty queue, the arm leaves that generation announced, making repeated empty-queue arms idempotent while a long-poll source is merely alive.
 If a durable row arrived after the announcement, the arm opens a fresh pending downtime generation so buried work still resurfaces once.
+An acknowledged episode reopens only for a queued row main can act on; a row a live supervision-branch grant reserves stays with the branch and reopens nothing.
 
 ### Generation reuse
 

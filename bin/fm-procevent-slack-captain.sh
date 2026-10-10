@@ -9,6 +9,7 @@
 #   fm-procevent-slack-captain.sh autohandle <source-id> <sequence> <result-file>
 #   fm-procevent-slack-captain.sh classify <result-file>
 #   fm-procevent-slack-captain.sh terminal <result-file>
+#   fm-procevent-slack-captain.sh relisten
 #   fm-procevent-slack-captain.sh track-thread <channel> <thread-ts>
 #   fm-procevent-slack-captain.sh mark-replied <channel> <thread-ts|none>
 #   fm-procevent-slack-captain.sh source-id
@@ -36,12 +37,26 @@
 #     home's contract, then execs the package;
 #   - `handle` runs the package then records `fm-procevent.sh handled`, because
 #     the package applies read positions only;
-#   - `autohandle` execs the package and does not swallow its nonzero exit, so
-#     the runner leaves the result unacknowledged and still wakes firstmate.
+#   - `autohandle` runs the package, which advances the read positions and
+#     then exits nonzero on purpose. It exits 0 only when the package applied
+#     a messages capture and the read position now covers it, so the runner
+#     may poll again; any refusal keeps the package's nonzero exit. Neither
+#     exit records `fm-procevent.sh handled`, so the result stays announced
+#     until firstmate handles it;
+#   - `relisten` exits 0, so the runner keeps its claim and polls again after
+#     a quiet poll (the package's exit 75) and after an applied capture;
+#   - `poll` reports a failed poll that produced no output as the package's
+#     quiet exit 75, so the runner relistens, unless the previous poll also
+#     failed with no output, tracked by a marker file under this home's
+#     state/slack-captain/ directory that any successful or quiet poll clears.
+#     A poll that fails with output keeps that failure's exit status.
 #
 # This source is NEVER terminal. `terminal` always refuses, so the runner keeps
-# the registration armed and its ordinary reconcile restarts the poll after each
-# bounded run.
+# the registration armed. The runner normally relistens; two consecutive
+# failed polls with no output, or a capture the package could not apply,
+# release the claim, and the ordinary reconcile restarts the poll on the next
+# supervision cycle. Relistening keeps the channel polled while no supervision
+# cycle runs, until the runner's owner lease ends (bin/fm-procevent.sh).
 #
 # INSTALLATION. SLACK_MIRROR_HOME selects the agent-slack-mirror checkout.
 # A missing core, listener, or poster is a loud refusal naming the exact clone
@@ -107,11 +122,30 @@ cmd_retire() {
 }
 
 cmd_poll() {
-  local home=${1-} channel=${2-}
+  local home=${1-} channel=${2-} marker_dir marker staged rc
   [ -n "$home" ] && [ -n "$channel" ] || usage
   FM_HOME=$home
   prepare
-  exec "$(package_captain)" poll "$channel"
+  marker_dir="${FM_STATE_OVERRIDE:-$FM_HOME/state}/slack-captain"
+  marker="$marker_dir/.last-poll-failed-$channel"
+  staged=$(mktemp "${TMPDIR:-/tmp}/fm-slack-poll.XXXXXX") || die "cannot stage the poll output"
+  trap 'rm -f -- "$staged"' EXIT
+  "$(package_captain)" poll "$channel" > "$staged"
+  rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 75 ] && [ ! -s "$staged" ]; then
+    if [ -e "$marker" ]; then
+      rm -f -- "$marker"
+      exit "$rc"
+    fi
+    if mkdir -p "$marker_dir" && (umask 077; : > "$marker"); then
+      exit 75
+    else
+      exit "$rc"
+    fi
+  fi
+  rm -f -- "$marker"
+  cat -- "$staged"
+  exit "$rc"
 }
 
 cmd_handle() {
@@ -121,11 +155,26 @@ cmd_handle() {
   "$SCRIPT_DIR/fm-procevent.sh" handled "$sid" "$seq" || exit 1
 }
 
+cmd_autohandle() {
+  local sid=$1 seq=$2 file=$3 out rc=0 class
+  prepare
+  out=$("$(package_captain)" autohandle "$sid" "$seq" "$file") || rc=$?
+  [ -z "$out" ] || printf '%s\n' "$out"
+  class=$("$(package_captain)" classify "$file" 2>/dev/null) || class=
+  case "$class:$(printf '%s\n' "$out" | head -n 1)" in
+    messages:"applied: $sid "*|messages:"superseded: $sid "*) exit 0 ;;
+    untrusted-messages:"applied: $sid "*|untrusted-messages:"superseded: $sid "*) exit 0 ;;
+  esac
+  [ "$rc" -ne 0 ] || rc=1
+  exit "$rc"
+}
+
 case "${1-}" in
   arm)        shift; [ "$#" -eq 0 ] || usage; cmd_arm ;;
   poll)       shift; [ "$#" -eq 2 ] || usage; cmd_poll "$@" ;;
   handle)     shift; [ "$#" -eq 3 ] || usage; cmd_handle "$@" ;;
-  autohandle) shift; [ "$#" -eq 3 ] || usage; forward autohandle "$@" ;;
+  autohandle) shift; [ "$#" -eq 3 ] || usage; cmd_autohandle "$@" ;;
+  relisten)   shift; [ "$#" -eq 0 ] || usage; exit 0 ;;
   classify)   shift; [ "$#" -eq 1 ] || usage; forward classify "$@" ;;
   track-thread) shift; [ "$#" -eq 2 ] || usage; forward track-thread "$@" ;;
   mark-replied) shift; [ "$#" -eq 2 ] || usage; forward mark-replied "$@" ;;
