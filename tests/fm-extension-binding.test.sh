@@ -108,6 +108,8 @@ extension_test_cleanup() {
     (
       # worker.pid names the serving child; the copied remote helper stops its
       # known isolated supervisor tree so it cannot respawn during teardown.
+      # Production libraries are linted independently by fm-lint.sh.
+      # shellcheck source=/dev/null
       . "$REMOTE_ROOT/bin/fm-remote-job-lib.sh"
       fm_remote_job_stop_worker_tree "$(cat "$TMP_ROOT/remote-jobs/worker.pid")"
     ) 2>/dev/null || true
@@ -1672,7 +1674,7 @@ rm "$capture_signal_authority"
 capture_signal=$(perl "$ROOT/bin/fm-procevent-extension-capture.pl" \
   9 8 6 capture-signal-source ext-flow org.example.flow 1.2.3 1 \
   "sha256:$(printf 'a%.0s' {1..64})" "sha256:$(printf 'b%.0s' {1..64})" signal-token \
-  1 capture-signal-source.runner .capture-signal.output "$$" "$forged_claim_identity" 1024 -- perl -e 'kill "KILL", $$')
+  capture-signal-source.runner .capture-signal.output "$$" "$forged_claim_identity" 1024 -- perl -e 'kill "KILL", $$')
 exec 9<&-
 exec 6<&-
 exec 8<&-
@@ -1699,7 +1701,7 @@ ln -s "$TMP_ROOT/capture-swap-outside" "$capture_swap_inbox"
 capture_swap=$(perl "$ROOT/bin/fm-procevent-extension-capture.pl" \
   9 8 6 capture-swap-source ext-flow org.example.flow 1.2.3 1 \
   "sha256:$(printf 'a%.0s' {1..64})" "sha256:$(printf 'b%.0s' {1..64})" swap-token \
-  1 capture-swap-source.runner .capture-swap.output "$$" "$forged_claim_identity" 1024 -- /bin/printf 'pinned helper result')
+  capture-swap-source.runner .capture-swap.output "$$" "$forged_claim_identity" 1024 -- /bin/printf 'pinned helper result')
 exec 9<&-
 exec 6<&-
 exec 8<&-

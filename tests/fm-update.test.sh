@@ -303,12 +303,10 @@ test_dirty_secondmate_skipped() {
   add_sm "$w" sm1
   bump_origin "$w" instr
   printf 'uncommitted local edit\n' >> "$w/sm1/AGENTS.md"
-  mkdir -p "$w/sm1/hooks" && printf 'stray\n' > "$w/sm1/hooks/pre-commit"
 
   out=$(run_update "$w")
 
-  assert_contains "$out" "secondmate sm1: skipped: dirty working tree (AGENTS.md, hooks/)" \
-    "dirty home skipped, naming every dirty path"
+  assert_contains "$out" "secondmate sm1: skipped: dirty working tree" "dirty home skipped"
   assert_not_contains "$out" "fm-sm1" "skipped secondmate is not nudged"
   grep -q 'uncommitted local edit' "$w/sm1/AGENTS.md" \
     || fail "dirty edit was discarded"

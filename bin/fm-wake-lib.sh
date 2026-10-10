@@ -813,6 +813,17 @@ _fm_recovery_marker_begin_handling() {
   fi
   case "$line" in
     pending:handling:*|announced:handling:*) ;;
+    acked:handling:*|acked:downtime:*)
+      # An already-retired episode confirms as a no-op when the caller names
+      # its generation: the drain acknowledged it after the successor started
+      # but before the delivery confirmation ran. Without a named generation
+      # there is nothing to match, so keep the rejection.
+      # docs/watcher-continuity.md owns the recovery-episode contract.
+      if [ -z "$expected_generation" ]; then
+        fm_lock_release "$lock"
+        return 1
+      fi
+      ;;
     pending:downtime:*)
       if ! _fm_recovery_marker_write_locked "$marker" handling "$generation"; then
         fm_lock_release "$lock"
@@ -927,10 +938,7 @@ _fm_recovery_marker_arm_check() {
       FM_RECOVERY_MARKER_ACTION='recover'
       ;;
     acked:*)
-      # Only rows main can act on reopen recovery: a row a live supervision
-      # branch grant reserves is being handled there, and announcing it woke
-      # main to drain nothing (bin/fm-watch-arm.sh queued_downtime_needs_surface).
-      if [ -s "$FM_WAKE_QUEUE" ] && [ "$(fm_wake_actor_pending_count main)" -gt 0 ] 2>/dev/null; then
+      if [ -s "$FM_WAKE_QUEUE" ]; then
         if ! _fm_recovery_marker_write_locked "$marker" downtime "" announced; then
           fm_lock_release "$lock"
           fm_lock_release "$FM_WAKE_QUEUE_LOCK"
@@ -974,9 +982,64 @@ _fm_recovery_marker_reopen_announced() {
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
 }
 
+# The handover rule for a watcher stopped by bin/fm-watch-arm.sh --take-over
+# (docs/watcher-continuity.md "Generation reuse" owns it). The snapshot reads
+# the marker token and the queue's append sequence under both locks before the
+# stop; handover-restore puts an acknowledged token back only while that
+# sequence is unchanged and the marker reads the fresh pending downtime the
+# stopped watcher's own close published.
+FM_RECOVERY_HANDOVER_TOKEN=
+FM_RECOVERY_HANDOVER_SEQ=
+fm_recovery_marker_handover_snapshot() {  # <marker>
+  local marker=$1 lock
+  FM_RECOVERY_HANDOVER_TOKEN=
+  FM_RECOVERY_HANDOVER_SEQ=
+  lock="${marker}.lock"
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
+  if ! fm_lock_acquire_wait "$lock"; then
+    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+    return 1
+  fi
+  if fm_recovery_marker_read "$marker"; then
+    # shellcheck disable=SC2034 # Read by callers after this function returns.
+    FM_RECOVERY_HANDOVER_TOKEN=$FM_RECOVERY_MARKER_TOKEN
+  fi
+  # shellcheck disable=SC2034 # Read by callers after this function returns.
+  FM_RECOVERY_HANDOVER_SEQ=$(cat "$STATE/.wake-queue.seq" 2>/dev/null || true)
+  fm_lock_release "$lock"
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+}
+
+_fm_recovery_marker_handover_restore() {
+  local marker=$1 token=$2 seq=$3 lock status=0
+  case "$token" in acked:*) ;; *) return 0 ;; esac
+  lock="${marker}.lock"
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
+  if ! fm_lock_acquire_wait "$lock"; then
+    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+    return 1
+  fi
+  if [ "$(cat "$STATE/.wake-queue.seq" 2>/dev/null || true)" = "$seq" ] \
+    && fm_recovery_marker_read "$marker"; then
+    case "$FM_RECOVERY_MARKER_TOKEN" in
+      pending:downtime:*)
+        if [ "${FM_RECOVERY_MARKER_TOKEN##*:}" != "${token##*:}" ]; then
+          _fm_recovery_marker_restore_token_locked "$marker" "$token" || status=1
+        fi
+        ;;
+    esac
+  fi
+  fm_lock_release "$lock"
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  return "$status"
+}
+
 fm_recovery_transition() {
   local marker=$1 action=$2 target=${3:-} value=${4:-} bound=${5:-}
   case "$action" in
+    handover-restore)
+      _fm_recovery_marker_handover_restore "$marker" "$target" "$value"
+      ;;
     publish)
       _fm_recovery_marker_publish "$marker" "${target:-downtime}" "$bound"
       ;;
@@ -1036,6 +1099,10 @@ fm_recovery_marker_arm_check() {
 
 fm_recovery_marker_reopen_announced() {
   fm_recovery_transition "$1" reopen-announced
+}
+
+fm_recovery_marker_handover_restore() {  # <marker> <snapshot-token> <snapshot-seq>
+  fm_recovery_transition "$1" handover-restore "$2" "$3"
 }
 
 # fm_lock_reap_dead_link <lockdir>
@@ -1365,10 +1432,10 @@ fm_task_set_lock_path() {  # <state-dir>
 # the walk at the current home, which is the correct answer rather than an
 # error: the parent lives on another machine, so its filesystem can neither hold
 # nor be observed by a lock taken here, and a remote-seeded home is itself the
-# top of the local tree that bin/fm-teardown.sh's collect_local_firstmate_states
-# enumerates (that walk already skips remote registry entries for the same
-# reason). Refusing a remote binding instead made every operation anchored here
-# fail closed inside a remote secondmate home and its local descendants.
+# top of the local tree that fm_local_firstmate_state_dirs below enumerates
+# (that walk already skips remote registry entries for the same reason).
+# Refusing a remote binding instead made every operation anchored here fail
+# closed inside a remote secondmate home and its local descendants.
 #
 # Everything else still fails closed: an unreadable or malformed binding, an
 # unreachable local parent, a cycle, and a chain deeper than the bound.
@@ -1397,7 +1464,72 @@ fm_firstmate_root_home() {
   printf '%s\n' "$home"
 }
 
-# The one lock serializing Treehouse slot allocation and return for a project.
+# Every Firstmate state directory on THIS machine whose task records can share a
+# machine-local resource with <first-state>: <first-state> itself, then the local
+# root home and each local secondmate home registered below it, walked through
+# every data/secondmates.md breadth-first. Remote registry entries are skipped,
+# because their workers run on another machine.
+#
+# Sets FM_LOCAL_FIRSTMATE_STATES to that list, <first-state> first and without
+# duplicates however each directory is spelled. Returns 1 with
+# FM_LOCAL_FIRSTMATE_ERROR naming what could not be proved - an unresolvable
+# root, an unsafe or malformed registry, or an unavailable registered local
+# home - so a caller refuses rather than treating an unreadable home as one
+# with no tasks. Requires bin/fm-secondmate-registry-lib.sh to be sourced first.
+# shellcheck disable=SC2034 # FM_LOCAL_FIRSTMATE_ERROR is read by callers.
+fm_local_firstmate_state_dirs() {  # <first-state>
+  local first=$1 root home reg line child known existing i=0
+  local -a homes
+  FM_LOCAL_FIRSTMATE_STATES=("$first")
+  FM_LOCAL_FIRSTMATE_ERROR=
+  root=$(fm_firstmate_root_home "$FM_HOME") || {
+    FM_LOCAL_FIRSTMATE_ERROR="cannot resolve the root Firstmate home"
+    return 1
+  }
+  homes=("$root")
+  while [ "$i" -lt "${#homes[@]}" ]; do
+    home=${homes[$i]}
+    i=$((i + 1))
+    known=0
+    for existing in "${FM_LOCAL_FIRSTMATE_STATES[@]}"; do
+      if [ "$existing" = "$home/state" ] || [ "$existing" -ef "$home/state" ]; then
+        known=1
+      fi
+    done
+    [ "$known" = 1 ] || FM_LOCAL_FIRSTMATE_STATES+=("$home/state")
+    reg="$home/data/secondmates.md"
+    [ ! -e "$reg" ] && [ ! -L "$reg" ] && continue
+    [ -f "$reg" ] && [ ! -L "$reg" ] || {
+      FM_LOCAL_FIRSTMATE_ERROR="local Firstmate registry is unsafe at $reg"
+      return 1
+    }
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        "- "*)
+          secondmate_registry_parse_line "$line" || {
+            FM_LOCAL_FIRSTMATE_ERROR="malformed local Firstmate registry entry in $reg"
+            return 1
+          }
+          [ "$SECONDMATE_REGISTRY_REMOTE" -eq 0 ] || continue
+          child=$([ -d "$SECONDMATE_REGISTRY_HOME" ] &&
+            CDPATH='' cd -- "$SECONDMATE_REGISTRY_HOME" 2>/dev/null && pwd -P) || {
+            FM_LOCAL_FIRSTMATE_ERROR="registered local Firstmate home is unavailable: $SECONDMATE_REGISTRY_HOME"
+            return 1
+          }
+          known=0
+          for existing in "${homes[@]}"; do
+            [ "$existing" != "$child" ] || known=1
+          done
+          [ "$known" = 1 ] || homes+=("$child")
+          ;;
+      esac
+    done < "$reg"
+  done
+}
+
+# The one lock serializing Treehouse slot allocation and return for a project,
+# and project capacity admission (bin/fm-project-capacity-lib.sh), which a
+# fresh spawn evaluates under it on every backend.
 #
 # It is anchored in the local root home's state directory so that every home on
 # this machine that can reach the same pool - the root, and each secondmate home
@@ -2713,25 +2845,3 @@ EOF
 
   return 0
 }
-
-# Sandbox boundary. Inert outside the behavior suite; see
-# bin/fm-home-guard-lib.sh for why the check belongs at resolution time.
-#
-# Sourced defensively, and with no subprocess. Several fixtures copy an explicit
-# SUBSET of bin/ into a temporary tree (tests/fm-turnend-guard.test.sh is the
-# standing example), so this file can legitimately load from a directory that
-# holds no guard. A hard source there fails and prints to stderr, which by
-# itself breaks any test asserting a silent run. Absence is safe: the guard only
-# ever acts inside the behavior suite's sandbox, and the real bin/ always ships
-# it - tests/fm-test-sandbox.test.sh proves every home-resolving script still
-# refuses a foreign home, so a genuinely missing guard fails loudly there.
-_fm_home_guard_dir=${BASH_SOURCE[0]%/*}
-[ "$_fm_home_guard_dir" = "${BASH_SOURCE[0]}" ] && _fm_home_guard_dir=.
-if [ -f "$_fm_home_guard_dir/fm-home-guard-lib.sh" ]; then
-  # shellcheck source=bin/fm-home-guard-lib.sh
-  . "$_fm_home_guard_dir/fm-home-guard-lib.sh"
-fi
-unset _fm_home_guard_dir
-if declare -F fm_home_guard_assert >/dev/null 2>&1; then
-  fm_home_guard_assert "${STATE:-}"
-fi

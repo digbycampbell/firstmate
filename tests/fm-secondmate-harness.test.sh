@@ -253,16 +253,17 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
+[ -n "${FM_TEST_PS_LOG:-}" ] && printf '%s:%s\n' "$pid" "$field" >> "$FM_TEST_PS_LOG"
 case "$pid:$field" in
   4242:comm=) printf '%s\n' '/opt/test/bin/codex' ;;
   4242:args=) printf '%s\n' 'codex' ;;
   4242:ppid=) printf '%s\n' 1 ;;
-  5252:comm=) printf '%s\n' '-codex' ;;
-  5252:args=) printf '%s\n' '-codex' ;;
-  5252:ppid=) printf '%s\n' 1 ;;
+  5252:comm=) if [ -n "${FM_TEST_PS_LIVENESS_PROBE:-}" ]; then printf '%s\n' '-codex'; else printf '%s\n' '-zsh'; fi ;;
+  5252:args=) if [ -n "${FM_TEST_PS_LIVENESS_PROBE:-}" ]; then printf '%s\n' '-codex'; else printf '%s\n' '-zsh'; fi ;;
+  5252:ppid=) printf '%s\n' 4242 ;;
   *:comm=) printf '%s\n' '-zsh' ;;
   *:args=) printf '%s\n' '-zsh' ;;
-  *:ppid=) printf '%s\n' 4242 ;;
+  *:ppid=) printf '%s\n' "${FM_TEST_PS_PARENT:-4242}" ;;
 esac
 SH
   chmod +x "$fakebin/ps"
@@ -279,8 +280,20 @@ SH
   [ "$got" = 4242 ] || fail "session-lock dash-leading ancestry selected '$got', expected pid 4242"
   [ ! -s "$err" ] || fail "session-lock ancestry wrote basename option noise for literal -zsh: $(cat "$err")"
 
+  # Force the collision: pid 5252 is a real ancestor of the caller. Its
+  # -codex label belongs to the liveness probe only, so the walk must pass
+  # through it as an ordinary shell and still select 4242.
+  err="$dir/fm-session-lock-ancestry-collision.err"
+  collision_log="$dir/fm-session-lock-ancestry-collision.log"
+  got=$(FM_TEST_PS_PARENT=5252 FM_TEST_PS_LOG="$collision_log" PATH="$fakebin:$BASE_PATH" bash -c \
+    '. "$0/bin/fm-session-lock-lib.sh"; fm_harness_ancestry_pid' "$ROOT" 2>"$err")
+  [ "$got" = 4242 ] || fail "session-lock ancestry with pid 5252 as a real ancestor selected '$got', expected pid 4242"
+  assert_contains "$(cat "$collision_log")" "5252:" \
+    "session-lock collision ancestry did not query pid 5252"
+  [ ! -s "$err" ] || fail "session-lock collision ancestry wrote noise: $(cat "$err")"
+
   err="$dir/fm-session-lock-alive.err"
-  PATH="$fakebin:$BASE_PATH" bash -c \
+  FM_TEST_PS_LIVENESS_PROBE=1 PATH="$fakebin:$BASE_PATH" bash -c \
     '. "$0/bin/fm-session-lock-lib.sh"; kill() { return 0; }; fm_harness_pid_alive 5252' \
     "$ROOT" 2>"$err"; status=$?
   expect_code 0 "$status" "session-lock liveness should accept literal -codex as a harness process name"
@@ -2310,12 +2323,9 @@ SH
       "$ROOT/bin/fm-config-push.sh" > "$first_out" 2>&1
   ) &
   first_pid=$!
-  # Poll for the first push reaching its send-keys delivery. The push's real
-  # work (guard, inheritance propagation, and the composer-verified submit with
-  # its fixed settles) costs well over the old 100-iteration (2s) ceiling even
-  # unloaded, so this polls the same condition with a ceiling calibrated to
-  # what the fixture costs under load.
-  for _ in $(seq 1 3000); do
+  # The loop leaves as soon as the push reaches its first send, so a generous
+  # bound costs nothing on a fast host; a slow one needs several seconds.
+  for _ in $(seq 1 1500); do
     [ -e "$entered" ] && break
     sleep 0.02
   done

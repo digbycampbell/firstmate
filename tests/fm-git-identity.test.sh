@@ -22,7 +22,10 @@ TMP=""
 
 # shellcheck disable=SC2329 # Registered by the EXIT trap below.
 cleanup() {
-  [ -z "$TMP" ] || rm -rf "$TMP"
+  [ -n "$TMP" ] || return 0
+  # The strip-hooks installer leaves its directory read-only on purpose.
+  chmod -R u+w "$TMP" 2>/dev/null
+  rm -rf "$TMP"
 }
 trap cleanup EXIT
 
@@ -253,6 +256,70 @@ test_rearming_into_a_new_guard_dir_does_not_chain_guards() {
   pass "re-arming into a new guard dir never chains one guard into another"
 }
 
+# The pane override bin/fm-spawn.sh exports into every worker: git there reads
+# core.hooksPath from GIT_CONFIG_* and finds the AI-trailer strip directory.
+pane_hooks_env() {  # <strip-hooks-dir> -> env assignments for env(1)
+  printf '%s\n' GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath "GIT_CONFIG_VALUE_0=$1"
+}
+
+# Commit in <dir> under the pane override, killed after 20 seconds so a hook
+# loop reads as exit 124 rather than hanging the suite.
+commit_in_pane() {  # <dir> <strip-hooks-dir> <message>
+  local dir=$1 strip=$2 msg=$3 assignments
+  mapfile -t assignments < <(pane_hooks_env "$strip")
+  ( cd "$dir" && printf '%s\n' "$msg" >>log.txt && git add log.txt \
+    && env "${assignments[@]}" timeout 20 git commit -qm "$msg" ) >/dev/null 2>&1
+}
+
+test_arming_inside_a_worker_pane_does_not_chain_the_strip_hooks() {
+  local d="$TMP/pane-arm" assignments chained repo_hooks rc
+  make_fixture "$d"
+  repo_hooks="$d/repo-hooks"
+  mkdir -p "$repo_hooks"
+  printf '#!/bin/sh\necho REPO-PRE-COMMIT >>%q\n' "$d/ran" >"$repo_hooks/pre-commit"
+  chmod +x "$repo_hooks/pre-commit"
+  git -C "$d/parent" config core.hooksPath "$repo_hooks"
+  "$ROOT/bin/fm-git-strip-ai-trailers.sh" install "$d/strip" "$d/wt" >/dev/null 2>&1 \
+    || { fail "installing the AI-trailer strip hooks failed"; return; }
+  mapfile -t assignments < <(pane_hooks_env "$d/strip")
+  # Arming from a worker pane, whose environment names the strip directory as
+  # core.hooksPath, once recorded that directory as the repo's own hooks. Its
+  # wrappers dispatch back to the worktree's hooks, which are the guard, so the
+  # guard and the strip hooks exec'd each other on every commit.
+  env "${assignments[@]}" "$ID_BIN" apply-worktree "$d/wt" --hooks-dir "$d/hooks" >/dev/null 2>&1 \
+    || { fail "apply-worktree failed under the worker pane's hooks override"; return; }
+  chained=$(git -C "$d/wt" config --worktree --get firstmate.chainedHooksPath 2>/dev/null || true)
+  [ "$chained" = "$(cd "$repo_hooks" && pwd -P)" ] \
+    || { fail "apply-worktree chained '$chained' instead of the repo's own hooks '$repo_hooks'"; return; }
+  commit_in_pane "$d/wt" "$d/strip" "from the pane"
+  rc=$?
+  [ "$rc" -ne 124 ] || { fail "a commit in an armed worker pane looped between the guard and the strip hooks until killed"; return; }
+  [ "$rc" -eq 0 ] || { fail "a commit in an armed worker pane failed (exit $rc)"; return; }
+  grep -q REPO-PRE-COMMIT "$d/ran" 2>/dev/null \
+    || { fail "the repo's own pre-commit hook did not run in an armed worker pane"; return; }
+  pass "arming inside a worker pane chains the repo's own hooks, not the pane override"
+}
+
+test_a_fleet_hooks_dir_is_never_chained() {
+  local d="$TMP/fleet-chain" chained rc
+  make_fixture "$d"
+  "$ROOT/bin/fm-git-strip-ai-trailers.sh" install "$d/strip" "$d/wt" >/dev/null 2>&1 \
+    || { fail "installing the AI-trailer strip hooks failed"; return; }
+  # A clone whose own config names a fleet hooks directory: chaining it makes
+  # the strip wrappers dispatch back into the guard that chained them.
+  git -C "$d/parent" config core.hooksPath "$d/strip"
+  "$ID_BIN" apply-worktree "$d/wt" --hooks-dir "$d/hooks" >/dev/null 2>&1 \
+    || { fail "apply-worktree failed over a fleet hooks directory"; return; }
+  chained=$(git -C "$d/wt" config --worktree --get firstmate.chainedHooksPath 2>/dev/null || true)
+  [ -z "$chained" ] \
+    || { fail "apply-worktree chained the fleet hooks directory '$chained'"; return; }
+  commit_in_pane "$d/wt" "$d/strip" "over a fleet hooks dir"
+  rc=$?
+  [ "$rc" -ne 124 ] || { fail "a commit looped between the guard and a chained fleet hooks directory until killed"; return; }
+  [ "$rc" -eq 0 ] || { fail "a commit over a fleet hooks directory failed (exit $rc)"; return; }
+  pass "apply-worktree never chains a fleet hooks directory"
+}
+
 test_hooks_dir_inside_a_tracked_tree_is_refused() {
   local d="$TMP/stray" out
   make_fixture "$d"
@@ -467,6 +534,8 @@ test_global_author_override_cannot_change_the_crew_identity
 test_guard_resolves_author_config_as_git_does
 test_hooks_dir_inside_a_tracked_tree_is_refused
 test_rearming_into_a_new_guard_dir_does_not_chain_guards
+test_arming_inside_a_worker_pane_does_not_chain_the_strip_hooks
+test_a_fleet_hooks_dir_is_never_chained
 test_guard_refuses_when_its_own_prerequisites_are_missing
 test_verify_refuses_an_unarmed_worktree
 test_taking_over_hooks_path_keeps_the_repo_own_hooks

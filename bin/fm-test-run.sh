@@ -285,7 +285,7 @@ family_for_basename() {
   case "$1" in
     fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|\
     fm-bearings-board.test.sh|\
-    fm-brief.test.sh|fm-dod-lib.test.sh|fm-ship-branch-lib.test.sh|fm-vendor-auth-probe.test.sh|\
+    fm-brief.test.sh|fm-dod-lib.test.sh|fm-vendor-auth-probe.test.sh|\
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
     fm-classify-decision-key.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
@@ -294,7 +294,7 @@ family_for_basename() {
     fm-fork-free-helpers.test.sh|\
     fm-git-identity.test.sh|\
     fm-harness-precedence.test.sh|\
-    fm-kimi-harness.test.sh|fm-devin-harness.test.sh|fm-muse-harness.test.sh|fm-rovo-harness.test.sh|fm-agy-harness.test.sh|fm-omp-harness.test.sh|fm-herdr-lab.test.sh|fm-install-herdr.test.sh|fm-lint.test.sh|\
+    fm-kimi-harness.test.sh|fm-devin-harness.test.sh|fm-muse-harness.test.sh|fm-rovo-harness.test.sh|fm-agy-harness.test.sh|fm-omp-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-lint-workflows.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
     fm-calm-claude-mod.test.sh|\
@@ -310,6 +310,7 @@ family_for_basename() {
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
     fm-session-lock-ancestry.test.sh|fm-cursor-primary.test.sh|\
+    fm-parent-channel-scan-exclusion.test.sh|\
     fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
     fm-wake-drain-unread-status.test.sh|\
     fm-tool-update-check.test.sh|\
@@ -365,6 +366,7 @@ family_for_basename() {
     fm-slack-mirror-live-e2e.test.sh|\
     fm-devin-signals-live-e2e.test.sh|fm-muse-signals-live-e2e.test.sh|fm-rovo-signals-live-e2e.test.sh|fm-agy-signals-live-e2e.test.sh|\
     fm-launch-prompt-signals-live-e2e.test.sh|\
+    fm-pi-seeded-home-trust-live-e2e.test.sh|\
     fm-herdr-version-floor-live-e2e.test.sh|\
     fm-herdr-pi-stale-registration-live-e2e.test.sh|\
     fm-worker-account-live-e2e.test.sh|\
@@ -382,8 +384,7 @@ family_for_basename() {
     fm-herdr-submit-confirm-live-e2e.test.sh)
       printf '%s\n' live-harness-optin
       ;;
-    fm-backend-herdr.test.sh|fm-herdr-presentation-lock.test.sh|\
-    fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\
+    fm-backend-herdr.test.sh|fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\
     fm-tmux-agent-liveness.test.sh|\
     fm-control.test.sh|fm-control-relaunch.test.sh|\
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|\
@@ -394,11 +395,12 @@ family_for_basename() {
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
     fm-spawn-compact-adviser-disable.test.sh|\
     fm-spawn-compact-adviser-disable-remote.test.sh|\
+    fm-project-capacity.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' backend-dispatch
       ;;
-    fm-check-unregister.test.sh|fm-pr-check-security.test.sh|fm-pr-merge.test.sh|\
-    fm-pr-reviewers.test.sh|fm-pr-state.test.sh|\
+    fm-check-unregister.test.sh|fm-pipeline-spend.test.sh|fm-pr-check-security.test.sh|\
+    fm-pr-merge.test.sh|fm-pr-reviewers.test.sh|fm-pr-state.test.sh|\
     fm-review-diff.test.sh|fm-teardown.test.sh|fm-x-mode.test.sh)
       printf '%s\n' pr-forge
       ;;
@@ -709,7 +711,6 @@ tests/fm-bearings-board-lavish-live-e2e.test.sh 51
 tests/fm-bearings-board-render.test.sh 15612
 tests/fm-bearings-board.test.sh 40817
 tests/fm-bearings-snapshot.test.sh 186219
-tests/fm-board.test.sh 2687
 tests/fm-bootstrap-network-parallel.test.sh 30424
 tests/fm-bootstrap.test.sh 50965
 tests/fm-branch-supervision.test.sh 22979
@@ -732,7 +733,6 @@ tests/fm-codex-continuity-live-e2e.test.sh 108
 tests/fm-codex-hook-layer-live-e2e.test.sh 108
 tests/fm-composer-codex-idle-live-e2e.test.sh 77
 tests/fm-composer-matrix-live-e2e.test.sh 51
-tests/fm-config-reread-no-decision.test.sh 3273
 tests/fm-contributions.test.sh 140911
 tests/fm-control-relaunch.test.sh 114115
 tests/fm-control.test.sh 72794
@@ -753,7 +753,6 @@ tests/fm-forge-detect.test.sh 193
 tests/fm-fork-free-helpers.test.sh 746
 tests/fm-gate-refuse.test.sh 9953
 tests/fm-gemini-harness.test.sh 947
-tests/fm-git-identity.test.sh 1376
 tests/fm-git-strip-ai-trailers.test.sh 2067
 tests/fm-gitignore-config.test.sh 59
 tests/fm-gotmp.test.sh 1509
@@ -768,7 +767,6 @@ tests/fm-herdr-pi-stale-registration-live-e2e.test.sh 55
 tests/fm-herdr-session-cleanup.test.sh 7425
 tests/fm-herdr-submit-confirm-live-e2e.test.sh 51
 tests/fm-herdr-version-floor-live-e2e.test.sh 50
-tests/fm-install-herdr.test.sh 1500
 tests/fm-home-summary-refresh.test.sh 37057
 tests/fm-host-mirror-live-e2e.test.sh 79
 tests/fm-host-mirror.test.sh 11587
@@ -783,7 +781,6 @@ tests/fm-live-lab-up-mate.test.sh 17363
 tests/fm-live-lab.test.sh 79639
 tests/fm-mail-check.test.sh 7524
 tests/fm-mail.test.sh 9684
-tests/fm-merge-local.test.sh 1368
 tests/fm-muse-harness.test.sh 46548
 tests/fm-muse-signals-live-e2e.test.sh 52
 tests/fm-nm-test-contract.test.sh 853
@@ -800,17 +797,14 @@ tests/fm-pi-branch-live-e2e.test.sh 48
 tests/fm-pi-branch-responsiveness-live-e2e.test.sh 12834
 tests/fm-pi-codex-native.test.sh 75
 tests/fm-pi-primary-live-e2e.test.sh 72
+tests/fm-pi-seeded-home-trust-live-e2e.test.sh 45
 tests/fm-pi-watch-extension.test.sh 56515
 tests/fm-pi-windows-shell-invocation.test.sh 5121
-tests/fm-pr-check-board.test.sh 3405
 tests/fm-pr-check-security.test.sh 300675
 tests/fm-pr-reviewers.test.sh 157
 tests/fm-pr-state-live-e2e.test.sh 47
 tests/fm-pr-state.test.sh 525
-tests/fm-procevent-github-assigned.test.sh 1880
-tests/fm-procevent-quota-topic.test.sh 6927
 tests/fm-procevent-quota.test.sh 2459
-tests/fm-procevent-slack-captain.test.sh 6735
 tests/fm-procevent-when.test.sh 25674
 tests/fm-procevent.test.sh 292297
 tests/fm-project-origin.test.sh 123
@@ -851,15 +845,9 @@ tests/fm-sessionstart-hook-live-e2e.test.sh 50
 tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh 49
 tests/fm-sessionstart-nudge.test.sh 71802
 tests/fm-shared-captain-inheritance.test.sh 7991
-tests/fm-ship-branch-lib.test.sh 400
-tests/fm-slack-mirror-live-e2e.test.sh 57
-tests/fm-slack-mirror.test.sh 10359
-tests/fm-slack-post.test.sh 2854
 tests/fm-spawn-compact-adviser-disable-remote.test.sh 38561
 tests/fm-spawn-compact-adviser-disable.test.sh 21654
 tests/fm-spawn-dispatch-profile.test.sh 197548
-tests/fm-spawn-git-identity.test.sh 6775
-tests/fm-spawn-issue-board.test.sh 14724
 tests/fm-spawn-orca-worktree.test.sh 2400
 tests/fm-spawn-pool-base-freshen.test.sh 68652
 tests/fm-spawn-worktree-settle.test.sh 9309
@@ -881,7 +869,6 @@ tests/fm-teardown.test.sh 202132
 tests/fm-test-fixture-cleanup.test.sh 866
 tests/fm-test-fixtures.test.sh 1802
 tests/fm-test-isolation-proof.test.sh 2866
-tests/fm-test-sandbox.test.sh 4011
 tests/fm-timeout-lib.test.sh 10750
 tests/fm-tmux-agent-liveness.test.sh 3770
 tests/fm-tool-update-check.test.sh 14383
@@ -905,7 +892,6 @@ tests/fm-watch-triage.test.sh 1074843
 tests/fm-watcher-lock.test.sh 72022
 tests/fm-worker-account-live-e2e.test.sh 3179
 tests/fm-worker-account.test.sh 37445
-tests/fm-worktree-claim.test.sh 4887
 EOF
 }
 
@@ -1620,7 +1606,7 @@ families_for_changed_path() {
       printf '%s\n' "__script__:fm-procevent-quota.test.sh"
       ;;
     bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-teardown.sh|bin/fm-review-diff.sh|\
-    bin/fm-x-*|bin/fm-check*)
+    bin/fm-x-*|bin/fm-check*|bin/fm-pipeline-spend.sh)
       printf '%s\n' pr-forge
       ;;
     bin/fm-git-identity.sh|bin/fm-git-identity-lib.sh)
@@ -1676,7 +1662,7 @@ families_for_changed_path() {
     bin/fm-lint.sh|bin/fm-lint-workflows.sh|bin/fm-install-shellcheck.sh|\
     bin/fm-install-actionlint.sh|\
     bin/fm-brief.sh|bin/fm-ensure-agents-md.sh|bin/fm-crew-state.sh|\
-    bin/fm-captain-hold.sh|bin/fm-decision-hold.sh|bin/fm-supervision*|bin/fm-transition-lib.sh|\
+    bin/fm-captain-hold.sh|bin/fm-hold-reason-lib.sh|bin/fm-decision-hold.sh|bin/fm-supervision*|bin/fm-transition-lib.sh|\
     bin/fm-tmux-lib.sh|bin/fm-marker-lib.sh|bin/fm-operational-input.sh|bin/fm-tasks-axi-lib.sh|\
     bin/fm-vendor-auth-probe.sh|\
     bin/fm-primary-scope-lib.sh|bin/fm-project-mode.sh|bin/fm-forge-detect.sh|bin/fm-promote.sh|\
@@ -1690,10 +1676,6 @@ families_for_changed_path() {
     .agents/skills/harness-adapters/SKILL.md|.agents/skills/harness-adapters/references/*)
       printf '%s\n' pure-contract-unit
       printf '%s\n' live-harness-optin
-      ;;
-    .agents/skills/onboard-cloud-crewmate/SKILL.md|\
-    .agents/skills/onboard-cloud-crewmate/references/*)
-      printf '%s\n' pure-contract-unit
       ;;
     .agents/skills/*/SKILL.md)
       printf '%s\n' pure-contract-unit
@@ -2394,34 +2376,10 @@ declare -a WORKER_SCRIPTS=()
 # Invoked indirectly by the EXIT trap below.
 # shellcheck disable=SC2329
 cleanup_run() {
-  # A sandboxed script's own read-only git-hooks strip directory
-  # (state/<id>.git-hooks, bin/fm-teardown.sh) is removed by that script's own
-  # exit trap (tests/lib.sh fm_test_remove_tree); a script killed by the
-  # per-script timeout skips that trap and leaves it behind mode-0555, which a
-  # plain `rm -rf` cannot unlink. Restore write/search before removing, the
-  # same idiom fm_test_remove_tree uses, so one killed script cannot fail the
-  # whole run's cleanup.
-  find "$RUN_TMP" -type d -exec chmod u+rwx {} + 2>/dev/null || true
   rm -rf "$RUN_TMP"
 }
 
 trap cleanup_run EXIT
-
-# The containment boundary is a hard dependency, never an optional enhancement:
-# a runner that silently ran tests uncontained is exactly the 2026-08-31 defect.
-# Refuse loudly and name the missing file, so an incomplete copy of this program
-# is a clear diagnostic rather than a confusing downstream failure.
-if [ ! -f "$ROOT/bin/fm-test-sandbox-lib.sh" ]; then
-  printf 'fm-test-run: missing %s\n' "$ROOT/bin/fm-test-sandbox-lib.sh" >&2
-  printf 'fm-test-run: this runner cannot contain tests without it, and running them uncontained is how the suite wrote into a live firstmate home. If you copied this runner somewhere, copy bin/fm-test-sandbox-lib.sh and bin/fm-home-guard-lib.sh alongside it.\n' >&2
-  exit 1
-fi
-# shellcheck source=bin/fm-test-sandbox-lib.sh
-. "$ROOT/bin/fm-test-sandbox-lib.sh"
-# Leftover fixture processes: claim this run's directory, then stop what a
-# runner that is gone left behind (bin/fm-test-sandbox-lib.sh owns the rule).
-fm_test_record_runner_owner "$RUN_TMP"
-fm_test_reap_abandoned_sandboxes
 
 RUN_ID="fm-test-run-${RUN_STARTED_MS}-$$"
 TOTAL=0
@@ -2504,8 +2462,8 @@ record_script_result() {
 # positive, a script that outruns it is terminated and reported as exit 124: a
 # hung script must become a bounded failure rather than an unbounded suite,
 # because an unbounded suite is what silently outruns its caller's budget.
-run_script_bounded() {  # <sandbox> <script> <out> <stream> <id>
-  local sandbox=$1 script=$2 out=$3 stream=$4 id=$5
+run_script_bounded() {  # <script> <out> <stream> <id>
+  local script=$1 out=$2 stream=$3 id=$4
   # Declaring the variables local first keeps the helper's export scoped to this
   # call and its child script, so the runner's own environment is left as the
   # caller had it.
@@ -2513,38 +2471,31 @@ run_script_bounded() {  # <sandbox> <script> <out> <stream> <id>
   # shellcheck source=tests/git-config-helpers.sh
   . "$ROOT/tests/git-config-helpers.sh" || return
   local rc
-  : "$id" "$stream"
+  : "$id"
   set +e
-  # Containment boundary: see bin/fm-test-sandbox-lib.sh for what is enforced
-  # and what was measured and rejected. A script that reaches a firstmate home
-  # it does not own is refused at the point of resolution and exits 99
-  # (bin/fm-home-guard-lib.sh), so containment failures arrive as ordinary test
-  # failures naming the home.
-  #
-  # Output is CAPTURED, never streamed through a pipe, on both paths. Upstream
-  # streams the serial path through `tee` for live output; this fork does not,
-  # because a pipe is only closed once every process holding it exits, and a
-  # test that leaves a background process behind (the live-backend E2Es all do)
-  # then blocks the runner until that process dies. Measured on this tree: a
-  # fixture that prints one line and leaves `sleep 45 &` behind takes 45s
-  # through `tee` and 0s captured. The caller prints the file, so the serial
-  # path still shows the same bytes - just after the script instead of during.
-  local -a FM_TEST_SANDBOX_ARGV=()
-  mkdir -p "$sandbox"
-  cd "$ROOT" || return 1
-  fm_test_sandbox_argv "$sandbox" "$script" || return 1
-  if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
-    fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" "${FM_TEST_SANDBOX_ARGV[@]}" >"$out" 2>&1
+  if [ "$stream" -eq 1 ]; then
+    if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
+      # Expansion is intentionally deferred to the child bash passed to -c.
+      # shellcheck disable=SC2016
+      fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash -c \
+        'bash "$1" 2>&1 | tee "$2"; exit "${PIPESTATUS[0]}"' _ "$script" "$out"
+      rc=$?
+    else
+      bash "$script" 2>&1 | tee "$out"
+      rc=${PIPESTATUS[0]}
+    fi
+  elif [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
+    fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash "$script" >"$out" 2>&1
     rc=$?
   else
-    "${FM_TEST_SANDBOX_ARGV[@]}" >"$out" 2>&1
+    bash "$script" >"$out" 2>&1
     rc=$?
   fi
   if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
     printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
       "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$out"
+    [ "$stream" -eq 1 ] && tail -1 "$out"
   fi
-  fm_test_reap_sandbox_processes "$sandbox"
   return "$rc"
 }
 
@@ -2562,14 +2513,10 @@ run_one_serial() {
     "$begin_iso" "$script" "$family" "$expected"
 
   set +e
-  # Contained run. The serial path is the DEFAULT path, so it gets exactly the
-  # same boundary as --jobs: before this it ran with the caller's whole
-  # environment and cwd, which is how an ambient FM_STATE_OVERRIDE steered real
-  # scripts into the live firstmate home.
-  run_script_bounded "$RUN_TMP/s$TOTAL" "$script" "$out" 1 "s$TOTAL"
+  # Stream live output while retaining a copy for gate-skip detection.
+  run_script_bounded "$script" "$out" 1 "s$TOTAL"
   rc=$?
   set -e
-  cat "$out"
   : "${rc:=1}"
 
   end_ms=$(now_ms)
@@ -2683,10 +2630,14 @@ else
     (
       trap - EXIT HUP INT TERM
       set +e
+      export TMPDIR="$work/tmp"
+      export TMP="$work/tmp"
+      unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
+        FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
+      cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
-      # Same single owner as the serial path: clearing a remembered list of
-      # variables here was the previous defence and it covered only this branch.
-      run_script_bounded "$work" "$script" "$work/output" 0 "w$worker_n"
+      set +e
+      run_script_bounded "$script" "$work/output" 0 "w$worker_n"
       rc=$?
       set -e
       end_ms=$(now_ms)

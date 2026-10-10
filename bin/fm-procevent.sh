@@ -361,15 +361,6 @@ extension_result_command() {  # <adapter> <operation> <result-file>
   "${command[@]}"
 }
 
-# Run an adapter against THIS runner's resolved home. Without this the adapter
-# re-derives its own home from its script location, so it operates on the
-# checkout it was installed in rather than the home the runner is serving -
-# harmless when those coincide, wrong for every other home, and the way a test
-# reaches a real firstmate home despite passing a fixture home explicitly.
-adapter_env() {  # <script> <args>...
-  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_ROOT_OVERRIDE="$FM_ROOT" "$@"
-}
-
 # Ask the source's own adapter whether a captured result ends the source. Exit 0
 # is the only terminal verdict; everything else - including a missing adapter
 # command - keeps the registration armed. See the terminal-knowledge note in the
@@ -384,7 +375,7 @@ adapter_result_is_terminal() {  # <adapter> <result-file>
   esac
   script=$(adapter_script "$1")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
-  adapter_env "$script" terminal "$2" >/dev/null 2>&1
+  "$script" terminal "$2" >/dev/null 2>&1
 }
 
 # Ask the source's own adapter whether a captured result is a routine no-op that
@@ -414,7 +405,7 @@ adapter_self_announcing() {  # <adapter>
   local script
   script=$(adapter_script "$1")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
-  adapter_env "$script" self-announcing >/dev/null 2>&1
+  "$script" self-announcing >/dev/null 2>&1
 }
 
 source_file()  { printf '%s/%s.source\n' "$REG" "$1"; }
@@ -456,7 +447,7 @@ adapter_autohandle() {  # <adapter> <source-id> <result-file>
   # such command is a quiet no-op rather than runner noise. This runner's own
   # one-line outcome is the interface; an adapter that failed keeps its result
   # announced, and the handler's own call reproduces the diagnostics in full.
-  adapter_env "$script" autohandle "$id" "$seq" "$result" >/dev/null 2>&1
+  "$script" autohandle "$id" "$seq" "$result" >/dev/null 2>&1
 }
 
 # Pass a bound source's captured result to the one keyed-answer intake. The
@@ -472,7 +463,7 @@ feed_keyed_answers() {  # <adapter> <source-id> <result-file>
   origin=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$id" 2>/dev/null) || return 1
   [ -n "$origin" ] || return 1
   seq=$(fm_procevent_result_sequence "$result") || return 1
-  adapter_env "$script" answers "$result" 2>/dev/null \
+  "$script" answers "$result" 2>/dev/null \
     | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$origin" \
         --source "the captured result $id sequence $seq" >/dev/null 2>&1
 }
@@ -731,7 +722,10 @@ extension_source_request_id() {  # <adapter> <source-id> <next-sequence> <regist
 }
 
 next_result_sequence() {  # <source-id>
-  fm_procevent_sequence_reserve "$STATE" "$1"
+  local id=$1 inbox seq=1
+  inbox=$(fm_procevent_inbox_dir "$STATE")
+  while [ -e "$inbox/$id.$seq.result" ]; do seq=$((seq + 1)); done
+  printf '%s\n' "$seq"
 }
 
 register_extension_locks_release() {  # <source-id>
@@ -1240,7 +1234,7 @@ cmd_start() {
       9 8 6 "$id" "$adapter" "$FM_PROCEVENT_EXTENSION_ID" \
       "$FM_PROCEVENT_EXTENSION_VERSION" "$FM_PROCEVENT_EXTENSION_CAPABILITY_VERSION" \
       "$FM_PROCEVENT_EXTENSION_PACKAGE_DIGEST" "$FM_PROCEVENT_EXTENSION_BINDING_DIGEST" \
-      "$CLAIM_TOKEN" "$extension_sequence" "$runner" "$out" "$$" "$(fm_pid_identity "$$")" "$MAX_OUTPUT_BYTES" \
+      "$CLAIM_TOKEN" "$runner" "$out" "$$" "$(fm_pid_identity "$$")" "$MAX_OUTPUT_BYTES" \
       "$launch_ready" -- "${ARGV[@]}" > "$launch_reply" &
     launch_pid=$!
     while [ ! -s "$REG/$launch_ready" ] && kill -0 "$launch_pid" 2>/dev/null; do sleep 0.01; done
@@ -1642,34 +1636,19 @@ report_stranded_source() {  # <source-id> <claim-token> <why-and-recovery>
 # announces a new one. Nothing here changes what reconcile does about the launch
 # itself: it keeps relaunching exactly as before, and this only says so once.
 #
-# The announcement waits for a SECOND consecutive unconfirmed cycle in the same
-# episode. A runner merely slow to claim under load is owned by the next cycle,
-# which ends the episode before anything is said; announcing on the first miss
-# woke firstmate for every such transient (six episodes of the Slack captain
-# listener on 2026-10-04, each found live one cycle later). A runner that cannot
-# start fails every cycle, so it is still announced, one cycle later.
-#
 # The queue key carries a nonce beyond the episode: the watcher remembers every
 # key it has surfaced for good, so a key made of the registration identity alone
 # would be surfaced for the first episode only and every later episode of the
 # same registration would sit in the queue unannounced. The marker records the
-# episode with `pending` after the first miss, then the episode and that nonce
-# once announced, and the episode alone decides whether to announce again.
+# episode and that nonce together, and the episode alone decides whether to
+# announce.
 report_launch_failure() {  # <source-id> <registration-identity>
-  local id=$1 identity=$2 episode nonce marker previous
+  local id=$1 identity=$2 episode nonce
   case "$identity" in ''|*[!0-9:]*) episode=unreadable ;; *) episode=${identity//:/-} ;; esac
-  marker=$(launch_failed_file "$id")
-  previous=$(cat -- "$marker" 2>/dev/null || true)
-  if [ "$previous" != "$episode pending" ]; then
-    [ "${previous%%[[:space:]]*}" != "$episode" ] || return 1
-    (umask 077; printf '%s pending\n' "$episode" > "$marker") || return 1
-    return 0
-  fi
-  rm -f -- "$marker"
   nonce="$RANDOM$RANDOM"
-  announce_source_once "$marker" "$episode" \
+  announce_source_once "$(launch_failed_file "$id")" "$episode" \
     "procevent:$id:launch-failed:$episode-$nonce" \
-    "check: process-event source $id is registered but its launch did not prove it took the source's claim within FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS on two consecutive supervision cycles, so nothing is confirmed to be collecting from it; reconcile reports that as failed= and keeps launching it every supervision cycle. If it stays that way, check the source command and the adapter binary the registration names, and run an attached bin/fm-procevent.sh start $id to reproduce a refusal on its stderr - the detached launch discards it, and a hand-run reconcile only counts it as failed=. A later cycle that finds the source owned ends this episode on its own, so a runner that was merely slow to claim needs nothing from you." \
+    "check: process-event source $id is registered but its launch did not prove it took the source's claim within FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS, so nothing is confirmed to be collecting from it; reconcile reports that as failed= and keeps launching it every supervision cycle. If it stays that way, check the source command and the adapter binary the registration names, and run an attached bin/fm-procevent.sh start $id to reproduce a refusal on its stderr - the detached launch discards it, and a hand-run reconcile only counts it as failed=. A later cycle that finds the source owned ends this episode on its own, so a runner that was merely slow to claim needs nothing from you." \
     "$episode $nonce"
 }
 

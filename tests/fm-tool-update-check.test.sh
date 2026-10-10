@@ -390,12 +390,11 @@ SH
   # budget of 1 leaves headroom anywhere in (0, 1] seconds: when the sweep
   # starts near the end of a second the very first budget check already reads
   # as exhausted and the sweep reports "before every copy answered" instead of
-  # reaching the announcement step this case is about. Validating the registry
-  # and walking PATH are also real work under load. The budget only has to be
-  # smaller than the version probe's 30s stall, which then consumes it entirely
-  # whatever its size, so 5 buys generous headroom for the millisecond-scale
-  # work before the copy loop without weakening the case.
-  run_check "$home" "$(fixture_path "$dir")" "$out" FM_TOOL_UPDATE_BUDGET_SECS=5
+  # reaching the announcement step this case is about. A budget of 2 guarantees
+  # more than a full second of headroom for the millisecond-scale work before
+  # the copy loop, while the version probe below (bounded, then sleeping 30)
+  # still exhausts the budget before the announcement check.
+  run_check "$home" "$(fixture_path "$dir")" "$out" FM_TOOL_UPDATE_BUDGET_SECS=2
   report=$(cat "$out")
   assert_contains "$report" "no-mistakes check failed: the time budget ran out before the update announcement was checked" "an announcement source that was never asked was not reported"
   pass "an announcement source the budget could not reach is reported, not read as current"
@@ -1047,14 +1046,9 @@ test_armed_check_wakes_the_watcher_with_the_skew_report() {
   out="$home/out.txt"
   err="$home/err.txt"
   status=0
-  # The ceiling is a ceiling, not the expected time: the wake arrives on the
-  # first poll after the armed check's sweep, but watcher startup and that sweep
-  # are real process work that a loaded host stretches past a 10s wall deadline.
-  # It stays above FM_CHECK_TIMEOUT so even a sweep that runs to its own bound
-  # still fits inside the checkpoint.
   env FM_HOME="$home" PATH="$(fixture_path "$stale:$fresh")" FM_CHECK_TIMEOUT=30 FM_TOOL_UPDATE_INTERVAL=0 \
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=1 \
-    "$CHECKPOINT" --seconds 60 >"$out" 2>"$err" || status=$?
+    "$CHECKPOINT" --seconds 10 >"$out" 2>"$err" || status=$?
   expect_code 0 "$status" "watcher checkpoint exit"
   assert_contains "$(cat "$out")" "check:" "the armed check did not reach the watcher as a check wake"
   assert_contains "$(cat "$out")" "tool updates: herdr update not in effect" "the wake did not carry the PATH skew report"

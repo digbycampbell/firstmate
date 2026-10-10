@@ -303,69 +303,6 @@ add_gh_mock_outcome_read_fails() {
   : > "$case_dir/github-graphql-fail"
 }
 
-# gh mocks for the REST outcome-read fallback: the queue-aware GraphQL read
-# fails as if the shared GraphQL point budget were exhausted, while the separate
-# core REST quota still answers `GET repos/{owner}/{repo}/pulls/{n}` from the
-# case's github-pulls file and the branch rules from github-rules. gh-axi merges
-# and answers its own view state from FM_TEST_GH_MERGE_STATE (default open, so a
-# case must arrange REST to prove the outcome; the last-resort gh-axi view can
-# only prove a landed merge). Args: case_dir head_sha
-# The GraphQL budget runs out between the pre-merge live-head read and the
-# post-merge queue-aware read: the live-head gate still reads the pull request,
-# and only the outcome read that the REST fallback stands behind is rate limited.
-add_gh_mocks_graphql_down() {
-  local case_dir=$1 head=$2
-  write_github_live_json "$case_dir" "$head"
-  cat > "$case_dir/fakebin/gh-axi" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
-case "${1:-} ${2:-}" in
-  "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
-  "pr view")
-    [ "$#" -eq 5 ] && [ "${4:-}" = --repo ] || exit 2
-    printf 'pull_request:\n  number: %s\n  state: %s\n' "$3" "${FM_TEST_GH_MERGE_STATE:-open}"
-    ;;
-esac
-exit 0
-SH
-  cat > "$case_dir/fakebin/gh" <<SH
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >> "\$FM_TEST_GH_LOG"
-cdir=\$(dirname "\$FM_TEST_GH_LOG")
-case "\${1:-} \${2:-}" in
-  "pr view")
-    case " \$* " in
-      *statusCheckRollup*) cat "\$FM_TEST_GH_VIEW_JSON"; exit 0 ;;
-      *headRefOid*) printf '%s\n' '$head'; exit 0 ;;
-    esac
-    ;;
-  "api graphql")
-    echo 'error: API rate limit exceeded for the GraphQL resource' >&2
-    exit 1
-    ;;
-  api\ *)
-    # The pre-merge required-check reads (branch protection and unfiltered
-    # rules) answer as add_gh_mocks does; only GraphQL is down.
-    case " \$* " in
-      *pulls/*) cat "\$cdir/github-pulls"; exit 0 ;;
-      *rules/branches/*merge_queue*) cat "\$FM_TEST_GH_RULES"; exit 0 ;;
-      *rules/branches/*) cat "\$FM_TEST_GH_REQUIRED_RULES"; exit 0 ;;
-      *" repos/"*"/branches/"*) cat "\$FM_TEST_GH_BRANCH"; exit 0 ;;
-    esac
-    exit 0
-    ;;
-esac
-exit 0
-SH
-  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
-}
-
-# The post-jq lines fm-pr-merge's REST fallback reads from `gh api .../pulls/N`.
-# Args: case_dir state merged base automerge
-write_github_pulls() {
-  printf '%s\n' "state=$2" "merged=$3" "base=$4" "automerge=$5" > "$1/github-pulls"
-}
-
 # gh-axi mock that merges but cannot answer its own view, so a case can prove
 # what happens when neither reader can establish the outcome. Args: case_dir
 add_gh_axi_mock_view_fails() {
@@ -857,8 +794,8 @@ test_github_unreadable_outcome_keeps_pr_bookkeeping() {
   expect_code 1 "$rc" "github-outcome-read-fails: an unreadable outcome must fail"
   assert_grep 'could not read the GitHub pull request outcome after the merge attempt' \
     "$case_dir/stderr" "github-outcome-read-fails: the unreadable outcome was not reported"
-  assert_grep 'the gh read failed, the REST read could not prove a landed or queued outcome, and the gh-axi view could not prove the outcome either' \
-    "$case_dir/stderr" "github-outcome-read-fails: the refusal did not name all three failed reads"
+  assert_grep 'the gh read failed and the gh-axi view could not prove the outcome either' \
+    "$case_dir/stderr" "github-outcome-read-fails: the refusal did not name both failed reads"
   assert_no_grep 'verified: ' "$case_dir/stdout" \
     "github-outcome-read-fails: an unproved merge was reported as verified"
   # The merge call itself returned success, so the pull request may well have
@@ -1002,7 +939,7 @@ test_github_failed_merge_with_queue_flags_never_claims_acceptance() {
     "github-failed-merge-queue-flags: a failed merge command was reported as an armed auto-merge"
   assert_grep 'base branch main requires the merge queue; retry with:' "$case_dir/stderr" \
     "github-failed-merge-queue-flags: the failed merge command lost its concrete retry guidance"
-  assert_grep 'task-x1 https://github.com/example/repo/pull/74 --attended-override -- --auto (the queue applies its configured merge method)' "$case_dir/stderr" \
+  assert_grep 'task-x1 https://github.com/example/repo/pull/74 --attended-override -- --auto --merge' "$case_dir/stderr" \
     "github-failed-merge-queue-flags: the retry guidance named no queue flags"
   assert_no_grep 'verified: ' "$case_dir/stdout" \
     "github-failed-merge-queue-flags: a failed merge command was reported as verified"
@@ -1028,7 +965,7 @@ test_github_accepted_queue_flags_do_not_echo_back_the_same_command() {
   expect_code 1 "$rc" "github-accepted-queue-flags: an unproved merge must still fail"
   assert_grep 'state=OPEN, merged=false, isInMergeQueue=false' "$case_dir/stderr" \
     "github-accepted-queue-flags: refusal did not name the concrete observed state"
-  assert_grep 'this run refuses even though the request for https://github.com/example/repo/pull/68 was accepted with the exact flags base branch main requires (--auto, queue method merge)' \
+  assert_grep 'this run refuses even though the request for https://github.com/example/repo/pull/68 was accepted with the exact flags base branch main requires (--auto --merge)' \
     "$case_dir/stderr" \
     "github-accepted-queue-flags: the refusal did not explain that the right flags were already used"
   assert_grep "re-check the pull request's merge queue state" "$case_dir/stderr" \
@@ -1059,7 +996,7 @@ test_github_mismatched_queue_flags_still_name_the_retry() {
   expect_code 1 "$rc" "github-mismatched-queue-flags: an unproved merge must still fail"
   assert_grep 'base branch main requires the merge queue; retry with:' "$case_dir/stderr" \
     "github-mismatched-queue-flags: a caller method the queue does not use lost its retry guidance"
-  assert_grep '--attended-override -- --auto (the queue applies its configured rebase method)' "$case_dir/stderr" \
+  assert_grep '--attended-override -- --auto --rebase' "$case_dir/stderr" \
     "github-mismatched-queue-flags: the exact compatible flags were not named"
   pass "fm-pr-merge still names retry flags when the caller used a different method"
 }
@@ -1219,7 +1156,7 @@ SH
   expect_code 1 "$rc" "github-unmerged-fallback: an unproved merge must fail"
   assert_grep 'pr view 73 --repo example/repo' "$case_dir/gh-axi.log" \
     "github-unmerged-fallback: the fallback view was not consulted"
-  assert_grep 'the gh read failed, the REST read could not prove a landed or queued outcome, and the gh-axi view could not prove the outcome either' \
+  assert_grep 'the gh read failed and the gh-axi view could not prove the outcome either' \
     "$case_dir/stderr" \
     "github-unmerged-fallback: an unmerged fallback was treated as a readable outcome"
   assert_no_grep 'GitHub merge outcome was not successful' "$case_dir/stderr" \
@@ -1370,7 +1307,7 @@ test_github_without_gh_failed_read_keeps_bookkeeping() {
   pass "fm-pr-merge refuses a GitHub merge when gh is missing rather than merging blind"
 }
 
-test_github_queue_base_enqueues_with_auto_and_no_method() {
+test_github_zero_exit_queue_required_refuses_with_exact_retry() {
   local case_dir rc
   case_dir=$(make_case github-zero-exit-queue-required)
   mkdir -p "$case_dir/wt"
@@ -1386,22 +1323,25 @@ test_github_queue_base_enqueues_with_auto_and_no_method() {
   rc=$?
   set -e
 
-  expect_code 1 "$rc" "github-zero-exit-queue-required: an unproved enqueue must fail"
+  expect_code 1 "$rc" "github-zero-exit-queue-required: an unproved merge must fail"
   assert_grep 'state=OPEN, merged=false, isInMergeQueue=false' "$case_dir/stderr" \
     "github-zero-exit-queue-required: refusal did not name the concrete observed state"
-  assert_grep 'was accepted with the exact flags base branch release/2026 requires (--auto, queue method rebase)' "$case_dir/stderr" \
-    "github-zero-exit-queue-required: refusal did not say the queue request was already made"
+  assert_grep 'base branch release/2026 requires the merge queue' "$case_dir/stderr" \
+    "github-zero-exit-queue-required: refusal did not name the queue requirement"
+  assert_grep '--attended-override -- --auto --rebase' "$case_dir/stderr" \
+    "github-zero-exit-queue-required: refusal did not name the exact compatible flags"
   assert_grep 'api --paginate repos/example/repo/rules/branches/release%2F2026' "$case_dir/gh.log" \
     "github-zero-exit-queue-required: queue rules were not read with pagination and encoded branch path"
-  # The queue sets the method, so the enqueue names none.
-  assert_logged_gh_merge "$case_dir" 56 example/repo --auto
+  assert_logged_gh_merge "$case_dir" 56 example/repo --squash
   [ "$(grep -c '^pr merge ' "$case_dir/gh.log")" -eq 1 ] \
     || fail "github-zero-exit-queue-required: the wrapper attempted more than one merge"
+  assert_no_grep --auto "$case_dir/gh.log" \
+    "github-zero-exit-queue-required: queue flags were auto-applied to the attempted merge"
   assert_grep 'pr=https://github.com/example/repo/pull/56' "$case_dir/state/task-x1.meta" \
     "github-zero-exit-queue-required: the attempted merge lost its PR reference"
   assert_present "$case_dir/state/task-x1.check.sh" \
     "github-zero-exit-queue-required: the attempted merge did not leave its poll armed"
-  pass "fm-pr-merge enqueues on a merge-queue base with --auto and no method flag"
+  pass "fm-pr-merge reports exact queue retry flags after a zero-exit false success"
 }
 
 test_github_closed_unqueued_outcome_omits_retry_flags() {
@@ -1459,96 +1399,6 @@ test_github_queued_outcome_is_verified() {
   pass "fm-pr-merge accepts and accurately reports a GitHub merge-queue entry"
 }
 
-test_github_rest_fallback_proves_merge_when_graphql_rate_limited() {
-  local case_dir rc
-  case_dir=$(make_case github-rest-proves-merge)
-  mkdir -p "$case_dir/wt"
-  add_gh_mocks_graphql_down "$case_dir" 4040404040404040404040404040404040404040
-  # GraphQL read is rate-limited; REST proves the merge landed.
-  write_github_pulls "$case_dir" closed true main false
-  : > "$case_dir/github-rules"
-  : > "$case_dir/gh-axi.log"
-  : > "$case_dir/gh.log"
-
-  set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/58 \
-    > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 0 "$rc" "rest-proves-merge: a REST-proven merge should succeed when GraphQL is rate limited"
-  assert_grep 'verified: https://github.com/example/repo/pull/58 is merged' \
-    "$case_dir/stdout" "rest-proves-merge: a REST-proven merge was not reported as verified"
-  assert_grep 'api graphql' "$case_dir/gh.log" \
-    "rest-proves-merge: the queue-aware GraphQL read was not even attempted first"
-  assert_grep 'pulls/58' "$case_dir/gh.log" \
-    "rest-proves-merge: the REST pull read was never made after the GraphQL read failed"
-  assert_no_grep 'could not read the GitHub pull request outcome' "$case_dir/stderr" \
-    "rest-proves-merge: a REST-proven merge still reported the outcome as unreadable"
-  pass "fm-pr-merge proves a landed merge via REST when the GraphQL read is rate limited"
-}
-
-test_github_rest_fallback_proves_enqueue_when_graphql_rate_limited() {
-  local case_dir rc
-  case_dir=$(make_case github-rest-proves-queue)
-  mkdir -p "$case_dir/wt"
-  add_gh_mocks_graphql_down "$case_dir" 4141414141414141414141414141414141414141
-  # GraphQL read is rate-limited; the PR is open with auto-merge armed on a base
-  # branch a merge_queue rule governs, which REST can prove is an enqueue.
-  write_github_pulls "$case_dir" open false main true
-  printf 'merge_method=MERGE\n' > "$case_dir/github-rules"
-  : > "$case_dir/gh-axi.log"
-  : > "$case_dir/gh.log"
-
-  set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/59 --attended-override -- --auto --merge \
-    > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 0 "$rc" "rest-proves-queue: a REST-proven enqueue should succeed when GraphQL is rate limited"
-  assert_grep 'verified: https://github.com/example/repo/pull/59 is queued' \
-    "$case_dir/stdout" "rest-proves-queue: a REST-proven enqueue was not reported as queued"
-  assert_grep 'pulls/59' "$case_dir/gh.log" \
-    "rest-proves-queue: the REST pull read was never made"
-  assert_grep 'rules/branches/' "$case_dir/gh.log" \
-    "rest-proves-queue: the base branch's merge_queue rule was never checked"
-  pass "fm-pr-merge proves an auto-merge enqueue via REST when the GraphQL read is rate limited"
-}
-
-test_github_rest_fallback_still_refuses_when_neither_read_proves_it() {
-  local case_dir rc
-  case_dir=$(make_case github-rest-cannot-prove)
-  mkdir -p "$case_dir/wt"
-  add_gh_mocks_graphql_down "$case_dir" 4242424242424242424242424242424242424242
-  # GraphQL rate-limited; the PR is open, not merged, with NO auto-merge armed
-  # (the direct-queue-add shape, where REST cannot prove the enqueue). gh-axi's
-  # own view is open too, so nothing can prove a landed or queued outcome.
-  write_github_pulls "$case_dir" open false main false
-  printf 'merge_method=MERGE\n' > "$case_dir/github-rules"
-  : > "$case_dir/gh-axi.log"
-  : > "$case_dir/gh.log"
-
-  set +e
-  FM_TEST_GH_MERGE_STATE=open run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/60 \
-    > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 1 "$rc" "rest-cannot-prove: an unprovable outcome must still fail"
-  assert_grep 'could not read the GitHub pull request outcome after the merge attempt' \
-    "$case_dir/stderr" "rest-cannot-prove: the unreadable outcome was not reported"
-  assert_grep 'the REST read could not prove a landed or queued outcome' \
-    "$case_dir/stderr" "rest-cannot-prove: the refusal did not name the failed REST read"
-  assert_no_grep 'verified: ' "$case_dir/stdout" \
-    "rest-cannot-prove: an unprovable outcome was reported as verified"
-  assert_grep 'pr=https://github.com/example/repo/pull/60' "$case_dir/state/task-x1.meta" \
-    "rest-cannot-prove: the attempted merge lost its PR reference"
-  assert_present "$case_dir/state/task-x1.check.sh" \
-    "rest-cannot-prove: the attempted merge did not leave its poll armed"
-  pass "fm-pr-merge still refuses fail-closed when neither the GraphQL nor the REST read can prove the outcome"
-}
-
 test_github_queue_required_refusal_names_retry_flags() {
   local case_dir rc
   case_dir=$(make_case github-queue-required)
@@ -1570,9 +1420,9 @@ test_github_queue_required_refusal_names_retry_flags() {
     "github-queue-required: the original forge failure was not preserved"
   assert_grep 'base branch master requires the merge queue' "$case_dir/stderr" \
     "github-queue-required: refusal did not name the queue requirement"
-  grep -F -- '--attended-override -- --auto (the queue applies its configured merge method)' "$case_dir/stderr" >/dev/null \
+  grep -F -- '--attended-override -- --auto --merge' "$case_dir/stderr" >/dev/null \
     || fail "github-queue-required: refusal did not name the exact compatible flags"
-  assert_logged_gh_merge "$case_dir" 54 example/repo --auto
+  assert_logged_gh_merge "$case_dir" 54 example/repo --squash
   assert_present "$case_dir/state/task-x1.check.sh" \
     "github-queue-required: the failed forge call did not leave the merge poll armed"
   pass "fm-pr-merge explains how to retry with the required GitHub merge queue method"
@@ -1595,9 +1445,10 @@ test_github_agreeing_queue_rules_keep_retry_guidance() {
   set -e
 
   expect_code 1 "$rc" "github-agreeing-queue-rules: an unproved merge must fail"
-  assert_logged_gh_merge "$case_dir" 58 example/repo --auto
-  assert_grep 'base branch main requires (--auto, queue method rebase)' "$case_dir/stderr" \
-    "github-agreeing-queue-rules: agreeing rules did not resolve to their one queue method"
+  assert_grep 'base branch main requires the merge queue' "$case_dir/stderr" \
+    "github-agreeing-queue-rules: refusal did not name the queue requirement"
+  assert_grep '--attended-override -- --auto --rebase' "$case_dir/stderr" \
+    "github-agreeing-queue-rules: agreeing rules omitted exact retry flags"
   assert_no_grep 'exact retry flags are ambiguous' "$case_dir/stderr" \
     "github-agreeing-queue-rules: agreeing rules were reported as ambiguous"
   pass "fm-pr-merge aggregates agreeing merge-queue rules"
@@ -2507,7 +2358,7 @@ test_secondmate_without_parent_binding_is_loud() {
   pass "a secondmate home that cannot report upward says so instead of merging in silence"
 }
 
-test_github_queue_base_enqueues_with_auto_and_no_method
+test_github_zero_exit_queue_required_refuses_with_exact_retry
 test_github_closed_unqueued_outcome_omits_retry_flags
 test_github_agreeing_queue_rules_keep_retry_guidance
 test_github_conflicting_queue_rules_report_ambiguity
@@ -2539,9 +2390,6 @@ test_github_without_gh_failed_read_keeps_bookkeeping
 test_github_merged_outcome_is_verified
 test_github_verified_merge_requires_poll_recording
 test_github_queued_outcome_is_verified
-test_github_rest_fallback_proves_merge_when_graphql_rate_limited
-test_github_rest_fallback_proves_enqueue_when_graphql_rate_limited
-test_github_rest_fallback_still_refuses_when_neither_read_proves_it
 test_github_queue_required_refusal_names_retry_flags
 test_extra_merge_args_forwarded
 test_missing_meta_refuses_before_merge
@@ -3659,52 +3507,6 @@ test_required_producer_identity() {
   pass "fm-pr-merge enforces required producer identity and named waivers"
 }
 
-# A head with a long check-run history (81 reruns on one real PR) produces
-# producer data past Linux's 128 KB single-argument limit even after projection,
-# so the guard must stream it to jq and still bind the required check to its app.
-test_oversized_check_run_history_keeps_producer_identity() {
-  local case_dir head variant app bytes
-  head=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
-  for variant in correct wrong-app; do
-    case_dir=$(make_case "required-producer-oversized-$variant")
-    add_gh_mocks "$case_dir" "$head"
-    write_github_rollup_json "$case_dir" "$head" "$(check_run ci COMPLETED SUCCESS)"
-    write_github_required "$case_dir" classic:ci
-    jq '.protection.required_status_checks.checks[0].app_id = 15368' \
-      "$case_dir/github-branch.json" > "$case_dir/updated.json"
-    mv "$case_dir/updated.json" "$case_dir/github-branch.json"
-    app=15368
-    [ "$variant" != wrong-app ] || app=42
-    jq -n --arg head "$head" --argjson app "$app" '
-      {check_runs: [range(0; 1500) as $i | {
-        name: (if $i == 0 then "ci" else "history-\($i)-" + ("x" * 64) end),
-        app: {id: (if $i == 0 then $app else 42 end), slug: "github-actions",
-          description: ("d" * 512)},
-        head_sha: $head
-      }]}' > "$case_dir/github-runs.json"
-    bytes=$(jq -c '[.check_runs[] | {name, head_sha, app: {id: .app.id}}]' \
-      "$case_dir/github-runs.json" | wc -c)
-    [ "$bytes" -gt 131072 ] \
-      || fail "oversized-producer-$variant: projected producer data is only $bytes bytes"
-
-    run_required_case "$case_dir" 110 --attended-override -- --admin
-    assert_no_grep 'could not be read' "$case_dir/stderr" \
-      "oversized-producer-$variant: the oversized history was not read"
-    if [ "$variant" = correct ]; then
-      expect_code 0 "$RC" "oversized-producer-correct: $(cat "$case_dir/stderr")"
-      assert_grep 'pr merge' "$case_dir/gh.log" \
-        "oversized-producer-correct: a valid app-bound producer did not merge"
-    else
-      expect_code 1 "$RC" "oversized-producer-wrong-app: $(cat "$case_dir/stderr")"
-      assert_grep "required check 'ci' has not reported" "$case_dir/stderr" \
-        "oversized-producer-wrong-app: the app-bound check was accepted"
-      assert_no_grep 'pr merge' "$case_dir/gh.log" \
-        "oversized-producer-wrong-app: a producer from another app reached merge"
-    fi
-  done
-  pass "fm-pr-merge streams oversized check-run history while preserving app binding"
-}
-
 # A commit status carries no app id to compare, so an app-bound required context
 # that arrives as a green status matches by name, while the same context left
 # unreported still refuses.
@@ -4082,6 +3884,5 @@ test_allow_missing_waives_only_the_named_unreported_check
 test_allow_missing_follows_the_allow_red_rules
 
 test_required_producer_identity
-test_oversized_check_run_history_keeps_producer_identity
 test_app_bound_required_status_context_matches_by_name
 test_required_partial_reads_report_all_failures

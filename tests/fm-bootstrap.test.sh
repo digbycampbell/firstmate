@@ -522,7 +522,6 @@ command() {
   fi
   builtin command "$@"
 }
-
 git() {
   return 127
 }

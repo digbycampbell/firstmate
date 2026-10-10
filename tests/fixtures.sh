@@ -102,28 +102,13 @@ fm_test_fake_gh_axi() {
 # The pane path defaults to empty when FM_FAKE_PANE_PATH is unset. Window
 # cleanup and option operations are no-ops. Launch logging is env-gated, so
 # suites that do not set FM_FAKE_LAUNCH_LOG keep a silent send-keys.
-# One pool slot per task: when FM_FAKE_PANE_SECOND_TASK names a task id, that
-# task's pane resolves to FM_FAKE_PANE_PATH_2 instead, so a batch's second task
-# gets its own worktree and the double-allocation guard sees no collision
-# (bin/fm-worktree-claim-lib.sh). Unset, the stub behaves exactly as before.
 fm_test_fake_tmux_spawn() {
   local fakebin=$1
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
 case "$*" in
-  *"#{pane_current_path}"*)
-    for a in "$@"; do
-      case "$a" in
-        *"${FM_FAKE_PANE_SECOND_TASK:-__none__}"*)
-          printf '%s\n' "${FM_FAKE_PANE_PATH_2:-${FM_FAKE_PANE_PATH:-}}"
-          exit 0
-          ;;
-      esac
-    done
-    printf '%s\n' "${FM_FAKE_PANE_PATH:-}"
-    exit 0
-    ;;
+  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;

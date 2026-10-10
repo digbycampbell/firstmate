@@ -12,21 +12,6 @@ set -u
 
 RUNNER="$ROOT/bin/fm-test-run.sh"
 
-# The runner is not a single file: it sources its containment boundary, and it
-# refuses to run without it (deliberately - a runner silently running tests
-# uncontained is the 2026-08-31 defect). A fixture that copies the runner must
-# copy those libraries too, or it is not a faithful copy of the program.
-install_runner() {  # <dest-bin-dir>
-  local dest=$1
-  mkdir -p "$dest"
-  cp "$RUNNER" "$dest/fm-test-run.sh"
-  cp "$ROOT/bin/fm-test-sandbox-lib.sh" "$dest/fm-test-sandbox-lib.sh"
-  cp "$ROOT/bin/fm-home-guard-lib.sh" "$dest/fm-home-guard-lib.sh"
-  chmod +x "$dest/fm-test-run.sh"
-  mkdir -p "$dest/../tests"
-  cp "$ROOT/tests/git-config-helpers.sh" "$dest/../tests/"
-}
-
 assert_present "$RUNNER" "bin/fm-test-run.sh is missing"
 [ -x "$RUNNER" ] || fail "bin/fm-test-run.sh must be executable"
 
@@ -106,7 +91,8 @@ test_changed_file_selection_is_conservative() {
 init_changed_fixture_repo() {
   local repo=$1 script
   mkdir -p "$repo/bin" "$repo/tests"
-  install_runner "$repo/bin"
+  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-brief.test.sh \
@@ -186,14 +172,6 @@ init_changed_fixture_repo() {
   : >"$repo/CONTRIBUTING.md"
   : >"$repo/src/unmapped.ts"
   git -C "$repo" init -q
-  # The fixture must not inherit the developer's global ignore file. A machine
-  # that globally ignores .claude/ and .agents/ (a reasonable thing to do, and
-  # what this repo's own captain does) silently drops those fixture paths from
-  # `git add .`, so the changed-file map is asked about a file git never
-  # reports as changed and the assertion fails for a reason that has nothing to
-  # do with the map. Same class as the FM_* clearing in
-  # bin/fm-test-sandbox-lib.sh: ambient config must not reach a fixture.
-  git -C "$repo" config core.excludesFile /dev/null
   git -C "$repo" add .
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm baseline
 }
@@ -207,7 +185,10 @@ init_primary_and_linked_worktree() {
   fm_git_init_commit "$repo"
   git -C "$repo" worktree add --quiet -b linked-probe "$linked"
   for tree in "$repo" "$linked"; do
-    install_runner "$tree/bin"
+    mkdir -p "$tree/bin" "$tree/tests"
+    cp "$RUNNER" "$tree/bin/fm-test-run.sh"
+    cp "$ROOT/tests/git-config-helpers.sh" "$tree/tests/"
+    chmod +x "$tree/bin/fm-test-run.sh"
     cat >"$tree/tests/probe.test.sh" <<PROBE
 #!/usr/bin/env bash
 echo "ok - probe suite"
@@ -530,7 +511,8 @@ PY
   timeout_repo="$tmp/timeout-repo"
   timeout_script=tests/fm-calm-pi-extension.test.sh
   mkdir -p "$timeout_repo/bin" "$timeout_repo/tests"
-  install_runner "$timeout_repo/bin"
+  cp "$RUNNER" "$timeout_repo/bin/fm-test-run.sh"
+  cp "$ROOT/tests/git-config-helpers.sh" "$timeout_repo/tests/"
   cat >"$timeout_repo/bin/fm-timeout-lib.sh" <<'SH'
 fm_run_timed() {
   [ "$1" -eq 1500 ] || return 99
@@ -542,7 +524,7 @@ SH
 touch should-not-run
 echo "not ok - automatic timeout helper was bypassed"
 SH
-  chmod +x "$timeout_repo/$timeout_script"
+  chmod +x "$timeout_repo/bin/fm-test-run.sh" "$timeout_repo/$timeout_script"
   git -C "$timeout_repo" init -q
   git -C "$timeout_repo" add .
   git -C "$timeout_repo" -c user.name=test -c user.email=test@example.invalid commit -qm baseline
@@ -681,8 +663,10 @@ test_family_proofs_run_in_separate_concurrent_phases() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-family-phases.XXXXXX")
   repo="$tmp/repo"
   mkdir -p "$repo/bin" "$repo/tests"
-  install_runner "$repo/bin"
+  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-calm-pi-extension.test.sh fm-vendor-auth-probe.test.sh \
     fm-pr-check-security.test.sh fm-teardown.test.sh; do
@@ -1356,7 +1340,9 @@ test_unmapped_new_test_never_inherits_family_concurrency() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-unmapped.XXXXXX")
   repo="$tmp/repo"
   mkdir -p "$repo/bin" "$repo/tests"
-  install_runner "$repo/bin"
+  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
+  chmod +x "$repo/bin/fm-test-run.sh"
   # Two members of the proven residual family, plus a test basename the family
   # map has never seen - the shape of any test added tomorrow.
   for script in fm-procevent.test.sh fm-quota-choose.test.sh fm-zz-unmapped-fixture.test.sh; do
@@ -1472,7 +1458,8 @@ test_per_script_timeout_bounds_a_hang() {
   runner="$repo/bin/fm-test-run.sh"
   hang=tests/fm-hang-fixture.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
-  install_runner "$repo/bin"
+  cp "$RUNNER" "$runner"
+  cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
   cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
   grandchild_pid="$tmp/grandchild.pid"
   cat >"$repo/$hang" <<'SH'
@@ -1481,7 +1468,7 @@ echo "ok - fixture is about to hang"
 sh -c 'trap "" TERM; echo $$ >"$1"; sleep 600' _ "$GRANDCHILD_PID" &
 sleep 600
 SH
-  chmod +x "$repo/$hang"
+  chmod +x "$runner" "$repo/$hang"
 
   began=$(date +%s)
   set +e
@@ -1539,8 +1526,6 @@ test_changed_bound_gives_slow_watcher_suites_headroom() {
   script=tests/fm-watch-triage.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
   cp "$RUNNER" "$repo/bin/fm-test-run.sh"
-  cp "$ROOT/bin/fm-test-sandbox-lib.sh" "$repo/bin/fm-test-sandbox-lib.sh"
-  cp "$ROOT/bin/fm-home-guard-lib.sh" "$repo/bin/fm-home-guard-lib.sh"
   cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
   cat >"$repo/bin/fm-timeout-lib.sh" <<'SH'
 fm_run_timed() {
@@ -1578,13 +1563,14 @@ test_max_wall_ms_is_a_result_not_advice() {
   runner="$repo/bin/fm-test-run.sh"
   fast=tests/fm-budget-fixture.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
-  install_runner "$repo/bin"
+  cp "$RUNNER" "$runner"
+  cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
   cat >"$repo/$fast" <<'SH'
 #!/usr/bin/env bash
 sleep 1
 echo "ok - budget fixture"
 SH
-  chmod +x "$repo/$fast"
+  chmod +x "$runner" "$repo/$fast"
 
   # Comfortably inside budget: the run passes and states the budget it met.
   set +e
@@ -1642,7 +1628,8 @@ test_jobs_parallel_scheduler_and_failure_propagation() {
   c=tests/fm-lint.test.sh
   d=tests/fm-supervision-instructions.test.sh
   mkdir -p "$repo/bin" "$repo/tests" "$evidence" "$fake_bin"
-  install_runner "$repo/bin"
+  cp "$RUNNER" "$runner"
+  cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
   cat >"$fake_bin/stat" <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then

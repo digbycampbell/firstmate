@@ -38,7 +38,6 @@ fm_procevent_claim_root() {
 fm_procevent_registry_dir() { printf '%s\n' "$1/procevent"; }
 fm_procevent_inbox_dir()    { printf '%s\n' "$1/procevent-inbox"; }
 fm_procevent_capture_reservation_dir() { printf '%s\n' "$1/procevent-capture-reservations"; }
-fm_procevent_sequence_dir() { printf '%s\n' "$1/procevent-sequences"; }
 
 # A source id names a private file and a bounded wake slug, so it is held to the
 # same path-safe shape as a task id. Adapters derive it from canonical source
@@ -1087,80 +1086,6 @@ fm_procevent_capture_reservation_remove_claim() {  # <state> <claim-token>
   done
 }
 
-# fm_procevent_sequence_reserve <state> <source-id>
-# Reserve and print a source's next durable result sequence. The high-water
-# record lives outside the retained result inbox, so removing old captures
-# cannot make a later capture reuse their handled or watcher wake identity.
-fm_procevent_sequence_reserve() {
-  local state=$1 id=$2 dir record lock inbox artifact base rest seen=0 current next tmp status=1
-  fm_procevent_source_id_valid "$id" || return 1
-  dir=$(fm_procevent_sequence_dir "$state")
-  if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
-    (umask 077; mkdir "$dir") || return 1
-  fi
-  fm_procevent_private_directory_valid "$dir" 1 || return 1
-  record="$dir/$id"
-  lock="$dir/.$id.lock"
-  fm_lock_acquire_wait "$lock" || return 1
-  if [ -e "$record" ] || [ -L "$record" ]; then
-    if [ ! -f "$record" ] || [ -L "$record" ]; then
-      fm_lock_release "$lock"
-      return 1
-    fi
-    current=$(cat "$record" 2>/dev/null) || {
-      fm_lock_release "$lock"
-      return 1
-    }
-    case "$current" in ''|*[!0-9]*) fm_lock_release "$lock"; return 1 ;; esac
-    seen=$((10#$current))
-  fi
-  inbox=$(fm_procevent_inbox_dir "$state")
-  for artifact in "$inbox/$id".*.result "$inbox/$id".*.handled; do
-    [ -e "$artifact" ] || [ -L "$artifact" ] || continue
-    base=${artifact##*/}
-    rest=${base#"$id".}
-    current=${rest%%.*}
-    case "$current" in ''|*[!0-9]*) continue ;; esac
-    current=$((10#$current))
-    [ "$current" -le "$seen" ] || seen=$current
-  done
-  next=$((seen + 1))
-  tmp=$(umask 077; mktemp "$dir/.sequence.XXXXXX") || {
-    fm_lock_release "$lock"
-    return 1
-  }
-  if printf '%s\n' "$next" > "$tmp" && chmod 0600 "$tmp" \
-    && mv -f -- "$tmp" "$record"; then
-    status=0
-  fi
-  rm -f -- "$tmp"
-  fm_lock_release "$lock"
-  [ "$status" -eq 0 ] || return 1
-  printf '%s\n' "$next"
-}
-
-fm_procevent_new_capture_identity() {
-  local hex
-  hex=$(LC_ALL=C od -An -v -tx1 -N 32 /dev/urandom 2>/dev/null | tr -d ' \n') || return 1
-  [ "${#hex}" -eq 64 ] || return 1
-  printf 'sha256:%s\n' "$hex"
-}
-
-# fm_procevent_result_capture_identity <result-path>
-fm_procevent_result_capture_identity() {
-  local file="${1%.result}.capture-id" identity extra
-  [ -f "$file" ] && [ ! -L "$file" ] || return 1
-  {
-    IFS= read -r identity && ! IFS= read -r extra
-  } < "$file" || return 1
-  case "$identity" in
-    sha256:????????????????????????????????????????????????????????????????) ;;
-    *) return 1 ;;
-  esac
-  case "${identity#sha256:}" in *[!0-9a-f]*) return 1 ;; esac
-  printf '%s\n' "$identity"
-}
-
 # fm_procevent_capture <state> <source-id> <adapter> <output-file> [<task-id>]
 #   [<extension-id> <extension-version> <capability-version> <package-digest> <binding-digest>]
 # Atomically store the completed output at 0600 and print its durable path. The
@@ -1172,7 +1097,6 @@ fm_procevent_capture() {
   local state=$1 id=$2 adapter=$3 src=$4 extension_id=${5-} extension_version=${6-}
   local capability_version=${7-} package_digest=${8-} binding_digest=${9-} task_owner=${5-}
   local inbox seq dest tmp adapter_dest adapter_tmp owner_dest='' owner_tmp='' extension_dest='' extension_tmp=''
-  local capture_dest capture_tmp capture_identity
   [ "$#" -eq 4 ] || [ "$#" -eq 5 ] || [ "$#" -eq 9 ] || return 1
   fm_procevent_source_id_valid "$id" || return 1
   fm_procevent_adapter_valid "$adapter" || return 1
@@ -1203,45 +1127,35 @@ fm_procevent_capture() {
     inbox=$(fm_procevent_inbox_dir "$state")
     (umask 077; mkdir -p "$inbox") || return 1
   fi
-  seq=$(fm_procevent_sequence_reserve "$state" "$id") || return 1
+  seq=1
+  while [ -e "$inbox/$id.$seq.result" ]; do seq=$((seq + 1)); done
   dest="$inbox/$id.$seq.result"
   adapter_dest="$inbox/$id.$seq.adapter"
-  capture_dest="$inbox/$id.$seq.capture-id"
   if [ "$#" -eq 5 ]; then
     owner_dest="$inbox/$id.$seq.owner-task"
   fi
   if [ "$#" -eq 9 ]; then
     [ ! -e "$dest" ] && [ ! -L "$dest" ] \
-      && [ ! -e "$adapter_dest" ] && [ ! -L "$adapter_dest" ] \
-      && [ ! -e "$capture_dest" ] && [ ! -L "$capture_dest" ] || return 1
+      && [ ! -e "$adapter_dest" ] && [ ! -L "$adapter_dest" ] || return 1
   fi
   tmp=$(umask 077; mktemp "$inbox/.capture.XXXXXX") || return 1
   adapter_tmp=$(umask 077; mktemp "$inbox/.adapter.XXXXXX") || { rm -f -- "$tmp"; return 1; }
-  capture_tmp=$(umask 077; mktemp "$inbox/.capture-id.XXXXXX") \
-    || { rm -f -- "$tmp" "$adapter_tmp"; return 1; }
-  capture_identity=$(fm_procevent_new_capture_identity) \
-    || { rm -f -- "$tmp" "$adapter_tmp" "$capture_tmp"; return 1; }
   if [ "$#" -eq 5 ]; then
-    owner_tmp=$(umask 077; mktemp "$inbox/.owner-task.XXXXXX") \
-      || { rm -f -- "$tmp" "$adapter_tmp" "$capture_tmp"; return 1; }
+    owner_tmp=$(umask 077; mktemp "$inbox/.owner-task.XXXXXX") || { rm -f -- "$tmp" "$adapter_tmp"; return 1; }
   fi
   if [ "$#" -eq 9 ]; then
     extension_dest="$inbox/$id.$seq.extension"
     [ ! -e "$extension_dest" ] && [ ! -L "$extension_dest" ] || {
-      rm -f -- "$tmp" "$adapter_tmp" "$capture_tmp" "$owner_tmp"
+      rm -f -- "$tmp" "$adapter_tmp" "$owner_tmp"
       return 1
     }
     extension_tmp=$(umask 077; mktemp "$inbox/.extension.XXXXXX") \
-      || { rm -f -- "$tmp" "$adapter_tmp" "$capture_tmp" "$owner_tmp"; return 1; }
+      || { rm -f -- "$tmp" "$adapter_tmp" "$owner_tmp"; return 1; }
   fi
-  if ! cat "$src" > "$tmp"; then rm -f -- "$tmp" "$adapter_tmp" "$capture_tmp" "$owner_tmp" "$extension_tmp"; return 1; fi
-  if ! printf '%s\n' "$adapter" > "$adapter_tmp"; then rm -f -- "$tmp" "$adapter_tmp" "$capture_tmp" "$owner_tmp" "$extension_tmp"; return 1; fi
-  if ! printf '%s\n' "$capture_identity" > "$capture_tmp"; then
-    rm -f -- "$tmp" "$adapter_tmp" "$capture_tmp" "$owner_tmp" "$extension_tmp"
-    return 1
-  fi
+  if ! cat "$src" > "$tmp"; then rm -f -- "$tmp" "$adapter_tmp" "$owner_tmp" "$extension_tmp"; return 1; fi
+  if ! printf '%s\n' "$adapter" > "$adapter_tmp"; then rm -f -- "$tmp" "$adapter_tmp" "$owner_tmp" "$extension_tmp"; return 1; fi
   if [ "$#" -eq 5 ] && ! printf '%s\n' "$task_owner" > "$owner_tmp"; then
-    rm -f -- "$tmp" "$adapter_tmp" "$capture_tmp" "$owner_tmp" "$extension_tmp"
+    rm -f -- "$tmp" "$adapter_tmp" "$owner_tmp" "$extension_tmp"
     return 1
   fi
   if [ "$#" -eq 9 ] && ! {
@@ -1252,36 +1166,32 @@ fm_procevent_capture() {
     printf 'package_digest=%s\n' "$package_digest"
     printf 'binding_digest=%s\n' "$binding_digest"
   } > "$extension_tmp"; then
-    rm -f -- "$tmp" "$adapter_tmp" "$capture_tmp" "$owner_tmp" "$extension_tmp"
+    rm -f -- "$tmp" "$adapter_tmp" "$owner_tmp" "$extension_tmp"
     return 1
   fi
-  if ! chmod 0600 "$tmp" "$adapter_tmp" "$capture_tmp"; then
-    rm -f -- "$tmp" "$adapter_tmp" "$capture_tmp" "$owner_tmp" "$extension_tmp"
+  if ! chmod 0600 "$tmp" "$adapter_tmp"; then
+    rm -f -- "$tmp" "$adapter_tmp" "$owner_tmp" "$extension_tmp"
     return 1
   fi
   if [ "$#" -eq 5 ] && ! chmod 0600 "$owner_tmp"; then
-    rm -f -- "$tmp" "$adapter_tmp" "$capture_tmp" "$owner_tmp" "$extension_tmp"
+    rm -f -- "$tmp" "$adapter_tmp" "$owner_tmp" "$extension_tmp"
     return 1
   fi
   if [ "$#" -eq 9 ] && ! chmod 0600 "$extension_tmp"; then
-    rm -f -- "$tmp" "$adapter_tmp" "$capture_tmp" "$owner_tmp" "$extension_tmp"
+    rm -f -- "$tmp" "$adapter_tmp" "$owner_tmp" "$extension_tmp"
     return 1
   fi
-  if ! mv -f -- "$adapter_tmp" "$adapter_dest"; then rm -f -- "$tmp" "$adapter_tmp" "$capture_tmp" "$owner_tmp" "$extension_tmp"; return 1; fi
-  if ! mv -f -- "$capture_tmp" "$capture_dest"; then
-    rm -f -- "$tmp" "$adapter_dest" "$capture_tmp" "$owner_tmp" "$extension_tmp"
-    return 1
-  fi
+  if ! mv -f -- "$adapter_tmp" "$adapter_dest"; then rm -f -- "$tmp" "$adapter_tmp" "$owner_tmp" "$extension_tmp"; return 1; fi
   if [ "$#" -eq 5 ] && ! mv -f -- "$owner_tmp" "$owner_dest"; then
-    rm -f -- "$tmp" "$adapter_dest" "$capture_dest" "$owner_tmp" "$extension_tmp"
+    rm -f -- "$tmp" "$adapter_dest" "$owner_tmp" "$extension_tmp"
     return 1
   fi
   if [ "$#" -eq 9 ] && ! mv -f -- "$extension_tmp" "$extension_dest"; then
-    rm -f -- "$tmp" "$adapter_dest" "$capture_dest" "$owner_dest" "$extension_tmp"
+    rm -f -- "$tmp" "$adapter_dest" "$owner_dest" "$extension_tmp"
     return 1
   fi
   if ! mv -f -- "$tmp" "$dest"; then
-    rm -f -- "$tmp" "$adapter_dest" "$capture_dest" "$owner_dest"
+    rm -f -- "$tmp" "$adapter_dest" "$owner_dest"
     [ -z "$extension_dest" ] || rm -f -- "$extension_dest"
     return 1
   fi
