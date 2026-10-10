@@ -127,23 +127,21 @@ cmd_poll() {
   FM_HOME=$home
   prepare
   marker_dir="${FM_STATE_OVERRIDE:-$FM_HOME/state}/slack-captain"
-  marker="$marker_dir/.last-poll-failed"
+  marker="$marker_dir/.last-poll-failed-$channel"
   staged=$(mktemp "${TMPDIR:-/tmp}/fm-slack-poll.XXXXXX") || die "cannot stage the poll output"
+  trap 'rm -f -- "$staged"' EXIT
   "$(package_captain)" poll "$channel" > "$staged"
   rc=$?
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 75 ] && [ ! -s "$staged" ]; then
-    rm -f -- "$staged"
-    mkdir -p "$marker_dir" 2>/dev/null || true
     if [ -e "$marker" ]; then
       rm -f -- "$marker"
       exit "$rc"
     fi
-    : > "$marker" 2>/dev/null || true
+    mkdir -p "$marker_dir" && (umask 077; : > "$marker") || exit "$rc"
     exit 75
   fi
   rm -f -- "$marker"
   cat -- "$staged"
-  rm -f -- "$staged"
   exit "$rc"
 }
 

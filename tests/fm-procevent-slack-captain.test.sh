@@ -208,6 +208,30 @@ assert_contains "$(cat "$TMP_ROOT/relisten.out")" "no-result: $SID" \
   "two consecutive failed polls must release the claim"
 pass "two consecutive failed polls release the claim"
 
+# --- two channels under one home track failed polls independently ----------
+
+home=$(new_home channel-scope)
+CHAN_A=C0CHANAAA
+CHAN_B=C0CHANBBB
+rc=0
+STUB_POLL_SCRIPT="fail" STUB_POLL_COUNT="$TMP_ROOT/scope-a1" \
+  FM_HOME="$home" "$ADAPTER" poll "$home" "$CHAN_A" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 75 ] || fail "channel A's first failed poll must relisten (exit 75), got $rc"
+rc=0
+STUB_POLL_SCRIPT="fail" STUB_POLL_COUNT="$TMP_ROOT/scope-b1" \
+  FM_HOME="$home" "$ADAPTER" poll "$home" "$CHAN_B" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 75 ] \
+  || fail "channel B's first failed poll must relisten (exit 75) despite channel A's marker, got $rc"
+rc=0
+STUB_POLL_SCRIPT="fail" STUB_POLL_COUNT="$TMP_ROOT/scope-a2" \
+  FM_HOME="$home" "$ADAPTER" poll "$home" "$CHAN_A" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "channel A's second consecutive failure must release the claim, got $rc"
+rc=0
+STUB_POLL_SCRIPT="fail" STUB_POLL_COUNT="$TMP_ROOT/scope-b2" \
+  FM_HOME="$home" "$ADAPTER" poll "$home" "$CHAN_B" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "channel B's second consecutive failure must release the claim, got $rc"
+pass "two channels under one home track failed polls independently"
+
 # --- arm registers this wrapper's poll with the home and channel ------------
 
 home=$(new_home arm)
