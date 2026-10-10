@@ -221,6 +221,186 @@ test_ship_modes_generate_clean_briefs() {
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
 }
 
+# A legacy plan's Phase is an issue branch on the fleet process whose base is
+# the plan branch: upstream's --base-branch starts it there and targets its PR
+# there, and work.ts must create the branch from that base too.
+test_fleet_phase_brief_starts_from_its_plan_base() {
+  local home brief
+  home="$TMP_ROOT/fleet-base-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
+    phase-a1 firstmate --mode no-mistakes --issue 61 --fleet-process --base-branch plan-issue-57 >/dev/null 2>&1 \
+    || fail "fm-brief.sh should scaffold a based fleet-process brief"
+  brief="$home/data/phase-a1/brief.md"
+  grep -qxF 'Base branch: plan-issue-57' "$brief" || fail "the based fleet brief lost its Base branch line"
+  # shellcheck disable=SC2016  # the backticks are literal brief text
+  assert_grep 'pass `--base-branch plan-issue-57` on every `no-mistakes axi run`' "$brief" \
+    "the based fleet brief does not pass its base to the pipeline"
+  assert_grep 'work.ts branch 61 --builder fm --create --from plan-issue-57' "$brief" \
+    "the based fleet brief does not create its branch from the base"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
+    phase-a2 firstmate --mode direct-PR --issue 62 --fleet-process --base-branch plan-issue-57 >/dev/null 2>&1 \
+    || fail "fm-brief.sh should scaffold a based direct-PR fleet-process brief"
+  assert_grep '--body-file <file> --base plan-issue-57' "$home/data/phase-a2/brief.md" \
+    "the based direct-PR fleet brief does not open its PR against the base"
+  pass "a based fleet-process brief starts from and targets its plan branch"
+}
+
+# A Phase of a one-branch Plan has no branch or PR of its
+# own: its brief puts the worker on the Plan's branch with plain commits.
+test_one_branch_phase_brief_works_on_the_plan_branch() {
+  local home brief out
+  home="$TMP_ROOT/plan-branch-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" phase-p1 firstmate \
+    --mode direct-PR --fleet-process --issue 61 --plan-branch plan-issue-57 >/dev/null 2>&1 \
+    || fail "fm-brief.sh should scaffold a one-branch Phase brief"
+  brief="$home/data/phase-p1/brief.md"
+  assert_grep 'Ship branch: plan-issue-57' "$brief" "the Phase brief does not work on the Plan's branch"
+  # shellcheck disable=SC2016  # the backticks are literal brief text
+  assert_grep 'First action: switch to the Plan'"'"'s branch with work.ts, never by hand: `work.ts branch 61 --create`' "$brief" \
+    "the Phase brief does not switch to the Plan's branch with work.ts"
+  # shellcheck disable=SC2016  # the backticks are literal brief text
+  assert_grep 'push only your `plan-issue-57` branch' "$brief" "the Phase brief's push rule names another branch"
+  assert_grep 'Phase review requested on {Plan PR url}' "$brief" "the Phase brief does not request the Phase review"
+  assert_no_grep 'git checkout -b' "$brief" "the Phase brief creates a branch of its own"
+  assert_no_grep 'no-mistakes doctor' "$brief" "the Phase brief prepares a pipeline"
+  assert_no_grep 'no-mistakes axi run' "$brief" "the Phase brief starts a pipeline"
+  assert_no_grep 'EOF' "$brief" "the Phase brief leaked a heredoc EOF marker"
+  for args in "--mode no-mistakes --fleet-process" "--mode direct-PR" \
+    "--mode no-mistakes --fleet-process --base-branch plan-issue-57"; do
+    # shellcheck disable=SC2086  # each case is a deliberate flag list
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" phase-p2 firstmate $args --issue 62 --plan-branch plan-issue-57 2>&1) \
+      && fail "fm-brief.sh accepted --plan-branch with $args"
+    assert_contains "$out" "--plan-branch applies only to a direct-PR --fleet-process ship brief" \
+      "the --plan-branch refusal with $args did not say why"
+    assert_absent "$home/data/phase-p2/brief.md" "a refused --plan-branch scaffold still wrote a brief"
+  done
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" phase-p3 firstmate \
+    --mode direct-PR --fleet-process --plan-branch plan-issue-57 2>&1) \
+    && fail "fm-brief.sh accepted --plan-branch without its Phase issue"
+  assert_contains "$out" "--plan-branch needs --issue <n>" "the Phase-less refusal did not name the flag"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" phase-p4 firstmate \
+    --mode direct-PR --fleet-process --issue 64 --plan-branch main 2>&1) \
+    && fail "fm-brief.sh accepted a non-Plan branch as --plan-branch"
+  assert_contains "$out" "must name a Plan's branch" "the bad --plan-branch refusal did not describe a valid one"
+  pass "a one-branch Phase brief works on the Plan's branch, and only a direct-PR fleet-process ship takes one"
+}
+
+test_issue_based_branch_names() {
+  local home issue_brief fallback_brief out
+  home="$TMP_ROOT/issue-branch-home"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
+    issue-branch-a1 firstmate --mode no-mistakes --issue 512 >/dev/null 2>&1 \
+    || fail "fm-brief.sh should scaffold an issue-linked ship brief"
+  issue_brief="$home/data/issue-branch-a1/brief.md"
+  grep -Fx "1. First action: create your branch: \`git checkout -b fm-issue-512 --\`" "$issue_brief" >/dev/null \
+    || fail "issue-linked brief did not use the exact slugless issue branch in checkout"
+  # The direct-PR push rule is the one that names the branch it may push.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
+    issue-branch-a2 firstmate --mode direct-PR --issue 512 >/dev/null 2>&1 \
+    || fail "fm-brief.sh should scaffold an issue-linked direct-PR brief"
+  grep -Fx "1. Never push to the default branch (push only your \`fm-issue-512\` branch). Never merge a PR." "$home/data/issue-branch-a2/brief.md" >/dev/null \
+    || fail "issue-linked brief did not use the exact slugless issue branch in its push rule"
+  # bin/fm-spawn.sh refuses a ship whose selected branch disagrees with this line,
+  # and selects fm-issue-<n> from the same --issue.
+  grep -Fx "Ship branch: fm-issue-512" "$issue_brief" >/dev/null \
+    || fail "issue-linked brief did not record the issue branch as its machine-readable ship branch"
+
+  # The issue names the whole branch, so a prefix cannot also apply.
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
+    issue-branch-a3 firstmate --mode no-mistakes --issue 513 --branch-prefix fix/ 2>&1) \
+    && fail "fm-brief.sh accepted --issue together with --branch-prefix"
+  assert_contains "$out" "drop --branch-prefix" "the --issue/--branch-prefix refusal did not name the fix"
+  assert_absent "$home/data/issue-branch-a3/brief.md" "a refused --issue/--branch-prefix scaffold still wrote a brief"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" \
+    no-issue-branch-a2 firstmate --mode no-mistakes >/dev/null 2>&1 \
+    || fail "fm-brief.sh should scaffold a ship brief without an issue"
+  fallback_brief="$home/data/no-issue-branch-a2/brief.md"
+  assert_grep 'git checkout -b fm/no-issue-branch-a2' "$fallback_brief" \
+    "issue-less brief lost the task-slug fallback branch"
+  grep -Fx "1. Never push to the default branch. Never merge a PR." "$fallback_brief" >/dev/null \
+    || fail "issue-less brief did not preserve its mode-specific push rule"
+  pass "fm-brief.sh: issue-linked and issue-less briefs use discriminating branch names"
+}
+
+# The project-owned verification reference must be structural, not something a brief
+# author has to remember: every ship mode carries it, it sits inside the definition
+# of done right after the machine-readable contract and ship-branch lines, and the
+# scout contract is untouched.
+#
+# Placement and exact ownership are the two properties the clause exists for, so this
+# asserts the WHOLE ORDERED BLOCK sitting immediately below those two lines
+# rather than five phrases found anywhere in the brief. Scattered-phrase checks
+# would stay green if a future edit moved the clause below the mode-specific
+# completion mechanics, split the obligations apart, or duplicated one phrase
+# elsewhere - each of which breaks "state it early". Every line is pinned whole so
+# a rewording cannot silently restore a competing local verification standard.
+test_ship_dod_carries_project_verification_reference() {
+  local home id mode forge contract rest brief dod expected actual
+  home="$TMP_ROOT/verify-clause-home"
+  write_registry "$home"
+
+  # The exact clause, in order, as a worker must receive it. Read with the same
+  # `read -r -d ''` idiom bin/fm-brief.sh uses: a heredoc inside a command
+  # substitution does not parse on stock macOS Bash 3.2, which CI checks.
+  IFS= read -r -d '' expected <<'CLAUSE' || true
+Follow the project's own AGENTS.md testing standard for local verification.
+If that standard assigns browser or e2e evidence to CI, run no local server, browser, or e2e suite; cite the CI lanes and any branch-slot deploy as the evidence.
+Where you are fixing a defect, reproduce it before the fix and prove it gone after, stating the method.
+State what you verified.
+CLAUSE
+  expected=${expected%$'\n'}
+
+  for id_mode in "brief-verify-b1:no-mistakes:none" "brief-verify-b2:direct-PR:none" \
+    "brief-verify-b3:local-only:none" "brief-verify-b5:no-mistakes:gerrit" \
+    "brief-verify-b6:direct-PR:gerrit"; do
+    id=${id_mode%%:*}
+    rest=${id_mode#*:}
+    mode=${rest%%:*}
+    forge=${rest##*:}
+    contract="Delivery contract: mode=$mode"
+    [ "$forge" = none ] || contract="$contract forge=$forge shape=squash"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" --forge "$forge" >/dev/null 2>&1 \
+      || fail "$id: --mode $mode --forge $forge should scaffold"
+    brief="$home/data/$id/brief.md"
+
+    # The contract and ship-branch lines must stay the first two lines under the
+    # heading so fm-spawn.sh's checks are unaffected, and the clause must be what
+    # immediately follows them.
+    dod=$(awk '/^# Definition of done$/{f=1} f' "$brief")
+    [ "$(printf '%s\n' "$dod" | sed -n 2p)" = "$contract" ] \
+      || fail "$id: the delivery contract line no longer leads the definition of done"
+    [ "$(printf '%s\n' "$dod" | sed -n 3p)" = "Ship branch: fm/$id" ] \
+      || fail "$id: the ship branch line no longer follows the delivery contract line"
+    actual=$(printf '%s\n' "$dod" | sed -n '4,7p')
+    [ "$actual" = "$expected" ] || fail "$id: the verification clause is not the ordered block directly below the ship branch line.
+--- expected ---
+$expected
+--- actual ---
+$actual"
+
+    # Stating it early is the point: nothing mode-specific may precede it.
+    [ "$(printf '%s\n' "$dod" | sed -n 8p)" = "" ] \
+      || fail "$id: the clause must be separated from the mode-specific mechanics that follow it"
+  done
+
+  # Scouts produce knowledge, not a shipped change, and keep their own contract.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-verify-b4 some-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold should exit 0"
+  # Grep a substring the ship clause really contains, so this stays a live negative
+  # check rather than passing vacuously against wording that no longer exists.
+  assert_grep "project's own AGENTS.md testing standard" "$home/data/brief-verify-b1/brief.md" \
+    "the scout negative check must match wording the ship clause actually uses"
+  assert_no_grep "project's own AGENTS.md testing standard" \
+    "$home/data/brief-verify-b4/brief.md" \
+    "scout brief must not inherit the ship verification standard"
+  pass "fm-brief.sh: every ship mode carries the project-owned verification reference"
+}
+
 # A ship task's delivery mode is firstmate's per-task decision, so a missing or
 # unusable value must stop the scaffold instead of silently defaulting. The
 # no-mistakes-prod-only row is the conditional registry policy: it is never a task
@@ -260,7 +440,7 @@ test_ship_mode_is_explicit_not_registry() {
   brief="$home/data/brief-explicit-a5/brief.md"
   grep -qx "Delivery contract: mode=no-mistakes" "$brief" \
     || fail "registered direct-PR posture overrode the explicit --mode"
-  assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
+  assert_grep "start the no-mistakes pipeline yourself" "$brief" \
     "explicit no-mistakes brief did not render the pipeline definition of done"
 
   # An unregistered project is not a blocker either, because nothing is looked up.
@@ -970,6 +1150,46 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+# A crewmate on the claude harness sees that harness's own "Primary working
+# directory" banner labelling wherever it started. The isolation instruction
+# must not collide with that label: it must still tell a genuinely
+# mis-launched worker to stop (safety intact), but must not contain the bare
+# colliding phrase, in any casing, that a worker could mistake for a reference
+# to the harness's own banner.
+test_ship_isolation_instruction_avoids_harness_banner_collision() {
+  local home id brief
+  home="$TMP_ROOT/isolation-wording-home"
+  mkdir -p "$home/data"
+  id="brief-isolation-e1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "$id: ship scaffold should exit 0"
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "$id: brief was not scaffolded"
+  assert_grep "not by any directory label a harness banner prints" "$brief" \
+    "$id: isolation instruction must tell the worker to verify by structure, not by a harness banner's directory label"
+  assert_grep "blocked [at=<epoch>]: launched in firstmate's permanent clone" "$brief" \
+    "$id: brief lost the blocked-status safety instruction for a genuine mis-launch"
+  # The test must be structural, not nominal, and must cover both home shapes:
+  # firstmate's permanent clone is either a home's projects/<repo> clone or,
+  # in a project-less self-repo domain, the home's own checkout - in both cases
+  # on its default branch at an attached HEAD, unlike a task worktree.
+  assert_grep "projects/<repo>" "$brief" \
+    "$id: isolation instruction must give the common-case structural cue (a firstmate home's projects/<repo> clone)"
+  assert_grep "project-less self-repo domain" "$brief" \
+    "$id: isolation instruction must also cover the self-repo shape, where the home is itself firstmate's permanent checkout"
+  assert_grep "or is a firstmate home's own checkout on its default branch" "$brief" \
+    "$id: the STOP condition must name the self-repo checkout as a positive structural test, not rely on a residual catch-all"
+  assert_grep "attached HEAD" "$brief" \
+    "$id: isolation instruction must contrast the task worktree's detached HEAD against firstmate's attached-HEAD default-branch clone"
+  # Red against the old wording, which identified firstmate's clone by the bare
+  # label "the primary checkout firstmate operates from" - the phrasing that
+  # collided with the harness's own "Primary working directory" banner.
+  if grep -qiE "primary (working directory|checkout)" "$brief"; then
+    fail "$id: isolation instruction still identifies firstmate's clone by a bare primary-directory label that collides with the harness banner"
+  fi
+  pass "fm-brief.sh: isolation instruction avoids the harness banner's colliding phrase"
+}
+
 # A scout brief offers the Lavish review loop for every compatible board version,
 # including older builds that use the legacy reply path.
 test_scout_lavish_line_follows_presentation_floor() {
@@ -1467,8 +1687,10 @@ test_crewmate_scaffolds_forbid_pool_administration() {
 
 test_script_parses
 test_no_heredoc_in_command_substitution
+test_ship_dod_carries_project_verification_reference
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_issue_based_branch_names
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
@@ -1489,6 +1711,7 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_ship_and_scout_teach_validation_round_pause
 test_scout_and_secondmate_load_decision_hold_policy
+test_ship_isolation_instruction_avoids_harness_banner_collision
 test_scout_and_secondmate_scaffold
 test_scout_lavish_line_follows_presentation_floor
 test_workers_wait_without_spending_turns
@@ -1502,3 +1725,5 @@ test_branch_prefix_is_refused_where_it_does_not_apply
 test_branch_prefix_value_is_validated
 test_branch_prefix_command_is_shell_safe
 test_crewmate_scaffolds_forbid_pool_administration
+test_fleet_phase_brief_starts_from_its_plan_base
+test_one_branch_phase_brief_works_on_the_plan_branch

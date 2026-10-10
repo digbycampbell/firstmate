@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Perform the approved local merge for a local-only ship task: fast-forward the
 # project's default branch to the crewmate's immutable ship branch recorded in
-# state/<task-id>.meta ("fm/<id>" for records created before that field existed).
+# state/<task-id>.meta; a record created before that field existed falls back to
+# its issue-linked "fm-issue-<n>" branch, then to "fm/<id>".
 #
 # This is firstmate's merge gate-action (the captain's merge authority applied
 # locally instead of via a GitHub PR). It is the one sanctioned exception to hard
@@ -95,7 +96,14 @@ default_branch() {
 }
 
 BRANCH=$(grep '^branch=' "$META" | cut -d= -f2- || true)
-[ -n "$BRANCH" ] || BRANCH="fm/$ID"
+if [ -z "$BRANCH" ]; then
+  ISSUE=$(grep '^issue=' "$META" | cut -d= -f2- || true)
+  if [ -n "$ISSUE" ]; then
+    BRANCH="fm-issue-$ISSUE"
+  else
+    BRANCH="fm/$ID"
+  fi
+fi
 if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
   echo "error: task $ID has an invalid recorded ship branch '$BRANCH'" >&2
   exit 1

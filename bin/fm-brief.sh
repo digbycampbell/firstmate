@@ -14,7 +14,7 @@
 # charters still use a single `{TASK}` charter fill. Firstmate may adjust other
 # sections when the task genuinely deviates (e.g. working an existing external
 # PR instead of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix>] [--base-branch <branch>] [--forge <none|gerrit> [--shape squash]] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix> | --issue <n> [--issue-suffix <s>] | --chore <slug>] [--fleet-process] [--base-branch <branch> | --plan-branch <plan-issue-n>] [--forge <none|gerrit> [--shape squash]] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--base-branch <branch>] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -67,6 +67,26 @@
 # Definition of done then targets that branch with its pull request.
 # bin/fm-dod-lib.sh's fm_base_branch_valid owns which deliveries accept one.
 # Refused on --secondmate.
+# --issue <n> links the ship to GitHub issue <n> and names its branch
+# "fm-issue-<n>" instead, with --issue-suffix <s> appending a retry marker;
+# --chore <slug> names it "fm-chore-<slug>" for admin work with no issue. They
+# match the same flags on bin/fm-spawn.sh, bin/fm-ship-branch-lib.sh owns the
+# names and their validation, and all three are refused with --branch-prefix and
+# on --scout and --secondmate.
+# --fleet-process renders the fleet-process delivery contract (bin/fm-dod-lib.sh
+# owns it): the branch is created and the PR opened with the repo's
+# scripts/work/work.ts, and the PR stays the draft it opens as until a Review by
+# someone else. It is the captain's registry binding (+fleet-process in
+# bin/fm-project-mode.sh), resolved at intake and passed here exactly as --forge
+# is, needs --issue or --chore, and records " process=fleet" on the Delivery
+# contract line, which bin/fm-spawn.sh checks against the registry.
+# A legacy plan's Phase is an --issue ship whose --base-branch is the Plan's
+# plan-issue-<n> branch. A Phase of a one-branch Plan instead takes --plan-branch
+# plan-issue-<n> with --issue <phase>, --mode direct-PR, --fleet-process, and no
+# --base-branch: its branch is the Plan's own, its first action is work.ts
+# switching to it, and its definition of done is plain commits pushed there plus
+# a request for the Phase review, never a pipeline run or a Phase PR
+# (bin/fm-dod-lib.sh owns that block, bin/fm-ship-branch-lib.sh the branch).
 # --forge names the project's forge, defaults to none, and is orthogonal to --mode
 # exactly as the registry's `forge=` token is. It is the captain's confirmed
 # registry binding, read from data/projects.md at intake and passed here; this
@@ -86,6 +106,11 @@
 # whose explicit --mode or registered forge disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
+# Every ship definition of done points local verification to the project's own
+# AGENTS.md testing standard and defers browser or e2e evidence to CI when that
+# standard does, while retaining defect reproduction and a verification summary.
+# bin/fm-dod-lib.sh owns that reference; it appears in every mode, so it is never
+# per-task text a brief author must remember.
 # Both crewmate scaffolds carry one shared rule against administering the
 # infrastructure every lane shares - the no-mistakes daemon and the worktree pool
 # their own slot came from - so ship and scout cannot drift apart. A secondmate
@@ -201,6 +226,13 @@ FORGE=none
 FORGE_SET=0
 SHAPE=
 SHAPE_SET=0
+ISSUE=
+ISSUE_SET=0
+ISSUE_SUFFIX=
+CHORE=
+PROCESS=none
+PLAN_BRANCH=
+PLAN_BRANCH_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -214,6 +246,10 @@ for a in "$@"; do
       base-branch) BASE_BRANCH=$a; BASE_BRANCH_SET=1 ;;
       forge) FORGE=$a; FORGE_SET=1 ;;
       shape) SHAPE=$a; SHAPE_SET=1 ;;
+      issue) ISSUE=$a; ISSUE_SET=1 ;;
+      issue-suffix) ISSUE_SUFFIX=$a ;;
+      chore) CHORE=$a ;;
+      plan-branch) PLAN_BRANCH=$a; PLAN_BRANCH_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -234,6 +270,15 @@ for a in "$@"; do
     --forge=*) FORGE=${a#--forge=}; FORGE_SET=1 ;;
     --shape) want_value=shape ;;
     --shape=*) SHAPE=${a#--shape=}; SHAPE_SET=1 ;;
+    --issue) want_value=issue ;;
+    --issue=*) ISSUE=${a#--issue=}; ISSUE_SET=1 ;;
+    --issue-suffix) want_value="issue-suffix" ;;
+    --issue-suffix=*) ISSUE_SUFFIX=${a#--issue-suffix=} ;;
+    --chore) want_value=chore ;;
+    --chore=*) CHORE=${a#--chore=} ;;
+    --fleet-process) PROCESS=fleet ;;
+    --plan-branch) want_value="plan-branch" ;;
+    --plan-branch=*) PLAN_BRANCH=${a#--plan-branch=}; PLAN_BRANCH_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -242,6 +287,12 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
+[ "$ISSUE_SET" -eq 0 ] || [ -n "$ISSUE" ] || { echo "error: --issue requires a non-empty value" >&2; exit 1; }
+if [ "$ISSUE_SET" -eq 1 ]; then
+  case "$ISSUE" in
+    ''|*[!0-9]*) echo "error: --issue must be a positive integer issue number (got '$ISSUE')" >&2; exit 1 ;;
+  esac
+fi
 
 # Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
 # missing or invalid value stops the scaffold rather than silently defaulting.
@@ -259,6 +310,10 @@ if [ "$KIND" = ship ]; then
   esac
 elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
+  exit 1
+fi
+if [ "$KIND" != ship ] && { [ "$ISSUE_SET" -eq 1 ] || [ -n "$ISSUE_SUFFIX$CHORE" ] || [ "$PROCESS" != none ]; }; then
+  echo "error: --issue applies only to ship briefs, as do --issue-suffix, --chore, and --fleet-process; scouts do not branch and secondmates carry no linked issue" >&2
   exit 1
 fi
 
@@ -300,11 +355,18 @@ if [ "$BASE_BRANCH_SET" -eq 1 ]; then
   fi
   fm_base_branch_valid "$BASE_BRANCH" "$MODE" "$FORGE" "fm-brief.sh --base-branch" || exit 1
 fi
+if [ "$PLAN_BRANCH_SET" -eq 1 ]; then
+  { [ "$KIND" = ship ] && [ "$MODE" = direct-PR ] && [ "$PROCESS" = fleet ] && [ "$BASE_BRANCH_SET" -eq 0 ]; } || {
+    echo "error: --plan-branch applies only to a direct-PR --fleet-process ship brief without --base-branch: a one-branch Plan's Phase pushes plain commits to the Plan's branch, never through the no-mistakes pipeline" >&2
+    exit 1
+  }
+  [ -n "$PLAN_BRANCH" ] || { echo "error: --plan-branch requires a non-empty value" >&2; exit 1; }
+fi
 ID=${POS[0]}
-BRANCH="$BRANCH_PREFIX$ID"
-if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
-  echo "error: --branch-prefix and task id must form a valid git branch (got '$BRANCH')" >&2
-  exit 1
+# bin/fm-spawn.sh selects the same branch from the same flags.
+BRANCH=$(fm_ship_branch_resolve "$ID" "$ISSUE" "$ISSUE_SUFFIX" "$CHORE" "$BRANCH_PREFIX" "$BRANCH_PREFIX_SET" "$PLAN_BRANCH") || exit 1
+if [ "$KIND" = ship ]; then
+  fm_process_valid "$PROCESS" "$MODE" "$FORGE" "$BRANCH" "fm-brief.sh --fleet-process" || exit 1
 fi
 printf -v BRANCH_Q '%q' "$BRANCH"
 
@@ -668,7 +730,12 @@ case "$MODE" in
     ;;
 esac
 RULE1=$(fm_ship_rule_one "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH") || exit 1
-DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH") || exit 1
+DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE" "$BASE_BRANCH" "$PROCESS" "${PLAN_BRANCH:+$ISSUE}") || exit 1
+if [ "$PROCESS" = fleet ]; then
+  SETUP1="First action: $(fm_fleet_branch_step "$BRANCH" "$ISSUE" "$BASE_BRANCH")" || exit 1
+else
+  SETUP1="First action: create your branch: \`git checkout -b $BRANCH_Q --\`"
+fi
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -680,11 +747,11 @@ $HERDR_SECTION
 # Setup
 $SETUP_BASE
 
-**Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
-The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
-If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked [at=<epoch>]: launched in primary checkout, not an isolated worktree\` to the status file and stop.
+**Verify isolation before anything else, by structure, not by any directory label a harness banner prints - that label names where the harness started, not which checkout this is.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, sitting at a detached HEAD. Firstmate's own permanent clone is different in kind: it always sits on its default branch at an attached HEAD, never detached. In the common case it lives under a firstmate home's \`projects/<repo>\` directory; in a project-less self-repo domain there is no such clone and the firstmate home is itself that checkout, its own repository root on its default branch.
+The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside firstmate's permanent clone.
+If the top-level path sits under a firstmate home's \`projects/<repo>\` clone on its default branch, or is a firstmate home's own checkout on its default branch, or is otherwise not the detached-HEAD worktree you were launched in, STOP - do not branch or commit here - append \`blocked [at=<epoch>]: launched in firstmate's permanent clone, not an isolated worktree\` to the status file and stop.
 
-1. First action: create your branch: \`git checkout -b $BRANCH_Q --\`$SETUP2
+1. $SETUP1$SETUP2
 
 # Rules
 $RULE1

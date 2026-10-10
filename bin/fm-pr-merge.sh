@@ -9,7 +9,11 @@
 # below owns why.
 #
 # Merge method on GitHub defaults to --squash when the caller passes none of
-# --squash, --merge, --rebase, or --method after the optional -- separator.
+# --squash, --merge, --rebase, or --method after the optional -- separator,
+# except where the base branch has a merge_queue rule: there the queue sets the
+# method, so an attended merge with no caller method is enqueued with --auto and
+# no method flag instead. A caller-named method is always passed through as
+# given, which is how a true-merge project keeps its merge commits.
 # A GitHub merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the pull request
 # is open, not a draft, mergeable, free of conflicts, every unwaived check
@@ -55,13 +59,20 @@
 # applies on GitLab, where a merge already requires the head pipeline to have
 # succeeded. After gh returns success, GitHub's live state is read back and
 # accepted only when the pull request is merged or in the merge queue. gh's
-# GraphQL API supplies that queue-aware read; when that read fails, gh-axi's
-# own view still proves a landed merge, and every outcome it cannot prove
-# refuses, reporting the failed gh read and naming both failed reads when the
-# gh-axi view could not prove the outcome either.
+# GraphQL API supplies that queue-aware read (isInMergeQueue, the exact fact);
+# when that GraphQL read fails - most often because the shared GraphQL point
+# budget is exhausted while the separate core REST budget is not - a REST read
+# of the pull request falls in behind it and can still prove a landed merge
+# (.merged) or an auto-merge enqueue (.auto_merge on an open pull request whose
+# base branch a merge_queue rule governs). REST has no isInMergeQueue field, so
+# a pull request queued directly (auto_merge null) is one it cannot prove, and
+# that stays a fail-closed refusal. gh-axi's own view is the last resort and
+# still proves a landed merge, and every outcome none of these can prove
+# refuses, naming the reads that failed.
 # If the pull request remains open and the base branch has an effective
 # merge_queue rule, an attended refusal names the queue's configured merge
-# method and exact --attended-override -- --auto --<method> retry flags. While
+# method and the exact --attended-override -- --auto retry flags, which name no
+# method because the queue sets it. While
 # the away-posture record exists, asynchronous merge requests are refused and
 # queue retry flags are not offered because they would outlive away authority.
 # An attended caller that already passed the configured method with --auto is
@@ -133,7 +144,9 @@
 # --remove-source-branch) are refused by default; --attended-override, parsed
 # before the optional -- separator, re-enables those forge flags for an
 # explicit captain instruction and never skips the live green check, the
-# away-record read, or a captain hold.
+# away-record read, or a captain hold. The --auto this script adds itself to
+# enqueue on a merge-queue base is not a caller request and needs no override:
+# every pre-merge condition above has already held at the bound head.
 #
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [--attended-override] [--allow-red <check-name>] [--allow-missing <check-name>] [-- <extra forge merge args>]
 #
@@ -694,10 +707,15 @@ github_read_required_contexts() {
   [ -z "$FM_PR_GITHUB_REQUIRED_ERROR" ]
 }
 
+# All three inputs go to jq on stdin: a long check-run history grows producers
+# past Linux's 128 KB single-argument limit, which --argjson cannot carry.
 github_required_checks_missing() {
   local json=$1 required=$2 producers=$3
-  printf '%s' "$json" | jq -r --argjson required "$required" --argjson producers "$producers" '
-    if (.statusCheckRollup | type) != "array" then error("no check rollup") else . end
+  printf '%s\n%s\n%s\n' "$json" "$required" "$producers" | jq -sr '
+    if length == 3 and (.[1] | type) == "array" and (.[2] | type) == "array"
+      then . else error("invalid check inputs") end
+    | .[1] as $required | .[2] as $producers | .[0]
+    | if (.statusCheckRollup | type) != "array" then error("no check rollup") else . end
     | .statusCheckRollup as $reported
     | $required
     | map(. as $requirement
@@ -821,7 +839,7 @@ EOF
       || ! producers=$(printf '%s' "$runs" | jq -sc --arg head "$live_head" '
         [ .[] | if (.check_runs | type) == "array" then .check_runs[] else error("invalid check runs") end
           | if (.name | type) == "string" and (.app.id | type) == "number" and .head_sha == $head
-            then . else error("invalid check producer") end ]' 2>/dev/null); then
+            then {name, head_sha, app: {id: .app.id}} else error("invalid check producer") end ]' 2>/dev/null); then
       producers='[]'
       refusals="$refusals  - required check producers at head $live_head could not be read
 "
@@ -939,6 +957,76 @@ github_read_outcome_with_gh_axi() {
   FM_PR_GITHUB_QUEUE_OBSERVED=false
 }
 
+# A REST read on the core quota, used only after the queue-aware GraphQL read
+# has failed - the exact case GraphQL rate-limiting creates, where the core REST
+# quota is typically still healthy because it is a SEPARATE budget. REST has no
+# isInMergeQueue field, so what it can prove is bounded:
+#   - a landed merge, from `.merged == true` (a definite terminal outcome); and
+#   - an ENQUEUE, but only when `.auto_merge` is non-null on an open pull request
+#     whose base branch is governed by a merge_queue rule (github_read_queue_method).
+# A pull request added to the merge queue DIRECTLY reads `.auto_merge == null`
+# here while GraphQL's isInMergeQueue is true (verified live against a real
+# queued PR), so REST cannot prove that enqueue. Per the fail-closed contract
+# this returns 1 (outcome unproved) in that case rather than guess, and the
+# caller refuses instead of reporting an unproved merge. State globals are set
+# only on a proven-outcome (return 0) path, never on the unproved path.
+github_read_outcome_with_rest() {
+  command -v gh >/dev/null 2>&1 || return 1
+  local fields line state='' merged='' base='' automerge=''
+  local total=0 named=0
+  if ! fields=$(gh api "repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER" \
+    --jq '"state=" + (.state // ""), "merged=" + (.merged | tostring), "base=" + (.base.ref // ""), "automerge=" + (if .auto_merge == null then "false" else "true" end)' \
+    2>/dev/null) || [ -z "$fields" ]; then
+    return 1
+  fi
+  while IFS= read -r line; do
+    total=$((total + 1))
+    case "$line" in
+      state=*) state=${line#state=} ;;
+      merged=*) merged=${line#merged=} ;;
+      base=*) base=${line#base=} ;;
+      automerge=*) automerge=${line#automerge=} ;;
+      *) continue ;;
+    esac
+    named=$((named + 1))
+  done <<FIELDS
+$fields
+FIELDS
+  if [ "$named" -ne 4 ] || [ "$total" -ne 4 ] || [ -z "$state" ] || [ -z "$base" ] \
+    || { [ "$merged" != true ] && [ "$merged" != false ]; } \
+    || { [ "$automerge" != true ] && [ "$automerge" != false ]; }; then
+    return 1
+  fi
+
+  if [ "$merged" = true ]; then
+    FM_PR_GITHUB_STATE=$state
+    FM_PR_GITHUB_MERGED=true
+    FM_PR_GITHUB_QUEUED=false
+    FM_PR_GITHUB_BASE=$base
+    FM_PR_GITHUB_QUEUE_OBSERVED=true
+    return 0
+  fi
+
+  # Not merged: the only enqueue REST can PROVE is an armed auto-merge on an open
+  # pull request whose base branch a merge_queue rule governs.
+  case "$state" in [oO][pP][eE][nN]) ;; *) return 1 ;; esac
+  [ "$automerge" = true ] || return 1
+  local saved_base=$FM_PR_GITHUB_BASE
+  FM_PR_GITHUB_BASE=$base
+  github_read_queue_method
+  case "$FM_PR_GITHUB_QUEUE_STATUS" in
+    single|conflicting|unrecognised)
+      FM_PR_GITHUB_STATE=$state
+      FM_PR_GITHUB_MERGED=false
+      FM_PR_GITHUB_QUEUED=true
+      FM_PR_GITHUB_QUEUE_OBSERVED=true
+      return 0
+      ;;
+  esac
+  FM_PR_GITHUB_BASE=$saved_base
+  return 1
+}
+
 github_read_outcome() {
   if ! command -v gh >/dev/null 2>&1; then
     if github_read_outcome_with_gh_axi && [ "$FM_PR_GITHUB_MERGED" = true ]; then
@@ -949,13 +1037,17 @@ github_read_outcome() {
   fi
   # Only a failed gh read falls back. A gh read that completes and reports the
   # pull request as neither merged nor queued is a concrete outcome, not a
-  # missing one, so it keeps its own refusal. The gh-axi view cannot observe the
-  # merge queue, so it can only turn this into a proved merge or into a refusal.
+  # missing one, so it keeps its own refusal. When the queue-aware GraphQL read
+  # fails (typically GraphQL rate-limited), a REST read on the separate core
+  # quota can still prove a landed merge or an auto-merge enqueue; the gh-axi
+  # view, which cannot observe the merge queue, is the last resort and can only
+  # turn this into a proved merge or into a refusal.
   github_read_outcome_with_gh && return 0
+  github_read_outcome_with_rest && return 0
   if github_read_outcome_with_gh_axi && [ "$FM_PR_GITHUB_MERGED" = true ]; then
     return 0
   fi
-  echo "error: could not read the GitHub pull request outcome after the merge attempt: the gh read failed and the gh-axi view could not prove the outcome either; PR metadata and merge poll remain recorded" >&2
+  echo "error: could not read the GitHub pull request outcome after the merge attempt: the gh read failed, the REST read could not prove a landed or queued outcome, and the gh-axi view could not prove the outcome either; PR metadata and merge poll remain recorded" >&2
   return 1
 }
 
@@ -1255,11 +1347,11 @@ github_report_queue_rules() {
       esac
       if github_merge_command_succeeded \
         && [ "$FM_PR_GITHUB_AUTO_REQUESTED" = true ] \
-        && github_caller_method_is "$queue_method"; then
-        printf 'error: this run refuses even though the request for %s was accepted with the exact flags base branch %s requires (--auto --%s): the pull request has still not entered the merge queue, so no landed or queued outcome is proven; re-check the pull request'"'"'s merge queue state before retrying\n' \
+        && { [ -z "$FM_PR_GITHUB_CALLER_METHOD" ] || github_caller_method_is "$queue_method"; }; then
+        printf 'error: this run refuses even though the request for %s was accepted with the exact flags base branch %s requires (--auto, queue method %s): the pull request has still not entered the merge queue, so no landed or queued outcome is proven; re-check the pull request'"'"'s merge queue state before retrying\n' \
           "$URL" "$FM_PR_GITHUB_BASE" "$queue_method" >&2
       else
-        printf 'error: base branch %s requires the merge queue; retry with: %s %s %s --attended-override -- --auto --%s\n' \
+        printf 'error: base branch %s requires the merge queue; retry with: %s %s %s --attended-override -- --auto (the queue applies its configured %s method)\n' \
           "$FM_PR_GITHUB_BASE" "$0" "$ID" "$URL" "$queue_method" >&2
       fi
       ;;
@@ -1344,9 +1436,6 @@ case "$PROVIDER" in
   github)
     merge_output=
     merge_args=()
-    if ! caller_has_merge_method "$@"; then
-      merge_args=(--squash)
-    fi
     FM_PR_GITHUB_CALLER_METHOD=$(caller_merge_method "$@")
     # mergeable reads UNKNOWN for a short while after a push or base-branch
     # change while GitHub recomputes it; retry a bounded number of times,
@@ -1376,6 +1465,24 @@ case "$PROVIDER" in
         printf 'error: mergeability for %s is still being computed by GitHub; retry shortly\n' "$URL" >&2
       fi
       exit 1
+    fi
+    # The base branch is known only after the verified read. A queue sets the
+    # method itself, so an attended merge with no caller method is enqueued with
+    # --auto alone; while away the queue is refused below instead.
+    if ! caller_has_merge_method "$@"; then
+      merge_args=(--squash)
+      if [ "$FM_PR_AWAY_POSTURE" != true ]; then
+        github_read_queue_method
+        case "$FM_PR_GITHUB_QUEUE_STATUS" in
+          single|conflicting|unrecognised)
+            merge_args=()
+            if [ "$FM_PR_GITHUB_AUTO_REQUESTED" != true ]; then
+              merge_args=(--auto)
+              FM_PR_GITHUB_AUTO_REQUESTED=true
+            fi
+            ;;
+        esac
+      fi
     fi
     # The away record is locked first, so this last presence and authority read
     # and the forge command below share one live-owner critical section.

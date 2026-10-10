@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--herdr-resume-lock-wait]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--herdr-resume-lock-wait] [--issue <n> [--issue-suffix <s> | --plan-branch <plan-issue-n>] | --chore <slug>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--herdr-resume-lock-wait]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
@@ -48,6 +48,20 @@
 #   base_branch= in state/<id>.meta, which a relaunch reuses and later review and
 #   cleanup read; it is refused on secondmates and relaunches, and without it
 #   nothing changes.
+#   --issue <n> names the ship branch "fm-issue-<n>" in place of the prefix and
+#   task id, with --issue-suffix <s> appending a retry marker, and --chore <slug>
+#   names it "fm-chore-<slug>" for admin work with no issue; each matches the
+#   brief bin/fm-brief.sh scaffolds with the same flags (bin/fm-ship-branch-lib.sh
+#   owns the names), so each is refused together with --branch-prefix; the branch
+#   is recorded as branch= and the issue as issue= in the task metadata.
+#   --plan-branch plan-issue-<n> with --issue <phase> spawns a Phase of a
+#   one-branch Plan on the Plan's own branch, matching the brief fm-brief.sh
+#   scaffolds with the same flags; it is refused wherever --issue-suffix is.
+#   The brief's " process=fleet" (bin/fm-dod-lib.sh) must agree with the
+#   project's registered +fleet-process (bin/fm-project-mode.sh) exactly as its
+#   forge must, and a fresh ship on a fleet-process project is refused unless its
+#   branch is one the organisation ruleset lets it create; the agreed process is
+#   recorded as process=fleet, which bin/fm-pr-check.sh reads.
 #   Ship/scout launches always put fm-dod-lib.sh's current worker role scope
 #   first in the private launch-brief overlay, including the exact task-owned
 #   steering inbox. This never rewrites a project's instruction files or a
@@ -708,6 +722,11 @@ YOLO_SET=0
 BRANCH_PREFIX_SET=0
 BASE_BRANCH=
 BASE_BRANCH_SET=0
+ISSUE_ARG=
+ISSUE_SET=0
+ISSUE_SUFFIX=
+CHORE=
+PLAN_BRANCH=
 TRACEPARENT_SET=0
 RELAUNCH=0
 # Opt-in only: exact-resume presentation-order lock waits instead of refusing.
@@ -748,6 +767,13 @@ for a in "$@"; do
       YOLO=$a
       YOLO_SET=1
       ;;
+    issue)
+      ISSUE_ARG=$a
+      ISSUE_SET=1
+      ;;
+    issue-suffix) ISSUE_SUFFIX=$a ;;
+    plan-branch) PLAN_BRANCH=$a ;;
+    chore) CHORE=$a ;;
     branch-prefix)
       BRANCH_PREFIX=$a
       BRANCH_PREFIX_SET=1
@@ -809,6 +835,17 @@ for a in "$@"; do
     YOLO=${a#--yolo=}
     YOLO_SET=1
     ;;
+  --issue) want_value=issue ;;
+  --issue=*)
+    ISSUE_ARG=${a#--issue=}
+    ISSUE_SET=1
+    ;;
+  --issue-suffix) want_value="issue-suffix" ;;
+  --issue-suffix=*) ISSUE_SUFFIX=${a#--issue-suffix=} ;;
+  --plan-branch) want_value="plan-branch" ;;
+  --plan-branch=*) PLAN_BRANCH=${a#--plan-branch=} ;;
+  --chore) want_value=chore ;;
+  --chore=*) CHORE=${a#--chore=} ;;
   --branch-prefix) want_value="branch-prefix" ;;
   --branch-prefix=*)
     BRANCH_PREFIX=${a#--branch-prefix=}
@@ -855,6 +892,10 @@ done
   echo "error: --yolo requires a non-empty value" >&2
   exit 1
 }
+[ "$ISSUE_SET" -eq 0 ] || [ -n "$ISSUE_ARG" ] || {
+  echo "error: --issue requires a non-empty value" >&2
+  exit 1
+}
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || {
   echo "error: --traceparent requires a non-empty value" >&2
   exit 1
@@ -879,6 +920,11 @@ case "$EFFORT" in
   exit 1
   ;;
 esac
+if [ "$ISSUE_SET" -eq 1 ]; then
+  case "$ISSUE_ARG" in
+    ''|*[!0-9]*) echo "error: --issue must be a positive integer issue number (got '$ISSUE_ARG')" >&2; exit 1 ;;
+  esac
+fi
 
 # --relaunch reuses an existing task's endpoint, worktree, project, and kind,
 # so every axis this block resolves for a fresh spawn instead comes from that
@@ -899,6 +945,10 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
   [ "$YOLO_SET" -eq 0 ] || {
     echo "error: --relaunch reuses the task's recorded yolo posture; --yolo cannot override it" >&2
+    exit 1
+  }
+  [ "$ISSUE_SET" -eq 0 ] && [ -z "$ISSUE_SUFFIX$CHORE$PLAN_BRANCH" ] || {
+    echo "error: --relaunch reuses the task's recorded ship branch; --issue, --issue-suffix, --plan-branch, and --chore cannot override it" >&2
     exit 1
   }
   [ "$BRANCH_PREFIX_SET" -eq 0 ] || {
@@ -950,6 +1000,10 @@ else
       echo "error: --yolo applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
       exit 1
     }
+    if [ "$ISSUE_SET" -eq 1 ] || [ -n "$ISSUE_SUFFIX$CHORE$PLAN_BRANCH" ]; then
+      echo "error: --issue applies only to ship spawns, as do --issue-suffix, --plan-branch, and --chore; a scout delivers a report and a secondmate carries no linked issue" >&2
+      exit 1
+    fi
     [ "$BRANCH_PREFIX_SET" -eq 0 ] || {
       echo "error: --branch-prefix applies only to ship spawns; a scout makes no branch and a secondmate records no ship branch" >&2
       exit 1
@@ -1543,6 +1597,10 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
     echo "error: config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped)." >&2
     exit 1
   fi
+  if [ "$ISSUE_SET" -eq 1 ] || [ -n "$ISSUE_SUFFIX$CHORE$PLAN_BRANCH" ]; then
+    echo "error: --issue applies only to a single-task ship spawn; batch dispatch (id=repo pairs) does not support it, because one issue number cannot fan out across the batch's distinct tasks, and --issue-suffix, --plan-branch, and --chore are refused there for the same reason" >&2
+    exit 1
+  fi
   rc=0
   shared_args=()
   [ -z "$HARNESS_ARG" ] || shared_args+=(--harness "$HARNESS_ARG")
@@ -1591,11 +1649,7 @@ fm_task_id_creation_valid "$ID" || {
   exit 2
 }
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = ship ]; then
-  BRANCH="$BRANCH_PREFIX$ID"
-  if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
-    echo "error: --branch-prefix and task id must form a valid git branch (got '$BRANCH')" >&2
-    exit 1
-  fi
+  BRANCH=$(fm_ship_branch_resolve "$ID" "$ISSUE_ARG" "$ISSUE_SUFFIX" "$CHORE" "$BRANCH_PREFIX" "$BRANCH_PREFIX_SET" "$PLAN_BRANCH") || exit 1
 fi
 if [ -e "$STATE" ] || [ -L "$STATE" ]; then
   fm_backlog_directory_present "$STATE" "state directory" || {
@@ -1877,6 +1931,11 @@ if [ "$RELAUNCH" -eq 1 ]; then
   YOLO=$(fm_meta_get "$RELAUNCH_META" yolo)
   if [ "$KIND" = ship ]; then
     BRANCH=$(fm_meta_get "$RELAUNCH_META" branch)
+    # A record from before branch= existed names an issue-linked task's branch
+    # only through its issue=.
+    if [ -z "$BRANCH" ] && [ -n "$(fm_meta_get "$RELAUNCH_META" issue)" ]; then
+      BRANCH="fm-issue-$(fm_meta_get "$RELAUNCH_META" issue)"
+    fi
     [ -n "$BRANCH" ] || BRANCH="fm/$ID"
     if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
       echo "error: task $ID has an invalid recorded ship branch '$BRANCH'" >&2
@@ -3263,6 +3322,8 @@ if [ "$KIND" = ship ]; then
   BRIEF_MODE=$(sed -n 's/^Delivery contract: mode=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
   BRIEF_FORGE=$(sed -n 's/^Delivery contract: mode=[^ ]*.*[[:space:]]forge=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
   [ -n "$BRIEF_FORGE" ] || BRIEF_FORGE=none
+  BRIEF_PROCESS=$(sed -n 's/^Delivery contract: mode=[^ ]*.*[[:space:]]process=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
+  [ -n "$BRIEF_PROCESS" ] || BRIEF_PROCESS=none
   BRIEF_BRANCH=$(sed -n 's/^Ship branch: //p' "$BRIEF" | head -n 1)
   if [ -n "$BRIEF_BRANCH" ]; then
     [ "$BRIEF_BRANCH" = "$BRANCH" ] || {
@@ -3301,6 +3362,23 @@ if [ "$KIND" = ship ]; then
     echo "error: forge mismatch for $ID: $PROJ_NAME is registered forge=$STANDING_FORGE but $SOURCE_BRIEF records forge=$BRIEF_FORGE; keep the filled ## Captain's intent and ## Firstmate spec bodies, remove $SOURCE_BRIEF, re-scaffold it with $forge_scaffold, then re-fill those two subsections, so the worker's publication matches the project's forge" >&2
     exit 1
   fi
+  # The fleet process is a registry binding like the forge. A relaunch keeps the
+  # contract its task was launched on, because the ruleset judges a branch only
+  # when it is created, so an existing branch keeps pushing until it merges.
+  STANDING_FLEET=$("$FM_ROOT/bin/fm-project-mode.sh" --fleet-process "$PROJ_NAME" 2>/dev/null) || STANDING_FLEET=off
+  # local-only publishes nothing, so no ruleset ever judges its branch.
+  if [ "$RELAUNCH" -eq 0 ]; then
+    if [ "$STANDING_FLEET" = on ] && [ "$MODE" != local-only ]; then
+      fm_ship_branch_require_org_shape fm-spawn.sh "$PROJ_NAME" "$BRANCH" || exit 1
+      [ "$BRIEF_PROCESS" = fleet ] || {
+        echo "error: process mismatch for $ID: $PROJ_NAME is registered +fleet-process but $SOURCE_BRIEF does not record process=fleet; keep the filled ## Captain's intent and ## Firstmate spec bodies, remove $SOURCE_BRIEF, re-scaffold it with fm-brief.sh --fleet-process and the same --issue or --chore, then re-fill those two subsections, so the worker makes its branch and PR with work.ts" >&2
+        exit 1
+      }
+    elif [ "$BRIEF_PROCESS" != none ]; then
+      echo "error: process mismatch for $ID: $SOURCE_BRIEF records process=$BRIEF_PROCESS but $PROJ_NAME is not registered +fleet-process; re-scaffold the brief without --fleet-process" >&2
+      exit 1
+    fi
+  fi
   # Merge authority on a Gerrit forge is refused rather than quietly dropped, on
   # the captain's decision of 2026-09-15: a Code-Review+2 is a positive
   # attributed claim that a named human approved, and firstmate must not
@@ -3323,8 +3401,10 @@ if [ "$KIND" = ship ]; then
   # spawn that ships the legacy fm/ prefix past a registered override is
   # announced, not refused: the brief-vs-spawn agreement above already
   # guarantees the worker's instructions match the branch this spawn selected.
+  # An issue-linked branch is named by its issue, not by a prefix, so it has no
+  # registered prefix to disagree with.
   STANDING_BRANCH=$("$FM_ROOT/bin/fm-project-mode.sh" --branch-prefix "$PROJ_NAME" 2>/dev/null) || STANDING_BRANCH=
-  if [ "$BRANCH" != "$STANDING_BRANCH$ID" ]; then
+  if [ "$ISSUE_SET" -eq 0 ] && [ -z "$CHORE" ] && [ "$BRANCH" != "$STANDING_BRANCH$ID" ]; then
     echo "notice: $ID ships branch=$BRANCH while $PROJ_NAME registers the ship-branch prefix '$STANDING_BRANCH' (branch $STANDING_BRANCH$ID) - the task's branch and PR will read as firstmate-authored; proceed only on a current explicit captain instruction or an intake judgment you can state" >&2
   fi
 fi
@@ -5108,6 +5188,12 @@ preserve_relaunch_meta() {
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
   [ -z "${BRANCH:-}" ] || echo "branch=$BRANCH"
+  # issue= and process= are written on a fresh spawn only and left out of
+  # preserve_relaunch_meta's owned-key list, so a relaunch (which never repeats
+  # --issue) carries them forward unchanged; bin/fm-merge-local.sh and
+  # bin/fm-pr-check.sh read them.
+  [ -z "$ISSUE_ARG" ] || echo "issue=$ISSUE_ARG"
+  [ "$RELAUNCH" -eq 1 ] || [ "${BRIEF_PROCESS:-none}" = none ] || echo "process=$BRIEF_PROCESS"
   echo "tasktmp=$TASK_TMP"
   [ -z "$BASE_BRANCH" ] || echo "base_branch=$BASE_BRANCH"
   echo "model=${MODEL:-default}"

@@ -9,6 +9,8 @@
 # With --forge it prints one word instead: the project's registered forge,
 # none|gerrit. The forge is asked for explicitly, so the default output stays
 # the same two words for every project, bound or not.
+# With --fleet-process it prints on|off: whether the project registers
+# +fleet-process (below), off when unregistered or the registry is absent.
 #
 # MECHANICAL CONSUMERS ONLY. This answers "what posture did the captain register
 # for this project", never "how does this task ship". A task's delivery mode,
@@ -20,7 +22,8 @@
 # run no-mistakes init), bin/fm-spawn.sh's advisory registry-deviation notice,
 # and --forge for bin/fm-spawn.sh's forge agreement and yolo refusal and for
 # bin/fm-promote.sh, which takes the forge binding from here because it is a
-# project fact rather than a task choice.
+# project fact rather than a task choice. --fleet-process has the same two
+# consumers for the same reason.
 #
 # Registry line format (data/projects.md):
 #   - <name> - <desc> (added <date>)                                 -> no-mistakes off fm/  (legacy default)
@@ -28,8 +31,9 @@
 #   - <name> [<mode> +yolo] - <desc> (added <date>)                  -> <mode> on fm/
 #   - <name> [<mode> +yolo branch=<prefix>] - <desc> (added <date>)  -> <mode> <yolo> <prefix>
 #   - <name> [<mode> forge=gerrit] - <desc> (added <date>)           -> <mode> off, --forge gerrit
+#   - <name> [<mode> +fleet-process] - <desc> (added <date>)         -> <mode> off, --fleet-process on
 #   <name> may contain spaces; it ends at the literal " [" or " - " that follows it.
-#   Bracket tokens are order-independent: +yolo, branch=<prefix>, and forge=<value>
+#   Bracket tokens are order-independent: +yolo, +fleet-process, branch=<prefix>, and forge=<value>
 #   are recognized by their own shape wherever they appear, and whichever token is
 #   left over is the mode. <prefix> must not contain a space; an empty override
 #   ("branch=") resolves to "" for a bare "<task-id>" ship branch instead of the
@@ -52,6 +56,15 @@
 #   third-party repo that does not use this tooling. Query it with
 #   --branch-prefix; it never appears in the default "<mode> <yolo>" output, so
 #   existing mechanical callers are unaffected by its presence.
+# +fleet-process (orthogonal) = the project runs the fleet process: an
+#   organisation Branch Naming ruleset refuses to create any branch
+#   but an issue or chore branch (bin/fm-ship-branch-lib.sh owns the names and
+#   the pattern), branches and PRs are made with the repo's
+#   scripts/work/work.ts, and every PR opens as a draft that only a Review by
+#   someone other than its author makes ready (bin/fm-dod-lib.sh owns what that
+#   changes for a worker). bin/fm-spawn.sh and bin/fm-promote.sh refuse a ship
+#   there whose branch the ruleset would refuse. It composes with no-mistakes
+#   and direct-PR; local-only publishes nothing, so it has no effect there.
 # forge (orthogonal, and orthogonal to yolo too) = which forge the project's
 #   remote actually is, never inferred from mode, remote name, host, or protocol.
 #   `none` means a forge whose pull requests and checks no-mistakes already
@@ -93,7 +106,7 @@
 # to the forge binding, so it prints even when the forge token is malformed;
 # every path that reads the forge binding (default, --forge, and spawn's
 # forge-agreement check) still refuses.
-# Usage: fm-project-mode.sh [--raw|--branch-prefix|--forge] <project-name>
+# Usage: fm-project-mode.sh [--raw|--branch-prefix|--forge|--fleet-process] <project-name>
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,23 +117,27 @@ REG="$DATA/projects.md"
 RAW=0
 BRANCH_PREFIX_QUERY=0
 WANT_FORGE=0
+WANT_FLEET=0
 case "${1:-}" in
   --raw) RAW=1; shift ;;
   --branch-prefix) BRANCH_PREFIX_QUERY=1; shift ;;
   --forge) WANT_FORGE=1; shift ;;
+  --fleet-process) WANT_FLEET=1; shift ;;
 esac
-NAME=${1:?usage: fm-project-mode.sh [--raw|--branch-prefix|--forge] <project-name>}
+NAME=${1:?usage: fm-project-mode.sh [--raw|--branch-prefix|--forge|--fleet-process] <project-name>}
 
 if [ ! -f "$REG" ]; then
   echo "warn: no registry at $REG; defaulting $NAME to no-mistakes off" >&2
   if [ "$BRANCH_PREFIX_QUERY" -eq 1 ]; then
     echo "fm/"
+  elif [ "$WANT_FLEET" -eq 1 ]; then echo off
   elif [ "$WANT_FORGE" -eq 1 ]; then echo none; else echo "no-mistakes off"; fi
   exit 0
 fi
 
 # awk emits one "near <token>" line per keyed token whose key is a near miss of
-# `forge`, then "posture <mode> <yolo> <branch-prefix> <forge>" (branch-prefix is
+# `forge`, then "posture <mode> <yolo> <fleet> <forge> <branch-prefix>" (fleet is
+# on|off; branch-prefix is
 # the raw prefix, defaulting to "fm/"; forge is `none` or the whole `forge=<value>`
 # token, so an empty value survives the split), or nothing if the project is
 # absent. Every other token beside the mode is ignored, exactly as before either
@@ -149,20 +166,21 @@ parsed=$(awk -v n="$NAME" '
     if (substr($0, 1, plen) != prefix) next
     after = substr($0, plen + 1);
     if (after != "" && substr(after, 1, 2) != " [" && substr(after, 1, 3) != " - ") next
-    mode="no-mistakes"; yolo="off"; branch="fm/"; forge="none";
+    mode="no-mistakes"; yolo="off"; branch="fm/"; forge="none"; fleet="off";
     if (substr(after, 1, 2) == " [") {
       s="";
       nk = split(after, rest, " ");
       for (i=1; i<=nk; i++) { s = s (s==""?"":" ") rest[i]; if (rest[i] ~ /\]$/) break }
       gsub(/^\[|\]$/, "", s);           # strip the surrounding brackets
       k = split(s, a, " ");
-      # Tokens are order-independent: +yolo, branch=<prefix>, and forge=<value>
+      # Tokens are order-independent: +yolo, +fleet-process, branch=<prefix>, and forge=<value>
       # are recognized by their own shape wherever they appear, keyed tokens
       # that are neither are ignored (with a near-miss warning for the forge
       # spelling), and the first token left over is the mode.
       mode_set = 0
       for (j=1; j<=k; j++) {
         if (a[j]=="+yolo") { yolo="on"; continue }
+        if (a[j]=="+fleet-process") { fleet="on"; continue }
         if (a[j] ~ /^branch=/) { branch = substr(a[j], 8); continue }
         if (a[j] ~ /^forge=/) { forge = a[j]; continue }
         if (a[j] ~ /^[^=]+=/) {
@@ -177,7 +195,7 @@ parsed=$(awk -v n="$NAME" '
     }
     # branch is printed LAST: an empty branch= override must survive as an
     # empty final field, which only holds when nothing follows it.
-    print "posture", mode, yolo, forge, branch; exit
+    print "posture", mode, yolo, fleet, forge, branch; exit
   }
 ' "$REG")
 
@@ -185,6 +203,7 @@ if [ -z "$parsed" ]; then
   echo "warn: project \"$NAME\" not in registry; defaulting to no-mistakes off" >&2
   if [ "$BRANCH_PREFIX_QUERY" -eq 1 ]; then
     echo "fm/"
+  elif [ "$WANT_FLEET" -eq 1 ]; then echo off
   elif [ "$WANT_FORGE" -eq 1 ]; then echo none; else echo "no-mistakes off"; fi
   exit 0
 fi
@@ -198,8 +217,8 @@ while IFS=' ' read -r kind rest; do
 done <<EOF
 $parsed
 EOF
-while IFS=' ' read -r m y f b; do
-  mode=$m; yolo=$y; rest_forge=$f; branch=$b
+while IFS=' ' read -r m y p f b; do
+  mode=$m; yolo=$y; fleet=$p; rest_forge=$f; branch=$b
 done <<EOF
 $posture
 EOF
@@ -211,6 +230,10 @@ esac
 case "$yolo" in on|off) ;; *) yolo=off ;; esac
 if [ "$BRANCH_PREFIX_QUERY" -eq 1 ]; then
   echo "$branch"
+  exit 0
+fi
+if [ "$WANT_FLEET" -eq 1 ]; then
+  echo "$fleet"
   exit 0
 fi
 
