@@ -232,6 +232,22 @@ STUB_POLL_SCRIPT="fail" STUB_POLL_COUNT="$TMP_ROOT/scope-b2" \
 [ "$rc" -eq 1 ] || fail "channel B's second consecutive failure must release the claim, got $rc"
 pass "two channels under one home track failed polls independently"
 
+# --- an unrecordable marker ends the runner instead of relistening forever -
+
+home=$(new_home marker-unwritable)
+FM_HOME="$home" "$ADAPTER" arm >/dev/null || fail "arm for the unwritable-marker case failed"
+rm -rf "$home/state/slack-captain"
+: > "$home/state/slack-captain"
+rm -f "$TMP_ROOT/poll-count"
+STUB_POLL_SCRIPT="fail" STUB_POLL_COUNT="$TMP_ROOT/poll-count" \
+  FM_HOME="$home" "$ROOT/bin/fm-procevent.sh" start "$SID" \
+  > "$TMP_ROOT/marker-unwritable.out" 2>&1 || true
+[ "$(cat "$TMP_ROOT/poll-count" 2>/dev/null)" = 1 ] \
+  || fail "a failed poll whose marker cannot be recorded must end the runner after one poll, not relisten: $(cat "$TMP_ROOT/marker-unwritable.out")"
+assert_contains "$(cat "$TMP_ROOT/marker-unwritable.out")" "no-result: $SID" \
+  "an unrecordable marker must release the claim instead of relistening forever"
+pass "a failed poll whose marker cannot be recorded releases the claim"
+
 # --- arm registers this wrapper's poll with the home and channel ------------
 
 home=$(new_home arm)

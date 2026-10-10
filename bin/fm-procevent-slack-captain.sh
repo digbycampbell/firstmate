@@ -137,8 +137,11 @@ cmd_poll() {
       rm -f -- "$marker"
       exit "$rc"
     fi
-    mkdir -p "$marker_dir" && (umask 077; : > "$marker") || exit "$rc"
-    exit 75
+    if mkdir -p "$marker_dir" && (umask 077; : > "$marker"); then
+      exit 75
+    else
+      exit "$rc"
+    fi
   fi
   rm -f -- "$marker"
   cat -- "$staged"
