@@ -44,14 +44,19 @@
 #     exit records `fm-procevent.sh handled`, so the result stays announced
 #     until firstmate handles it;
 #   - `relisten` exits 0, so the runner keeps its claim and polls again after
-#     a quiet poll (the package's exit 75) and after an applied capture.
+#     a quiet poll (the package's exit 75) and after an applied capture;
+#   - `poll` reports a failed poll that produced no output as the package's
+#     quiet exit 75, so the runner relistens, unless the previous poll also
+#     failed with no output, tracked by a marker file under this home's
+#     state/slack-captain/ directory that any successful or quiet poll clears.
+#     A poll that fails with output keeps that failure's exit status.
 #
 # This source is NEVER terminal. `terminal` always refuses, so the runner keeps
-# the registration armed. The runner normally relistens; a poll that fails or a
-# capture the package could not apply releases the claim, and the ordinary
-# reconcile restarts the poll on the next supervision cycle. Relistening keeps
-# the channel polled while no supervision cycle runs, until the runner's owner
-# lease ends (bin/fm-procevent.sh).
+# the registration armed. The runner normally relistens; two consecutive
+# failed polls with no output, or a capture the package could not apply,
+# release the claim, and the ordinary reconcile restarts the poll on the next
+# supervision cycle. Relistening keeps the channel polled while no supervision
+# cycle runs, until the runner's owner lease ends (bin/fm-procevent.sh).
 #
 # INSTALLATION. SLACK_MIRROR_HOME selects the agent-slack-mirror checkout.
 # A missing core, listener, or poster is a loud refusal naming the exact clone
@@ -117,11 +122,29 @@ cmd_retire() {
 }
 
 cmd_poll() {
-  local home=${1-} channel=${2-}
+  local home=${1-} channel=${2-} marker_dir marker staged rc
   [ -n "$home" ] && [ -n "$channel" ] || usage
   FM_HOME=$home
   prepare
-  exec "$(package_captain)" poll "$channel"
+  marker_dir="${FM_STATE_OVERRIDE:-$FM_HOME/state}/slack-captain"
+  marker="$marker_dir/.last-poll-failed"
+  staged=$(mktemp "${TMPDIR:-/tmp}/fm-slack-poll.XXXXXX") || die "cannot stage the poll output"
+  "$(package_captain)" poll "$channel" > "$staged"
+  rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 75 ] && [ ! -s "$staged" ]; then
+    rm -f -- "$staged"
+    mkdir -p "$marker_dir" 2>/dev/null || true
+    if [ -e "$marker" ]; then
+      rm -f -- "$marker"
+      exit "$rc"
+    fi
+    : > "$marker" 2>/dev/null || true
+    exit 75
+  fi
+  rm -f -- "$marker"
+  cat -- "$staged"
+  rm -f -- "$staged"
+  exit "$rc"
 }
 
 cmd_handle() {

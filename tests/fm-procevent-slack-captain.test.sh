@@ -183,10 +183,10 @@ pass "autohandle reports an applied capture, keeps a refusal, and never acknowle
 home=$(new_home relisten)
 FM_HOME="$home" "$ADAPTER" arm >/dev/null || fail "arm for the relisten case failed"
 rm -f "$TMP_ROOT/poll-count"
-STUB_POLL_SCRIPT="quiet capture quiet fail" STUB_POLL_COUNT="$TMP_ROOT/poll-count" \
+STUB_POLL_SCRIPT="quiet capture quiet fail fail" STUB_POLL_COUNT="$TMP_ROOT/poll-count" \
   FM_HOME="$home" "$ROOT/bin/fm-procevent.sh" start "$SID" \
   > "$TMP_ROOT/relisten.out" 2>&1 || true
-[ "$(cat "$TMP_ROOT/poll-count" 2>/dev/null)" = 4 ] \
+[ "$(cat "$TMP_ROOT/poll-count" 2>/dev/null)" = 5 ] \
   || fail "the runner stopped polling after $(cat "$TMP_ROOT/poll-count" 2>/dev/null) poll(s) instead of polling again: $(cat "$TMP_ROOT/relisten.out")"
 relisten_result=$(printf '%s\n' "$home/state/procevent-inbox/$SID".*.result | head -n 1)
 [ -f "$relisten_result" ] || fail "the relistening runner captured no result: $(cat "$TMP_ROOT/relisten.out")"
@@ -195,7 +195,18 @@ relisten_seq=${relisten_result%.result}
 relisten_seq=${relisten_seq##*.}
 assert_absent "$home/state/procevent-inbox/$SID.$relisten_seq.handled" \
   "polling again must leave the capture unacknowledged for firstmate"
-pass "the runner polls the channel again after a quiet window and an applied capture"
+pass "the runner polls the channel again after a quiet window, an applied capture, and a single failed poll"
+
+# --- a single failed poll keeps the claim, but two in a row release it ------
+# A poll that fails with no output used to release the claim on the very
+# first failure, leaving the source for the next reconcile. The sequence
+# above already shows one failed poll (position 4) followed by another poll
+# in the same runner (position 5); that next poll fails again, and the two
+# consecutive failures end the runner at exactly 5 polls, so a broken setup
+# cannot turn into a tight loop.
+assert_contains "$(cat "$TMP_ROOT/relisten.out")" "no-result: $SID" \
+  "two consecutive failed polls must release the claim"
+pass "two consecutive failed polls release the claim"
 
 # --- arm registers this wrapper's poll with the home and channel ------------
 
