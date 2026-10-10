@@ -6,44 +6,25 @@
 # receives. Both paths must hand the worker the same contract: a promoted
 # no-mistakes worker that never received the ask-user escalation rule or the
 # `--yes` ban is the exact delivery hole this single owner exists to close.
-# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> <branch> [<forge>] [<process>] [<base-branch>] [<phase>]
+# fm_dod_block <no-mistakes|direct-PR|local-only> <task-id> [branch] [<forge>]
 # prints the block on stdout with no trailing blank line. The caller validates the
 # mode; an unknown mode is refused rather than silently rendered as the pipeline
 # contract.
-# The required third argument is the task's full ship-branch name, which
-# bin/fm-ship-branch-lib.sh names; it is the immutable task branch rendered in
-# every delivery contract.
-# process is none|fleet and defaults to none; fleet is the +fleet-process
-# registry token (bin/fm-project-mode.sh). Its block appends " process=fleet" to
-# the Delivery contract line and tells the worker to make its PR with
-# scripts/work/work.ts, never to type a branch name, title, body, or label, and
-# to leave the PR the draft it opens as: only a passing Review by someone other
-# than its author makes it ready. fm_process_valid refuses it on local-only, on
-# a Gerrit forge, and on a branch the organisation ruleset would refuse.
-# A fleet-process ship whose branch is a one-branch Plan's plan-issue-<n>
-# (bin/fm-ship-branch-lib.sh) is a Phase of that Plan (digio-factory#55): it
-# needs mode=direct-PR and its <phase> issue number, and its block tells the
-# worker to switch to the Plan's branch with work.ts, push plain commits there,
-# open or refresh the draft Plan PR, and report done with a request for the
-# Phase review, which someone other than the worker records on the Plan PR. It
-# never runs the pipeline, which would rebase the shared branch and write its
-# own PR body. A legacy plan's Phase keeps its own fm-issue-<n> branch and the
-# no-mistakes <base-branch> instead.
-# Every block also carries the verification reference FM_DOD_VERIFY, in the same
-# words, directly under its "Ship branch:" line: local verification follows the
-# project's own AGENTS.md testing standard rather than a competing rule here, so
-# browser or e2e evidence that standard assigns to CI is cited, not re-run
-# locally. Only defect reproduction and a verification summary are stated here,
-# because no project standard owns them.
+# The optional third argument is the task's full ship-branch name (a project's
+# registered prefix may replace the legacy `fm/` one); it defaults to `fm/<task-id>`
+# and is the immutable task branch rendered in every delivery contract.
+# The optional fifth argument is the task's base branch from bin/fm-brief.sh
+# --base-branch; empty means the repository default. A named base is the branch
+# the worker starts from, never pushes to, and targets with its pull request, and
+# fm_base_branch_valid refuses it where no pull request carries the work.
 # Callers of the gate are bin/fm-crew-state.sh (current-state done),
 # bin/fm-pr-check.sh (PR registration), and bin/fm-inactive-reconcile.sh
 # (secondmate ledger-first publish of a child done). A ship `done:` is not
 # accepted while the named head exists only in the worker's disposable copy.
 # The check tests that head, not whether some branch moved. In no-mistakes
-# mode the worker starts the pipeline itself (FM_DOD_NM_START), and a
-# pre-validation `done: {summary}` from a brief written before that rule is a
-# pipeline handoff and is not gated; only the CI-ready `done: PR <url> checks
-# green` is, or on a Gerrit project `done: PR <change url> published for review`. The
+# mode the pre-validation `done: {summary}` is the pipeline handoff and is
+# not gated; only the later CI-ready `done: PR <url> checks green` is, or on a
+# Gerrit project the later `done: PR <change url> published for review`. The
 # named head is the worker copy's HEAD, except that a done naming the task's
 # recorded pr= passes when the forge holds that head: a forge-reported
 # pr_head= in no-mistakes mode, or a recorded merge
@@ -82,12 +63,10 @@
 # changes is refused until it can be watched by its membership pinned when its
 # watch is armed, because the merge poll watches one change. No contract here
 # lets a worker submit, vote on, or abandon a change.
-# Outside the fleet process, the two PR-based blocks require a non-draft pull
-# request before the done report, read back from the forge; a lane that
-# deliberately holds a draft declares a paused wait instead. bin/fm-pr-check.sh
-# refuses to arm merge monitoring on such a draft through the same reading
-# bin/fm-pr-merge.sh uses. A fleet-process done names a draft awaiting its
-# Review, which bin/fm-pr-check.sh accepts for a task recorded process=fleet.
+# The two PR-based blocks require a non-draft pull request before the done
+# report, read back from the forge; a lane that deliberately holds a draft
+# declares a paused wait instead. bin/fm-pr-check.sh refuses to arm merge
+# monitoring on a draft through the same reading bin/fm-pr-merge.sh uses.
 # This file is the one owner of the no-mistakes `--intent` contract: only the
 # brief's `## Captain's intent` subsection plus later captain words, never
 # `## Firstmate spec` and never the worker's own tradeoffs.
@@ -116,11 +95,16 @@
 # fm_brief_intent_overlay it is a distinctly titled launch section that states
 # its own precedence, so a brief or project instruction that authors a
 # conflicting role is superseded rather than duplicated.
+# The code root argument is the Firstmate checkout that holds
+# .agents/skills/firstmate-coding-guidelines/SKILL.md. A worker in a Firstmate
+# worktree loads that skill by name from its own checkout. A worker whose
+# session does not register the skill, such as one in another project's
+# worktree, cannot, so the role also names the file as the fallback to read;
+# the Claude launch grants the skills directory that holds it.
 # fm_ship_rule_one owns the mode-specific first ship safety rule shared by an
 # ordinary ship brief and the durable contract written during scout promotion.
 # It takes the same optional trailing forge argument, because the rule that keeps
 # a worker off a remote is exactly the rule that changes when the forge does.
-# Every non-gerrit mode names the task branch, including no-mistakes.
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-pr-lib.sh"
@@ -130,11 +114,9 @@
 . "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-nm-run-lib.sh"
 # shellcheck source=bin/fm-brief-heading-lib.sh
 . "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-brief-heading-lib.sh"
-# shellcheck source=bin/fm-ship-branch-lib.sh
-. "$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)/fm-ship-branch-lib.sh"
 
-fm_brief_worker_role() {  # <state-dir> <task-id>
-  local state=$1 task_id=$2
+fm_brief_worker_role() {  # <state-dir> <task-id> <code-root>
+  local state=$1 task_id=$2 root=$3
   cat <<'EOF'
 # Current worker role contract
 You are a crewmate: an autonomous worker agent managed by firstmate.
@@ -147,6 +129,7 @@ Never inspect or change any other home's endpoint namespace; this authorization 
 When this task works on Firstmate itself, the repository root `AGENTS.md` (also imported by `CLAUDE.md`) is project content and the supervisor contract for the firstmate managing you: follow this brief instead of that supervisor contract.
 Project instructions still govern the work wherever they do not conflict with this worker identity, including `CONTRIBUTING.md` and `firstmate-coding-guidelines` for Firstmate changes.
 EOF
+  printf "If the \`firstmate-coding-guidelines\` skill name does not resolve in this session, read \`%s/.agents/skills/firstmate-coding-guidelines/SKILL.md\` instead.\n" "$root"
 }
 
 # Closed-set gate shared by every forge-aware renderer and bin/fm-brief.sh, so a
@@ -168,51 +151,62 @@ fm_forge_valid_for_mode() {  # <forge> <mode> <caller>
   return 0
 }
 
-# Closed-set gate for the fleet process (bin/fm-project-mode.sh owns the
-# +fleet-process registry token). It needs a pull request on GitHub, so it is
-# refused on local-only and on a Gerrit forge, and its organisation ruleset
-# accepts only an issue or chore branch (bin/fm-ship-branch-lib.sh).
-fm_process_valid() {  # <process> <mode> <forge> <branch> <caller>
-  local process=$1 mode=$2 forge=$3 branch=$4 caller=$5
-  case "$process" in
-    none) return 0 ;;
-    fleet) ;;
-    *)
-      echo "error: $caller: unknown process '$process' (expected none or fleet)" >&2
-      return 1 ;;
-  esac
-  if [ "$mode" = local-only ] || [ "$forge" != none ]; then
-    echo "error: $caller: the fleet process ships a GitHub pull request, so it composes only with mode=no-mistakes or direct-PR on forge=none (got mode=$mode forge=$forge)" >&2
+# A task's optional base branch replaces the repository default as the branch
+# its copy starts from and its pull request targets. bin/fm-brief.sh records it
+# as a "Base branch: <name>" line under the brief's `# Setup` heading,
+# bin/fm-spawn.sh takes it as --base-branch, refuses a brief whose Base branch
+# lines (fm_brief_base_branches) disagree, and records base_branch= in the task
+# metadata, and every later consumer reads that metadata field. It is
+# refused on local-only, whose landing fast-forwards local main, and on a Gerrit
+# forge, whose publish path targets the change's own branch.
+fm_base_branch_valid() {  # <base> <mode> <forge> <caller>
+  local base=$1 mode=$2 forge=$3 caller=$4
+  [ -n "$base" ] || return 0
+  if [ "${base#-}" != "$base" ] || ! git check-ref-format --branch "$base" >/dev/null 2>&1; then
+    echo "error: $caller: base branch '$base' is not a valid git branch name" >&2
     return 1
   fi
-  case "$branch" in
-    fm-issue-*|fm-chore-*) fm_ship_branch_org_allowed "$branch" && return 0 ;;
-    plan-issue-*)
-      if [ "$mode" != direct-PR ]; then
-        echo "error: $caller: a one-branch Plan's Phase pushes plain commits to $branch, so it ships mode=direct-PR, never through the no-mistakes pipeline, which would rebase the shared branch and write its own PR body (got mode=$mode)" >&2
-        return 1
-      fi
-      fm_ship_plan_branch_valid "$branch" && fm_ship_branch_org_allowed "$branch" && return 0 ;;
-  esac
-  echo "error: $caller: the fleet process needs an fm-issue-<n>, fm-chore-<slug>, or plan-issue-<n> ship branch (got '$branch'); pass --issue <n>, --chore <slug>, or --issue <phase> --plan-branch plan-issue-<n>" >&2
-  return 1
+  if [ "$mode" = local-only ]; then
+    echo "error: $caller: a base branch cannot ship mode=local-only, whose landing fast-forwards local main; ship no-mistakes or direct-PR, which open a pull request against the base" >&2
+    return 1
+  fi
+  if [ "$forge" != none ]; then
+    echo "error: $caller: a base branch is not supported on forge=$forge" >&2
+    return 1
+  fi
+  return 0
 }
 
-fm_ship_rule_one() {  # <no-mistakes|direct-PR|local-only> <task-id> <branch> [<forge>]
-  local mode=$1 id=$2 forge=${4:-none}
-  local branch=${3:-}
-  [ -n "$branch" ] || { echo "error: fm_ship_rule_one: task $id needs its ship branch" >&2; return 1; }
+# Print the value of every "Base branch: <name>" line that directly follows the
+# base-variant Setup sentence bin/fm-brief.sh writes; return 1 when there is
+# none. Any other "Base branch:" line is prose and ignored.
+fm_brief_base_branches() {  # <brief>
+  awk '
+    setup && sub(/^Base branch: /, "") { print; n++ }
+    { setup = /^You are in a disposable git worktree of .*, at a detached HEAD on a clean copy of its base branch\.$/ }
+    END { exit !n }
+  ' "$1"
+}
+
+fm_ship_rule_one() {  # <no-mistakes|direct-PR|local-only> <task-id> [branch] [<forge>] [<base>]
+  local mode=$1 id=$2 forge=${4:-none} base=${5:-}
+  local branch=${3:-fm/$id} target='the default branch'
   fm_forge_valid_for_mode "$forge" "$mode" fm_ship_rule_one || return 1
+  fm_base_branch_valid "$base" "$mode" "$forge" fm_ship_rule_one || return 1
+  [ -z "$base" ] || target="the base branch \`$base\` or the default branch"
   if [ "$forge" = gerrit ]; then
     printf '%s\n' "1. Never push with git and never create a change except through the one \`gerrit-axi publish --squash\` your Definition of done names. Never run \`gerrit-axi submit\`, never vote or review a change by any path, including \`gerrit review\` or a label option on a push, and never abandon one: a human reviewer approves and submits it on the server."
     return 0
   fi
   case "$mode" in
-    direct-PR|no-mistakes)
-      printf '%s\n' "1. Never push to the default branch (push only your \`$branch\` branch). Never merge a PR."
+    direct-PR)
+      printf '%s\n' "1. Never push to $target (push only your \`$branch\` branch). Never merge a PR."
       ;;
     local-only)
       printf '%s\n' "1. Never push to any remote and never open a PR. Work only on your \`$branch\` branch; firstmate handles the merge into local \`main\`."
+      ;;
+    no-mistakes)
+      printf '%s\n' "1. Never push to $target. Never merge a PR."
       ;;
     *)
       echo "error: fm_ship_rule_one: unknown delivery mode '$mode'" >&2
@@ -331,33 +325,36 @@ fm_ask_user_escalation_block() {  # <data-dir> <task-id>
 EOF
 }
 
-# How a no-mistakes worker starts its pipeline, shared by every no-mistakes
-# block. The worker starts it itself right after its implementation commit: a
-# pre-validation done-and-stop handoff left builders idle until firstmate
-# noticed (four times on 2026-10-03/04), and firstmate's start steer was a
-# Claude slash command that jammed a Codex composer. The skill invocation is
-# harness-specific (.agents/skills/harness-adapters references own each form),
-# so the brief names the shell command every harness can run.
-# shellcheck disable=SC2016 # The backticks are literal brief text.
-FM_DOD_NM_START='The task is complete only when committed on your branch.
-When it is implemented and committed, start the no-mistakes pipeline yourself, in the same turn and without stopping first: invoke the no-mistakes skill the way your harness invokes skills, or run `no-mistakes axi run` from the shell where your harness has none.
-The pipeline owns the push and the PR, so never push from this copy.
-Never append `done:` before the pipeline has returned: a `done:` naming no PR or published change is not a handoff, and stopping on one leaves the task idle.'
-
 # The forge-independent middle of the no-mistakes contract: how a worker drives
 # the pipeline, what `--intent` may carry, and the two firstmate-specific rules.
 # Written once; only the two sentences about a green PR depend on the forge,
 # because on gerrit the ci step is skipped and there is no PR to report.
 fm_nm_driving_block() {  # <forge>
-  local pr_return_line='' pr_reattach_clause=';'
+  local pr_return_line='' pr_reattach_clause=';' drive_block wait_cfg
   if [ "$1" != gerrit ]; then
     pr_return_line="Only a drive call's return reports the green PR: \`no-mistakes axi status\` shows progress but never reports \`checks-passed\` while the ci step is still monitoring the PR for merge, so never wait on a status poll for the next gate or outcome.
 "
     pr_reattach_clause="; once checks are green it returns \`checks-passed\` immediately, and"
   fi
+  # config/wait-no-turns selects the foreground drive. Absent, the text matches
+  # the backgrounded drive a home had before that flag.
+  wait_cfg=${CONFIG:-${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}}
+  if [ -e "$wait_cfg/wait-no-turns" ]; then
+    drive_block="Drive the run with ONE foreground \`no-mistakes axi run\` and let it block.
+It bounds its own hold for you: \`--wait\` (default 8m) exists precisely so a harness with a ten-minute command cap gets a structured return instead of being killed mid-hold.
+Declare that wait using the brief's status-reporting rule before the foreground drive call.
+Never background a wait, and never arm a timer to stand in for one: a backgrounded call returns in milliseconds, so it does not wait at all, and every timer left behind fires later as a paid wake for nothing.
+${pr_return_line}Whenever a drive call returns without a gate or an outcome - its own wait elapsed, or it was killed or timed out - that is not a failure: reattach at once by re-running \`no-mistakes axi run\` without flags, and issue the same foreground call again, one at a time, until a gate or outcome comes back${pr_reattach_clause} if it refuses because no run is active, read the finished outcome from \`no-mistakes axi status\`."
+  else
+    drive_block="One drive call blocks until the next gate or outcome, which routinely outlives what your harness lets a single command run: Claude Code kills a command at ten minutes maximum, while one fix round is capped around thirty minutes and up to three rounds chain.
+So background the drive call instead of sitting in one blocking hold your harness will kill, and read its return when it finishes.
+Declare that wait using the brief's status-reporting rule before waiting on the backgrounded drive call.
+Where a harness's own command limit is not established, assume it bounds commands and use that same backgrounded shape.
+${pr_return_line}Whenever a drive call returns without a gate or an outcome - its own wait elapsed, or it was killed or timed out - reattach at once by re-running \`no-mistakes axi run\` without flags, backgrounded the same way${pr_reattach_clause} if it refuses because no run is active, read the finished outcome from \`no-mistakes axi status\`."
+  fi
   cat <<EOF
 You drive no-mistakes by responding to its gates, not by implementing fixes.
-Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke the no-mistakes skill, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
+Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, pass \`--intent\` as only this brief's \`## Captain's intent\` subsection body, not its heading, plus any later words the captain actually said.
 Preserve the actual words without adding speaker labels or direct address; the subsection heading supplies provenance outside the pipeline input.
 For a legacy brief with no such subsection, include only words on lines marked \`[captain] \`, excluding that metadata prefix; never copy its mixed \`# Task\` wholesale.
@@ -368,11 +365,7 @@ When the captain's intent refers to a report, decision, or PR ("do items 1, 2, 3
 This replaces the no-mistakes skill's advice to enrich \`--intent\` with decisions and tradeoffs; that advice does not apply to Firstmate-dispatched work.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
-One drive call blocks until the next gate or outcome, which routinely outlives what your harness lets a single command run: Claude Code kills a command at ten minutes maximum, while one fix round is capped around thirty minutes and up to three rounds chain.
-So background the drive call instead of sitting in one blocking hold your harness will kill, and read its return when it finishes.
-Declare that wait using the brief's status-reporting rule before waiting on the backgrounded drive call.
-Where a harness's own command limit is not established, assume it bounds commands and use that same backgrounded shape.
-${pr_return_line}Whenever a drive call returns without a gate or an outcome - its own wait elapsed, or it was killed or timed out - reattach at once by re-running \`no-mistakes axi run\` without flags, backgrounded the same way${pr_reattach_clause} if it refuses because no run is active, read the finished outcome from \`no-mistakes axi status\`.
+$drive_block
 A killed or timed-out call is never evidence the daemon died: the daemon accepts your response immediately and runs the round in the background, so the call was only ever waiting for a read while the run kept working.
 Reattach and keep going rather than reporting the pipeline blocked; rule 7 owns the checks that decide when a pipeline block is real.
 
@@ -407,158 +400,23 @@ There is no pull request, no \`gh-axi\` call, and no forge CI result to report: 
 EOF
 }
 
-# The command a fleet-process worker runs work.ts with. The repo's own copy wins;
-# until a process deploy lands it there, the factory copy runs against the repo
-# named by GITHUB_REPOSITORY. FM_WORK_TS_FALLBACK overrides the factory path.
-fm_fleet_work_ts_lines() {
-  local fallback=${FM_WORK_TS_FALLBACK:-$HOME/devs/digio-factory/process/payload/scripts/work/work.ts}
-  cat <<EOF
-Run work.ts from this repository as \`node --experimental-strip-types scripts/work/work.ts <command> ...\`.
-Until this repository carries \`scripts/work/work.ts\`, run \`GITHUB_REPOSITORY=<owner>/<repo> node --experimental-strip-types $fallback <command> ...\` instead, with the \`<owner>/<repo>\` of your \`origin\` remote.
-EOF
-}
-
-# The branch-creation step for a fleet-process ship, keyed by the ship branch's
-# shape (bin/fm-ship-branch-lib.sh owns the shapes). A retry suffix is outside
-# what work.ts names, so that one case confirms the issue through work.ts and
-# creates the exact recorded branch from the same base work.ts uses. A Phase of
-# a one-branch Plan names its <phase> issue, because the branch names the Plan.
-fm_fleet_branch_step() {  # <branch> [<phase>]
-  local branch=$1 phase=${2:-} n rest
-  case "$branch" in
-    plan-issue-*)
-      [ -n "$phase" ] || { echo "error: fm_fleet_branch_step: '$branch' needs its Phase issue number" >&2; return 1; }
-      printf '%s\n' "switch to the Plan's branch with work.ts, never by hand: \`work.ts branch $phase --create\` checks that Phase #$phase is open and switches to \`$branch\`, tracking origin and fast-forwarded; never create a branch of your own, because every Phase of this Plan is commits on \`$branch\`, and \`work.ts\` is the command your Definition of done names."
-      ;;
-    fm-issue-*)
-      rest=${branch#fm-issue-}
-      n=${rest%%[!0-9]*}
-      if [ "$rest" = "$n" ]; then
-        printf '%s\n' "create your branch with work.ts, never by hand: \`work.ts branch $n --builder fm --create\` checks that issue #$n is open and switches to \`$branch\` from \`origin/main\`; \`work.ts\` is the command your Definition of done names."
-      else
-        printf '%s\n' "confirm issue #$n is open with \`work.ts branch $n --builder fm\`, then create this retry branch from the same base: \`git fetch origin && git switch -c $branch origin/main\`; \`work.ts\` is the command your Definition of done names."
-      fi
-      ;;
-    fm-chore-*)
-      printf '%s\n' "create your branch with work.ts, never by hand: \`work.ts chore ${branch#fm-chore-} --builder fm --create\` switches to \`$branch\` from \`origin/main\`; \`work.ts\` is the command your Definition of done names."
-      ;;
-    *)
-      echo "error: fm_fleet_branch_step: '$branch' is not an issue or chore branch" >&2
-      return 1
-      ;;
-  esac
-}
-
-# What the fleet process changes for a worker that publishes a pull request. The
-# server half is digio-factory's Discipline and Review Gate workflows: it drafts
-# every new PR, sets the title's leading plan ref and copies the route label
-# from the issue, and marks the draft ready only when a passing Review lands on
-# its exact head.
-fm_fleet_pr_rules() {
-  fm_fleet_work_ts_lines
-  cat <<EOF
-Never type a branch name, PR title, PR body, or PR label by hand: work.ts derives them from the issue, and \`work.ts pr ... --dry-run\` prints the title, labels, and body without creating anything.
-The server sets the title's leading plan ref (\`P<n>.<m>\`, \`P<n>\`, or \`#<n>\`) and copies the issue's route label; never edit either.
-Every PR opens as a draft, and only a passing Review by someone other than its author makes it ready.
-You are its author: never mark it ready and never record a Review on it.
-A draft awaiting review is the expected state when you report done.
-EOF
-}
-
-IFS= read -r -d '' FM_DOD_VERIFY <<'FM_DOD_VERIFY_EOF' || true
-Follow the project's own AGENTS.md testing standard for local verification.
-If that standard assigns browser or e2e evidence to CI, run no local server, browser, or e2e suite; cite the CI lanes and any branch-slot deploy as the evidence.
-Where you are fixing a defect, reproduce it before the fix and prove it gone after, stating the method.
-State what you verified.
-FM_DOD_VERIFY_EOF
-FM_DOD_VERIFY=${FM_DOD_VERIFY%$'\n'}
-
-fm_dod_block() {  # <mode> <task-id> <branch> [<forge>] [<process>] [<base-branch>] [<phase>]
-  local mode=$1 id=$2 forge=${4:-none} process=${5:-none} base=${6:-} phase=${7:-}
-  local branch=${3:-} nm_start=$FM_DOD_NM_START
-  if [ -n "$base" ]; then
-    [ "$mode" = no-mistakes ] || { echo "error: fm_dod_block: a base branch applies only to a no-mistakes ship" >&2; return 1; }
-    # A Phase PR targets its plan branch; without the flag the pipeline rebases,
-    # opens the PR, and watches CI against the default branch instead.
-    nm_start="$nm_start
-This task's PR targets \`$base\`, not the default branch: pass \`--base-branch $base\` on every \`no-mistakes axi run\` for this task, so the pipeline rebases onto, opens the PR against, and runs CI for \`$base\`."
-  fi
-  [ -n "$branch" ] || { echo "error: fm_dod_block: task $id needs its ship branch" >&2; return 1; }
+fm_dod_block() {  # <mode> <task-id> [branch] [<forge>] [<base>]
+  local mode=$1 id=$2 forge=${4:-none} base=${5:-}
+  local branch=${3:-fm/$id} pr_base='' nm_base='' base_q
   fm_forge_valid_for_mode "$forge" "$mode" fm_dod_block || return 1
-  fm_process_valid "$process" "$mode" "$forge" "$branch" fm_dod_block || return 1
-  if fm_ship_plan_branch_valid "$branch" || [ -n "$phase" ]; then
-    if [ "$process" != fleet ] || [ -z "$phase" ] || [ -n "$base" ] || ! fm_ship_plan_branch_valid "$branch"; then
-      echo "error: fm_dod_block: a one-branch Plan's Phase needs the fleet process, a plan-issue-<n> branch, its Phase issue number, and no base branch" >&2
-      return 1
-    fi
-    cat <<EOF
-# Definition of done
-Delivery contract: mode=direct-PR process=fleet
-Ship branch: $branch
-$FM_DOD_VERIFY
-
-This task is Phase #$phase of a one-branch Plan: its work is plain commits pushed to the Plan's shared \`$branch\` branch and reviewed on the Plan PR.
-There is no Phase branch and no Phase PR. Do NOT run /no-mistakes: the pipeline would rebase the shared branch and write its own PR body.
-EOF
-    fm_fleet_work_ts_lines
-    cat <<EOF
-Never rebase, amend a pushed commit, or force-push \`$branch\`: other Phases build on it, and its ruleset refuses a force-push.
-Never type a PR title, body, or label by hand, never mark the Plan PR ready, and never record a review on it: a reviewer other than you records this Phase's review.
-The task is complete only when committed on \`$branch\` and pushed.
-When it is implemented and committed, run \`git push\`; when the push is refused because \`$branch\` moved, run \`git pull --no-rebase\`, resolve any conflict, commit, and push again.
-Then run \`work.ts pr --type <type> --draft\`: it opens the draft Plan PR into the default branch with \`Closes #<plan>\` only, or refreshes the open one's reviewed-Phases list, and prints the Plan PR URL.
-Then append \`done [at=<epoch>]: Phase #$phase pushed to $branch at <head sha>; Phase review requested on {Plan PR url}\` to the status file and stop.
-That \`done:\` is accepted only when this copy's HEAD - your latest commit - is pushed to \`$branch\`; the check tests that commit, not merely that a branch moved.
-Firstmate arranges the Phase review, which its reviewer records with \`work.ts review <plan-pr> --phase $phase\` on the exact head; the Plan PR stays a draft until the Plan's own review.
-EOF
-    return 0
+  fm_base_branch_valid "$base" "$mode" "$forge" fm_dod_block || return 1
+  if [ -n "$base" ]; then
+    printf -v base_q '%q' "$base"
+    pr_base=", against the base branch \`$base\` (\`--base $base_q\`), not the repository default"
+    nm_base="This task's base branch is \`$base\`, not the repository default: pass \`--base-branch $base_q\` on every \`no-mistakes axi run\` that starts a run, so the pipeline rebases onto, opens its PR against, and watches CI for that branch.
+"
   fi
-  case "$mode:$forge:$process" in
-    direct-PR:none:fleet)
-      cat <<EOF
-# Definition of done
-Delivery contract: mode=direct-PR process=fleet
-Ship branch: $branch
-$FM_DOD_VERIFY
-
-This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
-EOF
-      fm_fleet_pr_rules
-      cat <<EOF
-The task is complete only when committed on your branch.
-When it is implemented and committed, push with \`git push -u origin HEAD\`, then open the PR with \`work.ts pr --type <type> [--scope <scope>] [--summary "<summary>"] --body-file <file>\`, where the file holds the plain-English \`## What\` a non-engineer can read; it prints the PR URL.
-Then append \`done [at=<epoch>]: PR {url}\` to the status file and stop.
-That \`done:\` is accepted only when this copy's HEAD - your latest commit - is pushed to your PR branch; the check tests that commit, not merely that a branch moved.
-Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR once it is reviewed; firstmate relays the outcome.
-EOF
-      ;;
-    no-mistakes:none:fleet)
-      cat <<EOF
-# Definition of done
-Delivery contract: mode=no-mistakes process=fleet
-Ship branch: $branch
-$FM_DOD_VERIFY
-
-$nm_start
-
-EOF
-      fm_nm_driving_block "$forge"
-      printf '\n'
-      fm_fleet_pr_rules
-      cat <<EOF
-After the pipeline reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), read the PR body back with \`gh-axi pr view <number> --full\`, where <number> is the PR number from your PR URL.
-When it does not follow this repository's \`.github/pull_request_template.md\` with its closing keyword, rewrite it into the template: render it with \`work.ts pr --type <type> [--scope <scope>] --body-file <file> --dry-run\`, where the file holds the plain-English \`## What\`, and set the PR body to the text after that output's \`---\` line with \`gh-axi pr edit <number> --body-file <rendered file>\`; a body edit does not move the head.
-Then append \`done [at=<epoch>]: PR {url} checks green\` and stop. You are finished.
-That CI-ready \`done:\` is accepted only when this copy's HEAD - your latest commit - is one the no-mistakes run pushed, so commit nothing after the run; the check tests that commit, not merely that a branch moved.
-EOF
-      ;;
-    direct-PR:gerrit:*)
+  case "$mode:$forge" in
+    direct-PR:gerrit)
       cat <<EOF
 # Definition of done
 Delivery contract: mode=direct-PR forge=gerrit shape=squash
 Ship branch: $branch
-$FM_DOD_VERIFY
-
 This task ships **direct-PR** to a Gerrit review server: you publish the change yourself, without the no-mistakes pipeline.
 Gerrit has no pull requests, so there is nothing to open; publishing creates the change.
 The task is complete only when committed on your branch.
@@ -569,17 +427,18 @@ EOF
 Do NOT run /no-mistakes.
 EOF
       ;;
-    no-mistakes:gerrit:*)
+    no-mistakes:gerrit)
       cat <<EOF
 # Definition of done
 Delivery contract: mode=no-mistakes forge=gerrit shape=squash
 Ship branch: $branch
-$FM_DOD_VERIFY
-
 This project's review server is Gerrit: it has no pull requests and no forge CI the pipeline can watch, so **no-mistakes runs here as a review pass that ends at a ready branch**, and you then publish that branch as one change.
 Pass \`--skip push,pr,ci\` on every \`no-mistakes axi run\` for this task, and skip nothing else: \`review\`, \`test\`, \`document\`, and \`lint\` are the whole point of the run.
 Those three are the only steps that reach a forge, and skipping them is a supported outcome, not a degraded one.
-$nm_start
+The task is complete only when committed on your branch.
+When you believe it is complete, append \`done [at=<epoch>]: {summary}\` to the status file and stop.
+Firstmate will then instruct you to run /no-mistakes to validate.
+That first \`done:\` is the handoff that starts the pipeline; it is not a request to publish.
 
 EOF
       fm_nm_driving_block "$forge"
@@ -605,11 +464,9 @@ EOF
 # Definition of done
 Delivery contract: mode=direct-PR
 Ship branch: $branch
-$FM_DOD_VERIFY
-
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
-When it is implemented and committed, push your branch and open a PR with \`gh-axi\` that is ready for review, not a draft.
+When it is implemented and committed, push your branch and open a PR with \`gh-axi\` that is ready for review, not a draft$pr_base.
 Before you report done, read the PR back from the forge and confirm it is not a draft (\`gh-axi pr view <number>\` must print \`draft: no\`, where <number> is the PR number from your PR URL); if it is a draft, mark it ready with \`gh-axi pr ready <number>\`.
 A draft cannot be merged, so a done report on one leaves the merge unasked.
 Then append \`done [at=<epoch>]: PR {url}\` to the status file and stop.
@@ -623,8 +480,6 @@ EOF
 # Definition of done
 Delivery contract: mode=local-only
 Ship branch: $branch
-$FM_DOD_VERIFY
-
 This task ships **local-only**: no remote, no PR, no pipeline.
 The task is complete only when committed on your branch \`$branch\`. Do NOT push, do NOT open a PR, do NOT merge.
 A \`done:\` is accepted when the named head is on this project's shared local branch, not only on a detached copy; the check tests that head, not merely that a branch moved.
@@ -638,18 +493,19 @@ EOF
 # Definition of done
 Delivery contract: mode=no-mistakes
 Ship branch: $branch
-$FM_DOD_VERIFY
-
-$nm_start
-
+The task is complete only when committed on your branch.
+When you believe it is complete, append \`done [at=<epoch>]: {summary}\` to the status file and stop.
+Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
+That first \`done:\` is the handoff that starts the pipeline, which owns the push; it is not a request to push from this copy.
+${nm_base}
 EOF
       fm_nm_driving_block "$forge"
       cat <<EOF
 
-After the pipeline reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), read the PR back from the forge and confirm it is not a draft (\`gh-axi pr view <number>\` must print \`draft: no\`, where <number> is the PR number from your PR URL); if it is a draft, mark it ready with \`gh-axi pr ready <number>\`.
+After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), read the PR back from the forge and confirm it is not a draft (\`gh-axi pr view <number>\` must print \`draft: no\`, where <number> is the PR number from your PR URL); if it is a draft, mark it ready with \`gh-axi pr ready <number>\`.
 A draft cannot be merged, so a done report on one leaves the merge unasked.
 Then append \`done [at=<epoch>]: PR {url} checks green\` and stop. You are finished.
-That CI-ready \`done:\` is accepted only when this copy's HEAD - your latest commit - is one the no-mistakes run pushed, so commit nothing after the run; the check tests that commit, not merely that a branch moved.
+That CI-ready \`done:\` is accepted only when this copy's HEAD - your latest commit - is one the /no-mistakes run pushed, so commit nothing after the run; the check tests that commit, not merely that a branch moved.
 If you deliberately keep the PR a draft, append \`paused [at=<epoch>]: {why the draft is held}\` instead of done.
 EOF
       ;;

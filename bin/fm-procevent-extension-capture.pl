@@ -90,13 +90,12 @@ if (@ARGV && $ARGV[0] eq 'handoff') {
 }
 
 my ($registry_fd, $inbox_fd, $reservation_fd, $id, $adapter, $extension_id, $extension_version, $capability_version,
-    $package_digest, $binding_digest, $claim_token, $reserved_sequence, $runner_name, $output_name,
+    $package_digest, $binding_digest, $claim_token, $runner_name, $output_name,
     $runner_pid, $claim_identity, $limit, @command) = @ARGV;
 my $launch_ready_name;
 $launch_ready_name = shift @command if @command && $command[0] ne "--";
 die "missing command\n" unless @command && shift(@command) eq "--";
 die "invalid limit\n" unless defined $limit && $limit =~ /\A\d+\z/;
-die "invalid result sequence\n" unless defined $reserved_sequence && $reserved_sequence =~ /\A[1-9]\d*\z/;
 die "invalid launch boundary\n" if defined($launch_ready_name)
   && $launch_ready_name !~ /\A\.[A-Za-z0-9._-]{1,384}\.launch-ready\z/;
 our ($registry_dir, $registry, $reservation_dir, $reservation_root, $sequence);
@@ -239,16 +238,13 @@ if ($rc != 0 && $written == 0) {
   exit 0;
 }
 chdir($inbox_dir) or fail("cannot enter inbox directory");
-$sequence = 0 + $reserved_sequence;
+$sequence = 1;
+$sequence++ while -e "$id.$sequence.result" || -l "$id.$sequence.result";
 my $prefix = "$id.$sequence";
 my $nonce = ".$prefix.$$";
 my $result_tmp = "$nonce.result";
 my $adapter_tmp = "$nonce.adapter";
 my $extension_tmp = "$nonce.extension";
-my $capture_id_tmp = "$nonce.capture-id";
-for my $final ("$prefix.result", "$prefix.adapter", "$prefix.extension", "$prefix.capture-id") {
-  fail("reserved result sequence already exists") if -e $final || -l $final;
-}
 my $result = open_new($result_tmp);
 seek($stage, 0, 0) or fail("cannot rewind staged output");
 copy_all($stage, $result);
@@ -260,12 +256,8 @@ close($adapter_file) or fail("cannot close adapter evidence");
 my $extension_file = open_new($extension_tmp);
 write_all($extension_file, join("\n", "schema=fm-procevent-extension-owner.v1", "extension_id=$extension_id", "extension_version=$extension_version", "capability_version=$capability_version", "package_digest=$package_digest", "binding_digest=$binding_digest", ""));
 close($extension_file) or fail("cannot close extension evidence");
-my $capture_id_file = open_new($capture_id_tmp);
-write_all($capture_id_file, "sha256:" . random_token() . "\n");
-close($capture_id_file) or fail("cannot close capture identity");
 publish_new($adapter_tmp, "$prefix.adapter");
 publish_new($extension_tmp, "$prefix.extension");
-publish_new($capture_id_tmp, "$prefix.capture-id");
 publish_new($result_tmp, "$prefix.result");
 my @inbox_stat = stat($inbox_dir);
 my @result_stat = stat("$prefix.result");

@@ -663,22 +663,6 @@ test_draft_pull_request_is_not_armed() {
   pass "arming refuses a draft pull request, naming it, and arms a ready or unreadable one"
 }
 
-# A fleet-process task's PR opens as a draft by rule and becomes ready only when
-# a Review by someone else lands, so its draft is armed; the refusal above still
-# holds for every other task.
-test_fleet_process_draft_is_armed() {
-  local dir
-  dir=$(make_case draft-fleet)
-  write_task_meta "$dir"
-  printf 'process=fleet\n' >> "$dir/home/state/task-a.meta"
-  FM_TEST_GH_DRAFT=true run_check_entry "$dir" task-a https://github.com/o/r/pull/9 \
-    > "$dir/stdout" 2> "$dir/stderr" || fail "arming refused a fleet-process draft awaiting its review"
-  grep -qxF 'pr=https://github.com/o/r/pull/9' "$dir/home/state/task-a.meta" \
-    || fail "a fleet-process draft was not recorded"
-  [ -f "$dir/home/state/task-a.check.sh" ] || fail "a fleet-process draft was not armed"
-  pass "arming accepts a fleet-process draft, which only a review makes ready"
-}
-
 # A secondmate is a persistent worker, not a delivery lane: it never owns a
 # pull request of its own. A URL relayed onto its status channel belongs to a
 # task in the mate's own home, which arms its own watch, so arming one here is
@@ -3481,7 +3465,6 @@ test_retirement_queue_failure_and_receipt_tampering
 test_gitlab_merged_poll_retires
 test_invalid_entrypoints_have_zero_side_effects
 test_draft_pull_request_is_not_armed
-test_fleet_process_draft_is_armed
 test_secondmate_record_refuses_a_pr_watch
 test_unpushed_named_head_refuses_registration
 test_direct_pr_unpushed_commit_refuses_registration

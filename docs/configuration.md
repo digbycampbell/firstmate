@@ -9,7 +9,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | --- | --- |
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
-| Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
+| Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
@@ -77,7 +77,7 @@ Each effective `FM_HOME` contains private operational directories.
 
 - Project and secondmate registries.
 - Captain preferences and optional shared captain preferences.
-- Learnings, backlog, briefs, and scout reports.
+- Learnings, backlog, briefs, scout reports, and the optional per-task no-mistakes pipeline-spend ledger.
 - Explicitly installed content-addressed extension packages under `data/extensions/packages/`.
 
 `state/` holds runtime records:
@@ -573,6 +573,19 @@ See [`trace-context.md`](trace-context.md) for carrier semantics, supported rout
 
 See [`fleet-ledger.md`](fleet-ledger.md) for the opt-in setup, record contract, and limits.
 
+## Waiting worker spends no turns (config/wait-no-turns)
+
+The optional local, gitignored `config/wait-no-turns` presence flag opts this home into keeping a waiting worker from spending turns until it is answered.
+With it present, ship and scout briefs gain the `# Waiting` section and the foreground no-mistakes drive text, every brief's inbox section keeps the natural-checkpoint check and adds that a waiting worker does not poll or list its inbox because a waiting instruction rings, a pending-reply recovery waits while that mate has its own open decision or blocker, and a fire-and-forget steer whose doorbell did not land gets one later ring.
+With the file absent, generated briefs omit the waiting section and the no-poll inbox line, the drive text backgrounds the call, recovery sends during an open decision, and a fire-and-forget steer is not owed a retry ring.
+The flag is a home-local preference and is not inherited by secondmate homes.
+
+## No-mistakes pipeline spend (config/pipeline-spend)
+
+The optional local, gitignored `config/pipeline-spend` presence flag opts this home into recording per-task no-mistakes pipeline spend in `data/pipeline-spend.jsonl` during teardown.
+When the flag is absent, teardown skips recording and the recorder exits before reading task metadata, no-mistakes state, or the spend ledger.
+An existing ledger is left untouched while recording is disabled.
+
 ## Turn-end pane-churn absorb (config/turnend-churn-absorb)
 
 The optional local, gitignored `config/turnend-churn-absorb` presence flag opts this home into a default-off third form of positive work evidence in watcher triage.
@@ -653,6 +666,28 @@ An inherited `data/captain-shared.md` counts in a secondmate's total but remains
 The internal [`/stow` skill](../.agents/skills/stow/SKILL.md) owns curation and its automatic secondmate cascade, which accounts every home against this same per-home allowance separately rather than against a fleet total.
 
 The helper's header owns exact parsing, publication, and report output mechanics.
+
+### Daily startup growth check
+
+A home can arm a lightweight daily growth monitor with `bin/fm-startup-growth-check.sh arm`.
+It writes `state/startup-growth.check.sh` and binds it through the existing authenticated watcher-check mechanism, so no extra daemon or scheduler is installed.
+Registering it is a reason to watch on the same terms as the [watched-tool check](#watched-tool-updates-configwatched-toolsjson), so an armed home keeps needing a watcher after its last task is torn down.
+Use `bin/fm-startup-growth-check.sh disarm` to remove the check and its local report record.
+
+The check evaluates at most once per day and stays silent when nothing meaningful changed.
+A due evaluation uses file metadata and byte sizes before any content inspection: it asks `bin/fm-startup-memory-budget.sh report` for the budget verdict over `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`, watches the `data/projects.md` and `data/secondmates.md` that session start also prints in full for growth without entering that budget total, and separately watches the tracked startup/instruction owner files described by the script header.
+`bin/fm-startup-memory-budget.sh` remains the sole owner of the budget total and its verdict, so the check never re-derives either: when that owner annotates an overrun caused by the primary-owned `data/captain-shared.md` alone, a secondmate home is not woken about an overrun it cannot act on.
+A secondmate home is likewise not notified about per-file growth of that same primary-owned `data/captain-shared.md`, which it receives read-only; the growth is still observed and recorded, and a primary home reports it normally.
+Those tracked bytes are code and instruction-surface size, not prompt-memory cost.
+The check does not run session-start, bootstrap, network checks, model calls, repository refreshes, `/stow`, or full preference/learnings rereads.
+
+Growth is measured against a per-file baseline retained in the check's own state record, so accumulation that stays under one day's threshold is still caught once it adds up; reporting a file rebases its baseline to the reported size, so accepted growth then stays silent.
+A surface observed for the first time is baselined silently, including the first content of an optional file that did not exist yet when the check was armed, and an established baseline survives that file disappearing and coming back.
+The fixed growth thresholds are inspectable in the script header: 2048 bytes for tracked startup/instruction files and 250 estimated tokens for the printed startup-memory files.
+Budget overrun, unsafe or unreadable inputs, missing required tracked owner files, or material growth are reported once and deduplicated until the finding changes or clears; the report line is delivered before the check advances its own record, so a state-publication failure can repeat a finding but never swallow one.
+That one line goes out through the shared per-line digest cut, so an over-long finding set carries the repo's `[truncated]` marker instead of ending mid-finding, while deduplication keeps comparing the full uncapped set.
+Older bulk learning files remain reference-only; this monitor neither loads nor merges them.
+A reported review need is only a recommendation, not cleanup authority.
 
 ## Stow pass horizon (config/stow-pass-horizon)
 
@@ -797,6 +832,7 @@ The Kimi installer requires an existing regular non-symlink `~/.kimi-code/config
 
 Its `remove` action excises only the marker-delimited Firstmate region and removes Firstmate's hook files.
 For Pi and pi-signed secondmate launches, `fm-spawn.sh` starts the selected executable with `-e` pointed at the secondmate home's own tracked `.pi/extensions/fm-primary-pi-watch.ts` and `.pi/extensions/fm-primary-turnend-guard.ts`, both already present from the secondmate home's git worktree.
+Pi-family secondmates can start unattended in Firstmate-seeded homes without accepting project trust manually; [`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the capability requirement, session-only approval scope, and older-version fallback, with [regression evidence](verification/runtime-backends.md#pi-seeded-secondmate-project-trust).
 
 For omp secondmate launches, `fm-spawn.sh` passes no `-e` at all: omp auto-discovers the home's tracked `.omp/extensions/` with no trust gate, and naming a discovered file with `-e` as well loads it twice; every omp launch instead carries the tracked `.omp/fm-worker-overlay.yml` posture overlay through `--config`, which [`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns.
 
@@ -832,6 +868,43 @@ The diagnostic names the accepted values; Firstmate never falls back to a permis
 The file is a captain-wide safety preference, so it is inherited into secondmate homes under the [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md) inherited-local-material contract; a secondmate's own Claude crewmates then launch on the same posture.
 
 The [Claude adapter reference](../.agents/skills/harness-adapters/references/harness/claude.md) records the permission-mode observations and the distinct startup dialogs.
+
+## Worker tool exclusions (config/crew-exclude-tools)
+
+The optional local, gitignored `config/crew-exclude-tools` hides named tools from this home's ship and scout workers, for example to keep an MCP server's write tools out of reach while its read tools stay available.
+The contract is runtime-neutral: a runtime must support hiding the listed tool names or refuse the launch, and a non-empty list is never silently ignored.
+With no file, or a file with no entries, every launch on every runtime is unchanged.
+
+Create the file with one tool name per line, such as `mcp__<server>__<tool>` for an MCP tool.
+Blank lines and lines beginning with `#` are allowed, and surrounding whitespace on a line is trimmed; a trailing comment on an entry line is not allowed.
+The file is read from this home's own configuration directory on every launch, so a change reaches the next worker or relaunch without a restart.
+It is not in the inherited configuration set, so no other home, including a secondmate home, receives it; create the file in each home that wants it.
+It does not apply to a secondmate's own agent, which neither reads nor refuses on it.
+
+### Runtime support
+
+| Runtime | With a non-empty list |
+| --- | --- |
+| `pi`, `pi-signed` | Hides listed tool names, MCP tools included, on every ship and scout spawn and relaunch. |
+| Every other runtime, and a raw launch command | The launch refuses with an error naming `config/crew-exclude-tools`, because that runtime has no verified way to hide tools. |
+
+A relaunch validates the list and the replacement runtime's support before stopping the running worker, so an exclusion-list refusal preserves the running agent.
+
+### Validation
+
+An entry may use only `A-Z`, `a-z`, `0-9`, `_`, `.`, and `-`.
+An entry with any other character, including internal whitespace, a comma, or a `*`, refuses the launch and names the offending entry.
+An unreadable or nonregular file, or a path inspection error, also refuses and names the configuration file.
+For a new worker, these checks run before its endpoint, local copy, or task record is created; Firstmate never launches with a partial list.
+Only exact tool names are accepted, not wildcard patterns.
+Firstmate checks syntax and runtime support before launch but never runs `pi mcp list` or otherwise connects to servers to validate names.
+When its first agent run starts, after Pi's startup tool-loading boundary, the worker extension compares the launch's exclusion list with its own loaded-tool registry and appends a timestamped warning note to `state/<task-id>.status` naming the configuration file and every unmatched entry for the supervisor.
+The check runs before worker actions so it cannot supersede a terminal status emitted during the turn.
+An unmatched entry is reported as **unverified**, not valid: Pi versions that omit excluded tools from the registry cannot distinguish a correct exclusion from a typo, and a server that has not connected cannot verify its tools either.
+Names present in the registry produce no report; unknown or unverified names do not refuse the launch.
+Each relaunch installs a fresh worker extension with the home's current list, so the replacement performs the same check.
+
+[`bin/fm-exclude-tools-lib.sh`](../bin/fm-exclude-tools-lib.sh) implements parsing and pre-launch validation for this contract; [`bin/fm-spawn.sh`](../bin/fm-spawn.sh)'s header owns the launch-flag mechanics.
 
 ## Worker account pin (config/claude-account, config/pi-account)
 
@@ -983,10 +1056,33 @@ The optional local, gitignored `config/keep-ai-trailers` presence flag opts this
 With the flag absent, every Claude launch's inline `--settings` JSON carries `"attribution":{"commit":"","pr":"","sessionUrl":false}`, every Devin worker config sets `"attribution": false`, and every fleet launch receives a pane-scoped `GIT_CONFIG` `core.hooksPath` pointing at `state/<id>.git-hooks`, where git's `commit-msg` hook strips known AI trailers even when a runtime injects them after the typed message.
 When the flag is present, Claude launches omit those attribution-off settings, Devin worker configs keep the user config's `attribution` setting (Devin's default is on), and fleet launches do not install or select the strip hooks, so Git uses the repository's configured hooks directly.
 `bin/fm-git-strip-ai-trailers.sh` owns the identities, the install, and chaining the hooks of whichever repository git is running in, including when `git -c core.hooksPath` supplies the pane's hook override, so a project hook such as husky still runs when stripping is enabled.
-If the wrapper cannot resolve that repository's hooks directory, the git operation fails rather than silently skipping a project hook such as a pre-push guard.
+A repository whose config sets `core.hooksPath` to the empty string runs no project hook, as in plain git; if the wrapper otherwise cannot resolve that repository's hooks directory, the git operation fails rather than silently skipping a project hook such as a pre-push guard.
 When stripping is enabled, the hooks directory is read-only, so a hook manager run inside a fleet pane (lefthook's npm postinstall, `pre-commit install`) fails instead of displacing the strip; install a project's hooks from outside the pane, where the wrappers chain them.
 The flag is a home-wide attribution choice, so it is inherited into secondmate homes under the [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md) inherited-local-material contract and a secondmate's own workers keep AI trailers too.
 Per-machine Cursor `cli-config.json` attribution-off is not this contract: it does not travel with Firstmate, defaults back to on when unset, and only feeds the CLI's request to the server, so it suppresses the trailer rather than preventing it.
+
+## Project capacity (config/project-capacity)
+
+The optional local, gitignored `config/project-capacity` tells Firstmate how many workers a project can run at once on this machine, for a project whose machine-local resource - a heavy test suite, a local editor stack, a device - only serves a few workers at a time.
+Without it, dispatch stays uncapped as `AGENTS.md` section 7 describes, and a surplus worker is launched only to spend full-context turns waiting for the resource.
+The file lives in the machine's root Firstmate home, so every local secondmate home reads the same limit, and it holds one line per project:
+
+```text
+# heavy suite serves two workers
+my-project 2
+```
+
+The name is the project's registered name, which is its clone directory name and may contain spaces, and the number, the last field on the line, is a positive integer.
+A line that is only `#`, or that begins with `#` followed by whitespace, is a comment, as is a `#` line whose last field is not an integer.
+A project name may begin with `#` when that `#` is written immediately against the rest of the name and the line ends with the project's capacity.
+A name that is `#`, or that begins with `#` and a space, cannot be declared, because that line is a comment.
+A place is held by every ship or scout on that project in the root home or any local secondmate home registered under it, including one working in a separate clone of the same origin, until its ready PR is recorded or it is cleaned up; a local-only ship or a scout holds its place until cleanup.
+The declaration is matched by the spawning clone's directory name, so clones of the same origin share the cap only when they use that same directory name.
+A clone of that origin under a different directory name finds no declaration and is not capped, though its workers are still counted as holders for a same-origin clone that is capped.
+When every place is held, `bin/fm-spawn.sh` launches nothing, creates no record, leaves the backlog item queued, prints one `deferred:` line naming the holders, and exits 75, so Firstmate dispatches the item again once a place frees.
+A malformed or unreadable file refuses every fresh ship or scout spawn until it is fixed, rather than guessing the intended limit, and so does a local home's state directory or task record that cannot be read while counting a capped project's holders.
+Firstmate cannot see which part of a worker's life uses the resource, so the number bounds whole workers from launch to handoff, and the tightest resource every worker needs should decide it.
+[`bin/fm-project-capacity-lib.sh`](../bin/fm-project-capacity-lib.sh) owns the file format, what holds a place, and why concurrent spawns cannot both take the last one.
 
 ## Crew dispatch profiles (config/crew-dispatch.json)
 
@@ -1600,7 +1696,7 @@ A failed durable offer claim is likewise reported once as `x-mode-error cannot r
 Live replies are posted by `bin/fm-x-reply.sh`, which sends `POST /connector/answer` with `{request_id,text}` for one-message replies.
 Add `--image <path>` to attach one local PNG, JPEG, GIF, WebP, BMP, or TIFF as `{media_type,data_base64}` in the relay's optional `image` object.
 
-Completion follow-ups use `bin/fm-x-followup.sh`, which checks the local `state/<id>.meta` link and sends the same payload shape through `POST /connector/followup` by calling `bin/fm-x-reply.sh --followup`, up to three times per link within the window on two consecutive supervision cycles.
+Completion follow-ups use `bin/fm-x-followup.sh`, which checks the local `state/<id>.meta` link and sends the same payload shape through `POST /connector/followup` by calling `bin/fm-x-reply.sh --followup`, up to three times per link within the window.
 Add `--image <path>` there too when a completion follow-up should carry an image.
 
 **Follow-up success, expiry, and retry**
@@ -1851,8 +1947,6 @@ This start-to-start governor is a no-op after a normally blocking poll but caps 
 Real feedback, ended and missing sessions, any other `SERVER_ERROR`, and that same interruption still standing once the bound is spent are all captured and announced normally; `FM_LAVISH_POLL_RETRY_DELAY` is a bounded 1 to 60 second test override for the interval only, and the runner itself stays adapter-agnostic.
 An already-armed Lavish source keeps its registered listener command until it is retired and armed again, so retire the source, then arm it again to adopt this retry policy.
 `bin/fm-procevent-slack-captain.sh` is the Slack captain-channel adapter; its configuration keys are below, the installed agent-slack-mirror listener header owns Slack behaviour, and the wrapper header owns home mapping, arm, retire, and the handled acknowledgement.
-`bin/fm-procevent-quota-topic.sh` is the live quota channel-topic adapter; its configuration keys are below and its header owns the topic format, the quota sources, and everything else.
-`bin/fm-procevent-github-assigned.sh` is the GitHub assignment and Jev pickup adapter; its configuration keys are below and its header owns the rate-limit design, the two-surface fetch, and everything else.
 
 ### Crew-hosted Lavish review boards
 
@@ -2176,12 +2270,11 @@ Raising the confirm window lengthens every supervision cycle and delays wake del
 A source that can never start is reported as `failed=` with a non-zero exit on every `reconcile`, rather than counted as `started` and retried silently as though it were healthy, so a wedged source stays visible instead of presenting as armed.
 The `failed=` count reaches only the command's caller because `bin/fm-watch.sh` discards `reconcile` output and exit status.
 For that reason, `reconcile` also publishes a durable `check` wake once per failure episode, with key `procevent:<id>:launch-failed:<registration-identity>-<episode-nonce>`.
-The wake waits for a second consecutive unconfirmed cycle, because a runner merely slow to claim under load is found owned by the next cycle, which ends the episode before anything is announced.
 Later cycles stay silent for that episode until a launch confirms.
 A later fresh failure gets a fresh key, because the watcher never re-surfaces a key it has already surfaced.
 
 - The announcement changes nothing about the launch: `reconcile` keeps relaunching the source every cycle exactly as before, and nothing is retried differently, throttled, or recovered from that signal.
-- The wake reports only the observed failure: the launch did not prove that it took the claim within the window on two consecutive supervision cycles.
+- The wake reports only the observed failure: the launch did not prove that it took the claim within the window.
 - If the failure persists, inspect the source command and adapter binary named in the registration.
   The wake names both, along with the attached `bin/fm-procevent.sh start <source-id>` command that reproduces the refusal on stderr.
   The detached launch discards that output.
@@ -2262,46 +2355,6 @@ A name with no entry is a refusal, never a guess, so a typo cannot post into the
 A completion post should carry `--worker-details "<model> <effort>"`, which is the single owner of Firstmate's standing completion convention and appends the model and effort that produced the work.
 `--origin mirror` marks the terminal mirror's own delivery so it is not recorded as a hand-written post; every other post defaults to `manual` and suppresses that turn's mirror.
 
-## Slack quota topic (config/slack-quota-topic)
-
-The live quota channel-topic process-event source keeps a Slack channel's topic showing how much provider quota is left, on the same registered-source machinery and with no daemon of its own.
-It reads the local, gitignored `config/slack-quota-topic`, one `key=value` per line:
-
-- `channel=<channel id or name>` is required; a name is resolved through `config/slack-channels`.
-- `interval=<seconds>` is optional, default 1200.
-
-The topic is one line, `Claude: session xx% week yy% // Codex: week yy% // Grok: credits xx% // Kimi: session xx% week yy%`, using remaining-percentage figures, and is written only when that rendered line changed.
-Codex publishes no session window at all and Grok publishes only a credits window, so each is rendered with only the figure it actually carries rather than an invented one, and a provider that is absent, unauthenticated, or erroring renders its reason instead of a blank.
-Claude, Codex, and Grok come from `quota-axi --json`; Kimi is read directly from the managed usage endpoint the Kimi CLI itself calls, because quota-axi's Kimi source reads only that CLI's OAuth store and goes dark when it expires.
-That read uses `KIMI_API_QUOTA` from the home's gitignored `.env`, handled exactly like `SLACK_BOT_TOKEN`.
-A healthy run produces no wake at all; only a fatal Slack error becomes a captured result.
-Threshold-crossing quota alerts remain ordinary messages and are unaffected by this source.
-
-## GitHub issue pickup (config/github-assigned)
-
-The GitHub pickup process-event source wakes firstmate on owner self-assignment or Jev's `Next: Build` signal; `bin/fm-procevent-github-assigned.sh` owns eligibility, candidate board reads, cursor semantics, and the intake instruction printed by `handle`.
-Firstmate still judges each pickup.
-It reads the local, gitignored `config/github-assigned`, one `key=value` per line:
-
-- `login=<github login>` is optional, default `digbycampbell`.
-- `repo=<owner/repo>` is repeatable; include every configured fleet-process repo, such as `digio-nz/fcdispatch`, `digio-nz/digio-farm`, and `digio-nz/factory-sandbox`; default `digio-nz/fcdispatch` when absent.
-- `project_owner=<org login>` is optional, default `digio-nz`; the board is read through GraphQL's `organization(login:...)` field, so a personal (user-owned) project is not currently supported.
-- `project_number=<n>` is optional, default `2`.
-- `interval=<seconds>` is optional, default `300`; how often issue signals are re-checked.
-- `board_interval=<seconds>` is optional, default `1800`; how often the project board is re-checked, deliberately slower than `interval` - see the rate-limit note below.
-
-No token lives in this adapter or in `.env`; authentication is `gh-axi`'s own, and a broken credential is already surfaced by firstmate's own session-start network check.
-A captured result distinguishes a promoted real issue (carries a number, repo, and url - the actual "pick it up" trigger) from a board draft (intake-only, not yet promoted) through a type column and `signal=assigned|next-build` on every row, plus separate `issue_count`/`draft_count` header fields; firstmate reads the captured result directly to see which.
-The stored cursor is an ever-growing set of every id ever captured under either signal, not a single advancing position, so a steady state produces no wake and re-polling is safe; the accepted limitation is that unassigning and later reassigning the same item to the same login does not produce a second wake, since its id is already known.
-
-Rate-limit-friendliness is a load-bearing design constraint, not an afterthought: issues are read through the generous 5,000/hour REST "core" quota (`GET /repos/<owner>/<repo>/issues?state=open`) rather than the Search API's separate 30/minute budget, the project board (GraphQL, which shares a 5,000/hour quota with every other GraphQL caller on the same token, including manual board operations) is polled on its own slower `board_interval` cadence, and every fetch checks the free `/rate_limit` endpoint first and skips itself for the cycle - fail-open, logged, retried next cycle - when remaining capacity is low (`FM_GITHUB_ASSIGNED_MIN_CORE_QUOTA` default 100, `FM_GITHUB_ASSIGNED_MIN_GRAPHQL_QUOTA` default 50).
-A board-quota shortage never blocks noticing a newly assigned issue through the still-healthy core quota.
-Conditional requests (ETag/If-Modified-Since) were evaluated and are not used: `gh-axi api` has no flag to read response headers back, and GitHub does not honor `If-Modified-Since` on this listing endpoint regardless; `bin/fm-procevent-github-assigned.sh`'s header records both findings in detail.
-
-`bin/fm-procevent-github-assigned.sh` and its `--help` own the commands, the canonical-id and cursor-hash scheme, and the tuning variables `FM_GITHUB_ASSIGNED_MAX_LOOPS`, `FM_GITHUB_ASSIGNED_MAX_PAGES`, `FM_GITHUB_ASSIGNED_INTERVAL`, `FM_GITHUB_ASSIGNED_BOARD_INTERVAL`, `FM_GITHUB_ASSIGNED_MIN_CORE_QUOTA`, `FM_GITHUB_ASSIGNED_MIN_GRAPHQL_QUOTA`, and `FM_GITHUB_ASSIGNED_PARSE_ERROR_LIMIT`.
-Three consecutive polls with unparseable gh-axi responses produce one `api-error` wake; a durable latch suppresses repeats until a fully parseable poll begins a new failure episode.
-Its `list` subcommand prints the configured login's currently assigned open issues and assigned board drafts on demand, with no cursor side effects.
-
 ## Spoken interface and captain inbox (config/voice-*, config/inbox-*)
 
 The spoken interface in [`docs/voice-relay.md`](voice-relay.md) and the model-backed subcommands of `bin/fm-inbox.sh` reach a paid API in a named account, so no region, model id or AWS profile is shipped as a tracked default.
@@ -2349,11 +2402,10 @@ FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
 FM_TASK_ID=             # internal task-worker marker fm-spawn.sh exports into ship and scout panes, never set by hand; bin/fm-test-run.sh refuses to execute in the repository primary checkout while it is set
+FM_TASK_INBOX=          # internal: absolute path of the task's steering inbox (state/<id>.inbox) that fm-spawn.sh exports into every ship, scout, and secondmate launch, never set by hand; the steering doorbell names "$FM_TASK_INBOX"
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)
 FM_BACKEND_HERDR_SUBMIT_POLLS=6  # herdr-only: agent-state samples spread across each Enter attempt's budget when confirming a submit (docs/herdr-backend.md "Current transport behavior")
 FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6  # herdr-only: minimum per-Enter confirmation budget before polling agent-state after an idle baseline
-FM_HERDR_PRESENTATION_LOCK_WAIT_SECS=300  # herdr-only: seconds a spawn waits for a live holder of the presentation-order lock before refusing as a deadlock (bin/backends/herdr.sh fm_backend_herdr_presentation_order_lock_wait); used only by the presentation recovery/resume call site, which has no flat-layout fallback
-FM_HERDR_PRESENTATION_FALLBACK_WAIT_SECS=15  # herdr-only: seconds a spawn waits for the presentation-order lock at call sites that fall back to the flat layout on refusal (bin/fm-spawn.sh fresh-projection and abort-cleanup), instead of the full deadlock budget above
 FM_ZELLIJ_SESSION=firstmate  # zellij-only: named session for normal backend ops and test isolation (docs/zellij-backend.md)
 CMUX_SOCKET_PASSWORD=   # cmux-only: socket password fallback when config/cmux-socket-password is absent (docs/cmux-backend.md)
 FM_SESSION_START_STATUS_TAIL=5   # state/*.status lines printed per task in the session-start digest; each line is capped by bin/fm-line-cap-lib.sh
@@ -2384,6 +2436,7 @@ FM_INACTIVE_RECONCILE_BUDGET_SECS=10  # 1..30-second scan deadline; wedged-scan 
 FM_CHECK_INTERVAL=300   # seconds between slow checks (authenticated merge polls, custom checks, or Relay dispatch)
 FM_TASK_INBOX_GRACE_SECS=90   # seconds an unhandled steering-inbox message may sit before the watcher attempts doorbell delivery on an idle pane; also the minimum spacing between attempts
 FM_TASK_INBOX_RING_MAX=3      # watcher delivery attempts without an acknowledgement before the task surfaces as a stale wake for recovery
+FM_TASK_INBOX_BUSY_MAX=2      # consecutive busy-deferred due polls before a stuck-busy stale wake; 1..999999999, at most 9 decimal digits, otherwise 2; policy: bin/fm-task-inbox-lib.sh
 FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_MAIL_CHECK_BUDGET=15   # seconds allowed for one standing mail poll; valid 5..25, cut to fit FM_CHECK_TIMEOUT
 FM_MAIL_POLL_MAX_WAKES=20   # per-poll wake cap for a mail poll; valid 1..200, keeps a flood from flooding firstmate
@@ -2439,6 +2492,7 @@ FM_WATCH_REARM_RETRY_MAX_MS=4000   # Pi/OpenCode adapter cap for exponential con
 FM_WATCH_REARM_RETRY_LIMIT=5   # Pi/OpenCode adapter launch-failure retries before surfacing restoration failure
 FM_WATCH_CYCLE_LOG_MAX_BYTES=262144   # size cap for the arm-owned watcher lifecycle ledger
 FM_WATCH_CYCLE_LOG_KEEP_LINES=1000   # newest complete lifecycle rows considered when the ledger is capped
+FM_WATCH_EXTENSION_LOG_KEEP_LINES=0   # opt-in Pi extension diagnostic log (state/.watch-extension.log); unset, empty, non-numeric, zero, or negative disables logging, a positive value keeps that many newest rows; logging never changes supervision behavior
 FM_WATCHER_STALE_GRACE=300   # defaults to FM_GUARD_GRACE if set, else the poll-derived grace (docs/turnend-guard.md "Guard grace and the poll cadence"); seconds before a fresh arm refuses a live holder's stale beacon (attached arms: FM_WATCHER_STALL_BOUND)
 FM_WATCHER_STALL_BOUND=       # live-holder stall bound; default and arm/re-arm behavior: docs/turnend-guard.md "Guard grace and the poll cadence"
 FM_SIGNAL_GRACE=30      # seconds to coalesce nearby status and turn-end signals into one wake

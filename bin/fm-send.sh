@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Steer a task by durable record: write the message into the task's steering
 # inbox and ring a constant doorbell line into its terminal, best-effort.
-# Usage: fm-send.sh <target> [--resolve-key <key>]... [--no-reply-expected] [--fire-and-forget <delivery-id>] <text...>
+# Usage: fm-send.sh <target> [--resolve-key <key>]... [--fire-and-forget <delivery-id>] <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -47,13 +47,10 @@
 # instruction. There is no delivered-unconfirmed
 # outcome on this plane: "did the doorbell land" is no longer the question -
 # "was the message acted on" is, and that is answered asynchronously for an
-# ordinary record by the worker's acknowledgement move into handled/. The
-# watcher re-rings an unacknowledged message while its endpoint remains
-# available, escalates after the bounded ladder, and instead routes a positively
-# dead or missing endpoint directly to recovery without typing. An explicit
-# fire-and-forget record is excluded from that ladder.
-# bin/fm-task-inbox-lib.sh owns the record format, the doorbell line, and the
-# re-ring ladder. The composer pre-check before the ring is ADVISORY only: when
+# ordinary record by the worker's acknowledgement move into handled/.
+# bin/fm-task-inbox-lib.sh owns the record format, doorbell line, and retry and
+# escalation policy for ordinary and fire-and-forget records.
+# The composer pre-check before the ring is ADVISORY only: when
 # the composer visibly holds pending text the ring is skipped with a notice and
 # the watcher re-rings an ordinary record later; no composer verdict is
 # delivery proof on this plane, and a failed ring never fails the send.
@@ -101,16 +98,6 @@
 # marker travels verbatim inside the recorded body. A crewmate/scout target,
 # an explicit backend-target escape-hatch target, and the --key path are never
 # marked - their behavior is unchanged.
-#
-# --no-reply-expected: mark the message from firstmate, but arm NO pending-reply
-# expectation. For a fire-and-forget operational instruction that asks the
-# secondmate for nothing back - the inherited-config re-read nudge is the
-# standing case. An expectation exists to notice a report that was owed and did
-# not arrive; when no report is owed it can only ever age into a blocked
-# decision about a missing report nobody promised, which someone must then close
-# by hand. Suppressing the expectation is not suppressing a record: a request
-# that DOES want a report keeps its expectation, so a genuinely missed report
-# still escalates exactly as before.
 #
 # Parent-owned pending-reply expectation: every newly marked secondmate request
 # except an explicit --fire-and-forget delivery receives a privacy-safe
@@ -491,9 +478,6 @@ fm_send_add_resolve_key() { # <key>
   esac
   RESOLVE_KEYS="${RESOLVE_KEYS}${RESOLVE_KEYS:+ }$k"
 }
-# A marked instruction that asks the secondmate for nothing. See the
-# no-reply-expected contract in this script's header.
-NO_REPLY_EXPECTED=0
 while :; do
   case "${1:-}" in
   --resolve-key)
@@ -528,21 +512,9 @@ while :; do
     FIRE_AND_FORGET_ID=${1#--fire-and-forget=}
     shift
     ;;
-  --no-reply-expected)
-    NO_REPLY_EXPECTED=1
-    shift
-    ;;
   *) break ;;
   esac
 done
-
-# The two are contradictory by construction: --resolve-key closes a decision
-# opened by a report this home is waiting for, which is exactly the tracking
-# --no-reply-expected declares absent.
-if [ "$NO_REPLY_EXPECTED" = 1 ] && [ -n "$RESOLVE_KEYS" ]; then
-  echo "error: --no-reply-expected cannot accompany --resolve-key: closing a decision is an answer to a report this home awaited, so the request was never reply-free" >&2
-  exit 1
-fi
 
 if [ "$TARGET_BACKEND" != remote ]; then
   fm_backend_validate "$TARGET_BACKEND" || exit 1
@@ -838,13 +810,6 @@ else
     fm_message_mark_from_firstmate "$MESSAGE" MESSAGE
     MESSAGE="${FM_FROMFIRST_MARK}delivery=${FIRE_AND_FORGET_ID} ${MESSAGE#"$FM_FROMFIRST_MARK"}"
     FM_SEND_IDEMPOTENT=1
-  elif [ "$MARK_FROM_FIRSTMATE" = 1 ] && [ "$NO_REPLY_EXPECTED" = 1 ]; then
-    # Marked, so the secondmate still recognises an operational instruction and
-    # its own intake rules apply - but with no expectation, because this request
-    # asks for nothing back. An expectation here could never be satisfied: no
-    # report is coming, so it would age into a blocked decision reporting a
-    # missing report that was never owed. See the header contract.
-    fm_message_mark_from_firstmate "$MESSAGE" MESSAGE
   elif [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
     # Reuse an existing correlation id for recovery resends; otherwise create a
     # durable parent expectation before delivery. Transport success never
@@ -1117,9 +1082,22 @@ else
     # bounded re-ring ladder or direct unavailable-endpoint recovery.
     ring_rc=0
     fm_task_inbox_ring "$TARGET_BACKEND" "$T" "$INBOX_RECORD" "$EXPECTED_LABEL" || ring_rc=$?
+    ring_retry="the watcher will re-ring"
+    if [ -n "$FIRE_AND_FORGET_ID" ] \
+      && [ -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/wait-no-turns" ]; then
+      case "$ring_rc" in
+      1|2)
+        if fm_task_inbox_mark_retry "$STATE" "$INBOX_TASK_ID" "$INBOX_RECORD"; then
+          ring_retry="the watcher will ring it once more"
+        else
+          ring_retry="its one retry ring could not be recorded, so nothing will ring it again"
+        fi
+        ;;
+      esac
+    fi
     case "$ring_rc" in
-    1) echo "fm-send: doorbell skipped (composer visibly holds pending text); the steer is durably recorded at $INBOX_RECORD and the watcher will re-ring" >&2 ;;
-    2) echo "fm-send: doorbell did not reach $T; the steer is durably recorded at $INBOX_RECORD and the watcher will re-ring" >&2 ;;
+    1) echo "fm-send: doorbell skipped (composer visibly holds pending text); the steer is durably recorded at $INBOX_RECORD and $ring_retry" >&2 ;;
+    2) echo "fm-send: doorbell did not reach $T; the steer is durably recorded at $INBOX_RECORD and $ring_retry" >&2 ;;
     3) echo "fm-send: doorbell not typed because the agent in $T has exited; the steer is durably recorded at $INBOX_RECORD for recovery (stuck-crewmate-recovery), and the watcher will not re-ring a dead pane" >&2 ;;
     esac
     exit 0

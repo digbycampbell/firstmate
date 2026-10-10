@@ -2,7 +2,15 @@
 name: process-event-sources
 description: >-
   Agent-only procedure for registered process-to-event sources and their wakes.
-  Use before arming a long-polling source firstmate owns, before registering a deterministic condition->action watch, on any `procevent <adapter> <source-id> <sequence>` check wake, and on any `process-event source stranded` or `process-event source failed to start` check wake.
+  Use before arming a long-polling source firstmate owns, before registering a
+  deterministic condition->action watch, on any
+  `procevent <adapter> <source-id> <sequence>` check wake, and on any
+  `process-event source stranded` or `process-event source failed to start`
+  check wake.
+  Owns the arming commands, the condition->action eligibility boundary, the
+  durable result read, which wakes must be routed to their adapter instead of
+  acknowledged generically, the handled acknowledgement contract, the one-owner
+  rule, and the precise durability boundary.
 user-invocable: false
 metadata:
   internal: true
@@ -34,12 +42,6 @@ Answer in the terminal and let the mirror carry your reply into Slack rather tha
 Record the thread explicitly with `bin/fm-slack-mirror.sh note-reply-target <channel> <thread-ts>` (or `none` for the channel top level) only when the reply's own turn is not the one the triggering wake opened, so auto-detect cannot see it; that record overrides auto-detect for exactly one turn.
 Reserve `bin/fm-slack-post.sh` for a deliberate structured post you place yourself - for example a completion carrying `--worker-details "<model> <effort>"`, the standing convention that flag owns - using `--thread <ts>` to answer in place; it also registers the thread so the captain's next reply inside it is captured, which a hand-rolled Slack call would not do.
 
-A configured live quota channel topic is armed through `bin/fm-procevent-quota-topic.sh arm` and needs no handling on a healthy run: it produces no result and no wake, and only a fatal Slack error becomes an `api-error` result to handle.
-
-A configured GitHub issue pickup watch is armed and handled through `bin/fm-procevent-github-assigned.sh`, whose header owns its configuration, rate-limit design, signal types, and cursor scheme; its `handle <source-id> <sequence> <result-file>` is the required handling command, because only it advances the known cursor along with the acknowledgement and prints the `jev.yml` intake instruction for a captured row that still lacks Jev labels.
-A captured `assigned` result's rows each carry a type - `issue` (a promoted, number-and-repo-bearing item: the actual pick-it-up trigger) or `draft` (a board draft: intake only, not yet promoted) - so read the result file directly to see which before treating a captured item as ready to work.
-Its `list` subcommand prints the login's currently assigned issues and drafts on demand, with no cursor side effects.
-
 A worker-owned board uses `bin/fm-procevent-lavish.sh arm <artifact.html> --for <task-id>` and re-arms with its reply after each nonterminal round; the existing handled marker is the acknowledgement.
 Arm it once, then re-arm only when a round is actually waiting: arming again with nothing to acknowledge is refused.
 A terminal round is never re-armed: the board stays yours until you acknowledge it with `bin/fm-procevent.sh handled <source-id> <sequence>`, which retires it, and until then `retire` refuses the board too.
@@ -49,7 +51,7 @@ Registering a source is not the same fact as listening to it.
 Lavish `arm` waits until this registration's listener is confirmed running and does not report ready without that evidence; other adapters still record the source for the watcher's next reconcile.
 When an earlier registration's listener still holds the board as the confirm window ends, Lavish `arm` prints `still-listening` instead of `armed`; that listener keeps serving the board, and the new registration takes effect only after you retire the source and arm it again.
 After arming by hand, confirm `bin/fm-procevent.sh list` reports that source as `live`, and run `bin/fm-procevent.sh reconcile` when it does not.
-Reconcile reports every launch that did not prove it took its claim within the confirm window as `failed=` and exits non-zero, so a source that cannot be started says so instead of looking armed, and it wakes you once per failure episode about it, after a second consecutive unconfirmed cycle, because the watcher discards that count; `start` does not fix that - if the source stays unowned, run `start` attached to read the runner's refusal, then check the source command and adapter binary the registration names, and if a later reconcile finds the source owned the episode closes on its own.
+Reconcile reports every launch that did not prove it took its claim within the confirm window as `failed=` and exits non-zero, so a source that cannot be started says so instead of looking armed, and it wakes you once per failure episode about it because the watcher discards that count; `start` does not fix that - if the source stays unowned, run `start` attached to read the runner's refusal, then check the source command and adapter binary the registration names, and if a later reconcile finds the source owned the episode closes on its own.
 A source `list` reports as `orphaned` is one reconcile will not relaunch, because something may still be polling it; reconcile wakes you once about it, and that wake's payload says which of two recoveries applies.
 If the claim's recorded pid is alive under a different identity, `bin/fm-procevent.sh start <source-id>` takes the source back once you have checked nothing is still polling it - provided the dead generation's reservation records can still be tidied; otherwise it refuses with `cannot claim source`.
 If the runner itself died and its process group survives, `start` reports `already owned` and takes nothing back: verify whether the dead runner's polling child is still attached to the source, and once that group is empty the next reconcile reclaims the source on its own.

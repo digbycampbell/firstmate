@@ -773,14 +773,26 @@ fm_backend_herdr_projection_workspace_label() {  # <task-id> <projection-id>
   printf '└ %s · p:%s' "$(fm_backend_herdr_projection_concise_task_label "$1")" "$2"
 }
 
-# fm_backend_herdr_presentation_session_lock_path: one machine-private lock
+# fm_backend_herdr_presentation_session_lock_path: one account-private lock
 # path per live named Herdr session/socket, shared across every Firstmate home
-# that uses that session.
+# of this OS account that uses that session.
 # The path is never under any one home's state/ and secondmates never write the
 # primary home. Returns non-zero when the named session's socket cannot be
 # resolved unambiguously.
+# The namespace directory is suffixed with this account's uid, so another OS
+# account on the same host can never create it first by ordinary use and lock
+# this account out; a deliberately pre-created name still fails the ownership
+# and mode checks below and is refused, never adopted, chowned, or removed.
+# The uid rather than $XDG_RUNTIME_DIR names it because that variable can differ
+# or be absent between login contexts of one account, which would split one
+# session's lock across processes.
 fm_backend_herdr_presentation_lock_namespace() {
-  printf '%s' '/tmp/firstmate-herdr-presentation'
+  local uid
+  uid=$(id -u 2>/dev/null) || return 1
+  case "$uid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '/tmp/firstmate-herdr-presentation-%s' "$uid"
 }
 
 fm_backend_herdr_presentation_lock_namespace_mode() {
@@ -1660,7 +1672,7 @@ fm_backend_herdr_server_ensure() {  # <session>
   (
     unset FM_HOME FM_ROOT_OVERRIDE FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE \
       CURSOR_AGENT CURSOR_INVOKED_AS CLAUDECODE PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT FM_SUPERVISION_MODEL
-    fm_backend_herdr_cli "$session" server >/dev/null 2>&1 &
+    fm_backend_herdr_cli "$session" server </dev/null >/dev/null 2>&1 &
   ) || return 1
   for i in $(seq 1 20); do
     running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)
@@ -3035,6 +3047,15 @@ fm_backend_herdr_parse_target() {  # <target>
   [ -n "$FM_BACKEND_HERDR_SESSION" ] && [ -n "$FM_BACKEND_HERDR_PANE" ] && [ "$FM_BACKEND_HERDR_PANE" != "$target" ]
 }
 
+# fm_backend_herdr_target_observable: verify <target> is well-formed and its
+# recorded session server is currently running, WITHOUT autostarting the server.
+# Passive read-only probes (e.g. composer inspection) must stay observable-only
+# and fail fast on inactive or bad targets without starting a new server.
+fm_backend_herdr_target_observable() {  # <target>
+  fm_backend_herdr_parse_target "$1" || return 1
+  [ "$(fm_backend_herdr_server_running_state "$FM_BACKEND_HERDR_SESSION")" = running ]
+}
+
 fm_backend_herdr_target_ready() {  # <target>
   fm_backend_herdr_parse_target "$1" || return 1
   fm_backend_herdr_server_ensure "$FM_BACKEND_HERDR_SESSION" || return 1
@@ -3138,12 +3159,12 @@ fm_backend_herdr_capture() {  # <target> <lines>
 # workaround above - the bound is the pane itself, and asking for a line count
 # is what triggers the empty-read bug.
 fm_backend_herdr_visible_capture() {  # <target>
-  fm_backend_herdr_target_ready "$1" || return 1
+  fm_backend_herdr_target_observable "$1" || return 1
   fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source visible 2>/dev/null
 }
 
 fm_backend_herdr_visible_capture_ansi() {  # <target>
-  fm_backend_herdr_target_ready "$1" || return 1
+  fm_backend_herdr_target_observable "$1" || return 1
   fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source visible --format ansi 2>/dev/null
 }
 
@@ -3363,6 +3384,11 @@ fm_backend_herdr_proof_lines() {  # <text>
 # viewport is the one bound that always contains the composer.
 # Styled capture is preferred. An empty or failed styled read falls through to
 # the plain capture so a missing ANSI format does not look like an empty draft.
+# This read serves only the Claude payload proof, so the grok-tuned
+# dark-truecolor ghost strip is off (FM_COMPOSER_GHOST_LUMA_MAX=0): Claude
+# 2.1.283 draws a typed slash command in muted grey 38;2;112;112;112 (verified
+# live), which that strip dropped, judging a typed /exit unsent. Claude's own
+# ghost suggestion is SGR-2 dim and is still stripped.
 fm_backend_herdr_composer_content() {  # <target>
   local target=$1 cap caps
   if cap=$(fm_backend_herdr_visible_capture_ansi "$target" 2>/dev/null) && [ -n "$cap" ]; then
@@ -3372,7 +3398,7 @@ fm_backend_herdr_composer_content() {  # <target>
   else
     return 1
   fi
-  fm_composer_extract_selected_content "$caps" "$cap"
+  FM_COMPOSER_GHOST_LUMA_MAX=0 fm_composer_extract_selected_content "$caps" "$cap"
 }
 
 # fm_backend_herdr_composer_payload_shown: 0 when <after>, read from a
@@ -3482,7 +3508,12 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       esac
       # Native stayed idle. Composer empty is positive delivery (a landed
       # Claude turn that never flipped agent_status). Proven pending retries.
+      # A picker that classifies pending must not receive that retry.
       verdict=$(fm_backend_herdr_composer_state "$target")
+      if fm_composer_blocking_dialog_noted >/dev/null; then
+        printf 'unknown'
+        return 0
+      fi
       case "$verdict" in
         empty) printf 'empty'; return 0 ;;
         pending|pending-unproven) ;;
@@ -3491,6 +3522,10 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     else
       sleep "$sleep_s"
       verdict=$(fm_backend_herdr_composer_state "$target")
+      if fm_composer_blocking_dialog_noted >/dev/null; then
+        printf 'unknown'
+        return 0
+      fi
       if [ "$verdict" = pending ] && [ "$raw_status" != working ] \
         && [ "$footer_baseline" = idle ] \
         && [ "$(fm_backend_herdr_rendered_busy_state "$target")" = busy ]; then
@@ -3573,65 +3608,6 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
     fi
   fi
   fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane" || true
-}
-
-# fm_backend_herdr_presentation_order_lock_wait <lock-path> [<cap-secs>]:
-# serialize behind whoever currently holds the presentation-order section,
-# then take it.
-#
-# The invariant is SERIALIZATION - one spawn at a time projects into the named
-# session - not a wall-clock budget. The earlier bounded 50 x 0.1s spin encoded
-# the latter and so refused a concurrent resume purely because the holder was
-# still working: a legitimately longer critical section read as a conflict. That
-# budget was already 84% consumed by a passing concurrent resume before the
-# spawn path grew, so it was one ordinary slowdown away from failing regardless.
-#
-# Two genuinely broken states still refuse, loudly and with the reason in
-# FM_HERDR_PRESENTATION_LOCK_REFUSAL:
-#   - the section cannot be taken and NO live process holds it. fm_lock_try_acquire
-#     reclaims a dead holder itself (bin/fm-wake-lib.sh), so reaching here means
-#     the section is unusable rather than merely busy.
-#   - a live holder never finishes, bounded by <cap-secs> if given, else
-#     FM_HERDR_PRESENTATION_LOCK_WAIT_SECS (default 300), so a deadlock or a
-#     merely busy holder surfaces as a named refusal instead of hanging
-#     forever. A caller that can fall back to the flat layout on refusal
-#     should pass a short <cap-secs> rather than waiting out the deadlock
-#     budget: only the one call site with no fallback needs to wait that long.
-# shellcheck disable=SC2034 # Read by sourcing callers after the wait returns:
-# bin/fm-spawn.sh prints it in its refusal, and tests assert on it.
-FM_HERDR_PRESENTATION_LOCK_REFUSAL=
-fm_backend_herdr_presentation_order_lock_wait() {  # <lock-path> [<cap-secs>]
-  local lock=$1 cap=${2:-} started now
-  [ -n "$lock" ] || return 1
-  if ! declare -F fm_lock_try_acquire >/dev/null 2>&1; then
-    # shellcheck source=/dev/null
-    # fm-wake-lib.sh is already linted as its own root via fm_backend_herdr_kill's
-    # source directive above; a second followed source here doubles shellcheck's
-    # peak memory for every file that sources herdr.sh.
-    . "$FM_BACKEND_HERDR_ROOT/bin/fm-wake-lib.sh"
-  fi
-  case "$cap" in ''|*[!0-9]*) cap=${FM_HERDR_PRESENTATION_LOCK_WAIT_SECS:-300} ;; esac
-  case "$cap" in ''|*[!0-9]*) cap=300 ;; esac
-  FM_HERDR_PRESENTATION_LOCK_REFUSAL=
-  started=$(date +%s)
-  while :; do
-    if fm_lock_try_acquire "$lock"; then
-      return 0
-    fi
-    if [ -z "${FM_LOCK_HELD_PID:-}" ]; then
-      # shellcheck disable=SC2034 # Read by sourcing callers, as above.
-      FM_HERDR_PRESENTATION_LOCK_REFUSAL="the section could not be taken and no live process holds it"
-      return 1
-    fi
-    now=$(date +%s)
-    if [ "$((now - started))" -ge "$cap" ]; then
-      # shellcheck disable=SC2034 # Read by sourcing callers after this returns:
-      # bin/fm-spawn.sh prints it in its refusal, and tests assert on it.
-      FM_HERDR_PRESENTATION_LOCK_REFUSAL="pid $FM_LOCK_HELD_PID still held it after ${cap}s"
-      return 1
-    fi
-    sleep 0.1
-  done
 }
 
 fm_backend_herdr_kill() {  # <target>

@@ -276,16 +276,6 @@ dirty_status() {
   fi
 }
 
-# dirty_paths: name the paths that make <dir> dirty, comma-separated, at most
-# five, so a skip line says what to clean instead of only that something is.
-dirty_paths() {
-  local dir=$1 ignore_seed_marker=${2:-no}
-  git -C "$dir" status --porcelain 2>/dev/null | awk -v marker="?? $SUB_HOME_MARKER" -v skip="$ignore_seed_marker" '
-    skip == "yes" && $0 == marker { next }
-    { n++; if (n <= 5) out = out (n > 1 ? ", " : "") substr($0, 4) }
-    END { if (n > 5) out = out ", +" (n - 5) " more"; if (n) print out }'
-}
-
 secondmate_update_reconcile_marker_path() { # <state> <id>
   local state=$1 id=$2
   case "$id" in *[!A-Za-z0-9._-]*|'') return 1 ;; esac
@@ -443,7 +433,7 @@ ff_target() {
   fi
 
   if [ -n "$(dirty_status "$dir" "$ignore_seed_marker")" ]; then
-    echo "$label: skipped: dirty working tree ($(dirty_paths "$dir" "$ignore_seed_marker"))"
+    echo "$label: skipped: dirty working tree"
     return 0
   fi
 

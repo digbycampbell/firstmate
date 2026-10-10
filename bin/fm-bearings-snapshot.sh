@@ -326,7 +326,7 @@ EOF
       cnt=$(printf '%s' "$repo_rows" | jq 'length')
       [ "$returned" -gt "$FM_BEARINGS_PR_LIMIT" ] && ncapped=$((ncapped + 1))
       npr=$((npr + cnt))
-      rows=$(printf '%s\n%s\n' "$rows" "$repo_rows" | jq -s '.[0] + .[1]')
+      rows=$(jq -n --argjson a "$rows" --argjson b "$repo_rows" '$a + $b')
     done
     rm -f "$tasks_file"
     PR_REPOS_SHOWN=$nrepos
@@ -346,16 +346,12 @@ EOF
 fi
 
 # --- projection: canonical snapshot -> fm-bearings.v1 model (JSON) ----------
-# The snapshot and candidate_prs both arrive as slurped stdin documents:
-# candidate_prs grows with repository volume under --include-prs, and a single
-# argv string is capped at Linux's MAX_ARG_STRLEN (128KB), so growable
-# documents never ride --argjson.
 BEARINGS_TODAY=${NOW%%T*}
 case "$BEARINGS_TODAY" in
   [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;;
   *) BEARINGS_TODAY=$(date -u +%Y-%m-%d) ;;
 esac
-MODEL=$(printf '%s\n%s\n' "$SNAP" "$CANDIDATE_PRS" | jq -s \
+MODEL=$(printf '%s' "$SNAP" | jq \
   --arg home "$HOME_LABEL" \
   --arg now "$NOW" \
   --arg today "$BEARINGS_TODAY" \
@@ -384,8 +380,7 @@ MODEL=$(printf '%s\n%s\n' "$SNAP" "$CANDIDATE_PRS" | jq -s \
   --argjson pr_rows_capped "$PR_ROWS_CAPPED" \
   --argjson pr_rows_min_total "$PR_ROWS_MIN_TOTAL" \
   --argjson return_catchup "$RETURN_CATCHUP" \
-  "$FM_LANDED_JQ_DEFS"'
-  .[1] as $candidate_prs | .[0] |
+  --argjson candidate_prs "$CANDIDATE_PRS" "$FM_LANDED_JQ_DEFS"'
   def trunc($n): if . == null then null else
     (tostring | gsub("\\s+"; " ") | if (length > $n) then (.[:$n] + "…") else . end) end;
   def fit($n):

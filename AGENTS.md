@@ -49,7 +49,7 @@ This repo is a shared template, while `.env`, `data/`, `state/`, `config/`, `pro
 Ship shared tracked changes through this repo's no-mistakes pipeline and PR path, with the same merge authority as any other project.
 Make every commit of your own through `bin/fm-git-identity.sh commit`, which carries firstmate's own git identity; a plain `git commit` in a clone the captain also works in would author it as him.
 Never add an agent name as a commit co-author.
-Use `gh-axi` for all GitHub operations, `chrome-devtools-axi` for all browser operations, and compatible `lavish-axi` for visual decisions or reports; consult current help rather than memorizing flags.
+Use `gh-axi` for GitHub, `chrome-devtools-axi` for browser work, and compatible `lavish-axi` for visual decisions or reports; consult current help rather than memorizing flags.
 
 ## 2. Layout and state
 
@@ -61,7 +61,6 @@ Each secondmate has a persistent isolated `FM_HOME`, including its own state, ba
 Tracked files hold shared instructions and tooling; `data/` holds durable private fleet records; `state/` holds runtime records and append-only status events; `config/` holds local operating choices; and `projects/` contains clones that are read-only to firstmate except under hard rule 1's concrete captain-approved project operation exception.
 
 Load `operational-home-layout` when locating, interpreting, or changing Firstmate home, config, data, state, project, or generated runtime paths.
-
 
 A `state/<id>.status` line is a wake event, not current-state truth; `bin/fm-crew-state.sh` owns current-state reconciliation.
 Treat `data/captain.md` as the domain-local record of captain preferences, optional `data/captain-shared.md` as the main-authoritative shared captain-preference file for secondmate inheritance, and `data/learnings.md` as curated home-local knowledge, regardless of harness memory.
@@ -185,26 +184,18 @@ Classify the deliverable:
 - Never both present a likely-enough solution and launch a parallel design exercise that is not expected to change it.
 - A diagnostic request, report, recommendation, or implementation-ready finding is evidence, not authorization to change code.
 - Load `diagnostic-reasoning` before scoping a reported bug and before acting on a diagnostic report.
-- When the captain invokes `/onboard-cloud-crewmate` or asks for a cloud-container prompt for an issue, load the `onboard-cloud-crewmate` skill; it judges readiness and writes the handoff prompt, and dispatches nothing.
-
-**Folding in is the default; a new repo issue is the exception.**
-While work is in flight, file a repo issue only for a separate one-PR-sized work package the captain named or would prioritise.
-Otherwise fold a one-line fix into the PR in hand, draft a bigger one on the board, or record it in that PR's `## Findings not fixed` section.
-Keep related follow-ups on that one surface rather than an issue and a PR each, because a scatter of issues costs more captain attention than it saves.
 
 Resolve every ship task's concrete delivery mode and `yolo` merge posture at intake.
 Pass the mode explicitly to the brief, and pass both values explicitly to the spawn and any scout promotion; each command refuses to guess the values it consumes.
 A current explicit captain instruction wins; otherwise the project's registry entry is the captain's standing posture, and dropping below its rigor needs a reason you can state.
 Resolve the project's registered ship-branch prefix the same way, via `bin/fm-project-mode.sh --branch-prefix <project>`, and pass it explicitly to the brief, ship spawn, and scout promotion as `--branch-prefix` (default `fm/` needs no flag).
-On a project registered `+fleet-process` (`bin/fm-project-mode.sh --fleet-process`), an organisation ruleset refuses `fm/<task-id>` branches: ship an issue with `--issue <n>`, open a Task issue first for work that has none, or pass `--chore <slug>` only for admin work too small for an issue, and scaffold the brief with `--fleet-process` (`bin/fm-ship-branch-lib.sh` owns the names).
-A Phase of a one-branch Plan (`digio-factory#55`) has no PR of its own: its worker runs `work.ts branch <phase> --create`, which switches to the plan's `plan-issue-<n>` branch, pushes plain commits there, and its reviewer records `work.ts review <plan-pr> --phase <n>`.
-Ship it local-commit-and-push on that branch, never through a no-mistakes pipeline, which would rebase the plan branch and build its own PR body: scaffold and spawn it `--mode direct-PR --issue <phase> --plan-branch plan-issue-<n>`.
-A Phase of a legacy plan, whose plan branch already has an open or merged issue-branch PR, still ships on its own branch and scaffolds a no-mistakes brief with `--base-branch plan-issue-<n>`, or its pipeline rebases onto and opens the PR against the default branch.
+When the work must start from and target a branch other than the project's default, such as a named feature or release branch, pass it to the ship or scout brief and spawn as `--base-branch <branch>`; any promotion reads it from task meta.
 On a `no-mistakes-prod-only` project, classify the task's surface: internal-only tooling, automation, contributor or operator process, and release or submission work ships `direct-PR`, while product-facing, mixed, and uncertain work ships `no-mistakes`; never infer internal-only from file location or project name.
 An unregistered project or absent registry resolves to `no-mistakes` with yolo off, and the registration gap goes to the captain.
 Record the resulting mode, `yolo` merge posture, and the one-line reason for any deviation in the backlog item note.
 
 Treat file or subsystem overlap as a risk signal rather than an automatic reason to wait, and dispatch isolated work immediately with no concurrency cap when each change can be independently implemented and validated and the selected delivery path can reconcile ordinary rebases or conflicts.
+A project's declared machine capacity (`config/project-capacity`) still bounds that dispatch: a spawn beyond it exits 75 without launching, and its item stays queued rather than blocked.
 Serialize only for a true semantic dependency, shared mutable external state, incompatible concurrent migration, or another concrete condition that makes independent progress or reconciliation unsafe; same-file editing alone is insufficient, and genuine blockers remain durable.
 Write the task-specific brief under section 11 before spawning.
 Fill the task subsections according to section 11.
@@ -256,7 +247,6 @@ Load `validation-supervision` when a ship starts or already has an active no-mis
 ### PR ready, landing, and teardown
 
 Load `ship-landing` when a ship reports a PR or ready branch, when deciding or monitoring landing, and before task cleanup.
-When the captain invokes `/overboard`, asks to clean up a finished worker's leftovers, or asks to find stale finished workers, load the `overboard` skill before touching those traces.
 
 ### Scout outcome and promotion
 
@@ -377,7 +367,7 @@ A decision is simply a task held for the captain: create the task with `bin/fm-t
 When a main-side thread such as a pending captain decision or relay reminder is worth durable tracking, file it as its own work item and hold it through that wrapper.
 Captain calls discovered by investigations or visual reviews follow `captain-hold-lifecycle`, which owns their completion gate and recorded-answer rules.
 When the automatic transition gate applies, dispatch and completion move the item themselves - `bin/fm-spawn.sh` and `bin/fm-teardown.sh` own those transitions and refuse rather than report success without them - so what remains yours is filing the item before dispatch, recording decisions, and keeping notes current; `docs/configuration.md` owns gate applicability and the manual-backend exception.
-Re-evaluate queued work after every teardown and heartbeat, dispatching items only when dependencies and time gates have cleared.
+Re-evaluate queued work after every teardown and heartbeat, and also after a recorded PR-ready handoff when `config/project-capacity` caps that project, dispatching items only when dependencies, time gates, and project capacity have cleared.
 
 `.tasks.toml`, `docs/configuration.md`, and current `tasks-axi --help` own the backlog schema, compatibility, retention, and routine command syntax.
 Use compatible `tasks-axi` when the configured backend selects it, always through `bin/fm-tasks-axi.sh` so the call reaches this home's backlog from any directory, and the documented manual path otherwise; keep only the configured recent Done entries.

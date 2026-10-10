@@ -373,7 +373,7 @@ test_pr_based_dod_draft_check_uses_gh_axi() {
   local mode out
   for mode in direct-PR no-mistakes; do
     out="$TMP_ROOT/dod-$mode.md"
-    fm_dod_block "$mode" dod-draft-task fm/dod-draft-task > "$out"
+    fm_dod_block "$mode" dod-draft-task > "$out"
     assert_no_grep 'gh pr view' "$out" "$mode: DoD must not document a raw gh draft check"
     # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
     assert_grep 'confirm it is not a draft (`gh-axi pr view <number>` must print `draft: no`' "$out" \
@@ -382,162 +382,46 @@ test_pr_based_dod_draft_check_uses_gh_axi() {
   pass "PR-based DoD draft check uses gh-axi"
 }
 
-# A no-mistakes worker starts its own pipeline after the implementation commit.
-# Briefs that said "append done and stop; firstmate will instruct you to run
-# /no-mistakes" left four builders idle on 2026-10-03/04, and the steer that
-# followed was a Claude slash command a Codex composer could not run.
-test_no_mistakes_dod_has_the_worker_start_its_own_pipeline() {
-  local spec out
-  for spec in 'none none' 'gerrit none' 'none fleet'; do
-    out="$TMP_ROOT/dod-start-${spec// /-}.md"
-    # shellcheck disable=SC2086 # spec is two words on purpose: forge and process
-    fm_dod_block no-mistakes dod-start fm-issue-9 $spec > "$out" \
-      || fail "no-mistakes ($spec): DoD did not render"
-    assert_grep 'start the no-mistakes pipeline yourself, in the same turn and without stopping first' "$out" \
-      "no-mistakes ($spec): DoD does not have the worker start the pipeline itself"
-    # shellcheck disable=SC2016  # the backticks are literal brief text
-    assert_grep 'run `no-mistakes axi run` from the shell' "$out" \
-      "no-mistakes ($spec): DoD names no harness-neutral way to start the pipeline"
-    # shellcheck disable=SC2016  # the backticks are literal brief text
-    assert_grep 'Never append `done:` before the pipeline has returned' "$out" \
-      "no-mistakes ($spec): DoD does not forbid a pre-pipeline done"
-    assert_no_grep 'Firstmate will then instruct you' "$out" \
-      "no-mistakes ($spec): DoD still tells the worker to wait for a start steer"
-    assert_no_grep '/no-mistakes' "$out" \
-      "no-mistakes ($spec): DoD names a Claude-only slash invocation"
+# A scout spawned on a named base keeps that base through promotion: the ship
+# instructions start from it and the PR targets it; local-only cannot carry it.
+test_promotion_keeps_the_recorded_base_branch() {
+  local home id meta out status mode
+  home="$TMP_ROOT/promote-base-home"
+  for mode in direct-PR local-only; do
+    id="promote-base-$mode"
+    meta="$home/state/$id.meta"
+    mkdir -p "$home/state" "$home/data/$id"
+    printf 'window=fm-%s\nkind=scout\nworktree=/tmp/wt\nbase_branch=feature/hub\n' "$id" > "$meta"
+    cat > "$home/data/$id/brief.md" <<'EOF'
+# Task
+## Captain's intent
+Fix the hub bug.
+
+## Firstmate spec
+Reproduce it first.
+
+# Setup
+You are in a disposable git worktree of proj, at a detached HEAD on a clean copy of its base branch.
+Base branch: feature/hub
+EOF
+    out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-promote.sh" "$id" --mode "$mode" --yolo off 2>&1)
+    status=$?
+    if [ "$mode" = direct-PR ]; then
+      expect_code 0 "$status" "promoting a scout with a recorded base should succeed"$'\n'"$out"
+      # shellcheck disable=SC2016  # literal backticks in rendered prose must stay unexpanded
+      assert_grep 'Return to a clean copy of the base branch `feature/hub`' "$home/data/$id/ship-instructions.md" \
+        "promotion did not start the ship from the recorded base"
+      # shellcheck disable=SC2016
+      assert_grep 'against the base branch `feature/hub`' "$home/data/$id/ship-instructions.md" \
+        "promotion did not target the PR at the recorded base"
+      assert_grep 'base_branch=feature/hub' "$meta" "promotion dropped the recorded base"
+    else
+      [ "$status" -ne 0 ] || fail "promoting a based scout to local-only should be refused"
+      assert_contains "$out" "mode=local-only" "the local-only promotion refusal did not explain itself"
+      assert_grep 'kind=scout' "$meta" "a refused promotion changed the task record"
+    fi
   done
-  pass "no-mistakes DoD has the worker start its own pipeline with a harness-neutral command"
-}
-
-# A Phase PR targets its plan branch, and a run started without --base-branch
-# rebased the phase onto main and opened its PR there (twice on 2026-10-05).
-test_no_mistakes_dod_passes_a_plan_base_branch() {
-  local out
-  out="$TMP_ROOT/dod-base.md"
-  fm_dod_block no-mistakes dod-base fm-issue-61 none fleet plan-issue-57 > "$out" \
-    || fail "a no-mistakes DoD with a base branch did not render"
-  # shellcheck disable=SC2016  # the backticks are literal brief text
-  assert_grep 'pass `--base-branch plan-issue-57` on every `no-mistakes axi run` for this task' "$out" \
-    "the DoD does not pass the plan branch to the pipeline"
-  fm_dod_block no-mistakes dod-base fm-issue-61 none fleet > "$out"
-  assert_no_grep '--base-branch' "$out" "a DoD with no base branch names one anyway"
-  if fm_dod_block direct-PR dod-base fm-issue-61 none none plan-issue-57 > "$out" 2>&1; then
-    fail "a direct-PR DoD accepted a pipeline base branch"
-  fi
-  pass "a no-mistakes DoD passes a plan base branch to every pipeline run"
-}
-
-# The ship branch has no fm/<task-id> default: a caller that forgets it is
-# refused rather than handed a branch a fleet-process ruleset refuses at push.
-test_dod_block_requires_the_ship_branch() {
-  local out
-  if out=$(fm_dod_block no-mistakes dod-nobranch 2>&1); then
-    fail "fm_dod_block rendered a contract with no ship branch"
-  fi
-  assert_contains "$out" "needs its ship branch" "the missing-branch refusal did not name the branch"
-  assert_not_contains "$out" "fm/dod-nobranch" "a missing branch fell back to fm/<task-id>"
-  if out=$(fm_ship_rule_one no-mistakes dod-nobranch 2>&1); then
-    fail "fm_ship_rule_one rendered a rule with no ship branch"
-  fi
-  pass "the delivery contract names no fm/<task-id> default branch"
-}
-
-# A fleet-process PR opens as a draft that only another party's Review makes
-# ready, and its branch, title, body, and labels come from work.ts, so the
-# contract must neither tell the author to mark it ready nor to type them.
-test_fleet_process_dod_uses_work_ts_and_leaves_the_draft() {
-  local mode out
-  for mode in direct-PR no-mistakes; do
-    out="$TMP_ROOT/dod-fleet-$mode.md"
-    fm_dod_block "$mode" dod-fleet fm-issue-1596 none fleet > "$out" \
-      || fail "$mode: a fleet-process contract did not render"
-    assert_grep "Delivery contract: mode=$mode process=fleet" "$out" "$mode: the contract line lost process=fleet"
-    assert_grep 'Ship branch: fm-issue-1596' "$out" "$mode: the ship branch was not rendered"
-    assert_grep 'scripts/work/work.ts' "$out" "$mode: the contract did not name work.ts"
-    assert_grep 'process/payload/scripts/work/work.ts' "$out" "$mode: the factory fallback was not named"
-    assert_grep 'never mark it ready and never record a Review on it' "$out" \
-      "$mode: the author was not told to leave the review to someone else"
-    assert_no_grep 'gh-axi pr ready' "$out" "$mode: the author was told to mark its own draft ready"
-    assert_no_grep 'draft: no' "$out" "$mode: the author was told a non-draft PR is required"
-  done
-  assert_grep 'work.ts pr --type <type>' "$TMP_ROOT/dod-fleet-direct-PR.md" \
-    "direct-PR: the PR was not opened with work.ts pr"
-  assert_grep 'pr --type <type> [--scope <scope>] --body-file <file> --dry-run' "$TMP_ROOT/dod-fleet-no-mistakes.md" \
-    "no-mistakes: a pipeline body was not rewritten through work.ts"
-  pass "a fleet-process contract uses work.ts and leaves the draft for its reviewer"
-}
-
-test_fleet_process_is_refused_where_it_cannot_apply() {
-  local out
-  if out=$(fm_dod_block no-mistakes dod-fleet fm/dod-fleet none fleet 2>&1); then
-    fail "a fleet-process contract rendered on an fm/<task-id> branch"
-  fi
-  assert_contains "$out" "needs an fm-issue-<n>, fm-chore-<slug>, or plan-issue-<n> ship branch" \
-    "the fm/ refusal did not name the branches the ruleset accepts"
-  if out=$(fm_dod_block local-only dod-fleet fm-issue-7 none fleet 2>&1); then
-    fail "a fleet-process contract rendered on local-only"
-  fi
-  if out=$(fm_dod_block no-mistakes dod-fleet fm-issue-7 gerrit fleet 2>&1); then
-    fail "a fleet-process contract rendered on a Gerrit forge"
-  fi
-  if out=$(fm_dod_block no-mistakes dod-fleet fm-issue-7 none wobble 2>&1); then
-    fail "an unknown process rendered"
-  fi
-  pass "the fleet process is refused off GitHub pull requests and off issue or chore branches"
-}
-
-test_fleet_branch_step_names_the_work_ts_command() {
-  local out
-  out=$(fm_fleet_branch_step fm-issue-1596)
-  assert_contains "$out" 'work.ts branch 1596 --builder fm --create' "an issue branch was not made by work.ts"
-  out=$(fm_fleet_branch_step fm-chore-bump-node)
-  assert_contains "$out" 'work.ts chore bump-node --builder fm --create' "a chore branch was not made by work.ts"
-  out=$(fm_fleet_branch_step fm-issue-1596-r2)
-  assert_contains "$out" 'work.ts branch 1596 --builder fm`' "a retry did not confirm its issue through work.ts"
-  assert_contains "$out" 'git switch -c fm-issue-1596-r2 origin/main' "a retry did not create its exact branch"
-  out=$(fm_fleet_branch_step plan-issue-57 61)
-  assert_contains "$out" 'work.ts branch 61 --create' "a Phase did not switch to its Plan's branch with work.ts"
-  assert_not_contains "$out" '--builder' "a Phase was given a builder branch of its own"
-  if fm_fleet_branch_step plan-issue-57 >/dev/null 2>&1; then
-    fail "a Plan branch step rendered without its Phase number"
-  fi
-  if fm_fleet_branch_step fm/legacy >/dev/null 2>&1; then
-    fail "a legacy branch got a fleet-process creation step"
-  fi
-  pass "the fleet-process setup step creates each branch shape through work.ts"
-}
-
-# A Phase of a one-branch Plan (digio-factory#55) is plain commits pushed to the
-# Plan's branch and reviewed on the Plan PR, never a pipeline run or a Phase PR.
-test_one_branch_phase_dod_pushes_to_the_plan_branch() {
-  local out
-  out="$TMP_ROOT/dod-phase.md"
-  fm_dod_block direct-PR dod-phase plan-issue-57 none fleet '' 61 > "$out" \
-    || fail "a one-branch Phase DoD did not render"
-  assert_grep 'Delivery contract: mode=direct-PR process=fleet' "$out" "the Phase DoD did not record its contract"
-  assert_grep 'Ship branch: plan-issue-57' "$out" "the Phase DoD did not name the Plan's branch"
-  assert_grep 'Phase #61 of a one-branch Plan' "$out" "the Phase DoD did not name its Phase"
-  # shellcheck disable=SC2016  # the backticks are literal brief text
-  assert_grep 'Do NOT run /no-mistakes' "$out" "the Phase DoD did not forbid the pipeline"
-  # shellcheck disable=SC2016  # the backticks are literal brief text
-  assert_grep 'run `git push`' "$out" "the Phase DoD did not push plain commits"
-  assert_grep 'git pull --no-rebase' "$out" "the Phase DoD did not reconcile a moved plan branch by merge"
-  assert_grep 'Phase #61 pushed to plan-issue-57 at <head sha>; Phase review requested on {Plan PR url}' "$out" \
-    "the Phase done did not request the Phase review"
-  assert_grep 'work.ts review <plan-pr> --phase 61' "$out" "the Phase DoD did not name the Phase review"
-  assert_no_grep 'no-mistakes axi run' "$out" "the Phase DoD still started the pipeline"
-  assert_no_grep 'draft: no' "$out" "the Phase DoD required a non-draft PR"
-  if out=$(fm_dod_block no-mistakes dod-phase plan-issue-57 none fleet '' 61 2>&1); then
-    fail "a one-branch Phase DoD rendered through the pipeline"
-  fi
-  assert_contains "$out" "ships mode=direct-PR" "the pipeline refusal did not name the mode"
-  if fm_dod_block direct-PR dod-phase plan-issue-57 none fleet >/dev/null 2>&1; then
-    fail "a one-branch Phase DoD rendered without its Phase number"
-  fi
-  if fm_dod_block direct-PR dod-phase plan-issue-57 none none '' 61 >/dev/null 2>&1; then
-    fail "a one-branch Phase DoD rendered outside the fleet process"
-  fi
-  pass "a one-branch Phase DoD pushes plain commits to the Plan's branch and requests the Phase review"
+  pass "promotion keeps a scout's recorded base branch and refuses local-only for it"
 }
 
 test_scout_done_is_not_gated
@@ -558,12 +442,27 @@ test_standalone_local_only_needs_project_ref
 test_non_done_lines_are_not_gated
 test_fenced_and_indented_captain_lines_are_not_intent
 test_pr_based_dod_draft_check_uses_gh_axi
-test_no_mistakes_dod_has_the_worker_start_its_own_pipeline
-test_no_mistakes_dod_passes_a_plan_base_branch
-test_one_branch_phase_dod_pushes_to_the_plan_branch
-test_dod_block_requires_the_ship_branch
-test_fleet_process_dod_uses_work_ts_and_leaves_the_draft
-test_fleet_process_is_refused_where_it_cannot_apply
-test_fleet_branch_step_names_the_work_ts_command
+test_promotion_keeps_the_recorded_base_branch
+
+# The launch role is the generated text a worker receives. It must keep the
+# skill name, so a session that registers the skill loads it by name, and must
+# name the skill file as the fallback for a session where the name does not
+# resolve.
+test_worker_role_names_skill_and_fallback_file() {
+  local role_file path
+  role_file="$TMP_ROOT/worker-role.txt"
+  path="$ROOT/.agents/skills/firstmate-coding-guidelines/SKILL.md"
+  [ -f "$path" ] || fail "Firstmate skill file is missing at $path"
+  fm_brief_worker_role "$TMP_ROOT/state" upstream-4751 "$ROOT" >"$role_file"
+  assert_grep "\`CONTRIBUTING.md\` and \`firstmate-coding-guidelines\` for Firstmate changes" "$role_file" \
+    "worker role did not name the skill"
+  assert_grep "If the \`firstmate-coding-guidelines\` skill name does not resolve in this session, read \`$path\` instead." "$role_file" \
+    "worker role did not name the skill file as the fallback"
+  assert_no_grep "Skill tool cannot resolve" "$role_file" \
+    "worker role claims the Skill tool never resolves the skill"
+  pass "worker role names the skill and its fallback skill file"
+}
+
+test_worker_role_names_skill_and_fallback_file
 
 echo "all fm-dod-lib tests passed"

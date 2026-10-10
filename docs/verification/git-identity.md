@@ -73,6 +73,25 @@ $ git -C /tmp/idt/wt1 log -1 --format='%an <%ae> | %cn <%ce>'
 Crewmate <crew@digio.nz> | Crewmate <crew@digio.nz>
 ```
 
+## Arming inside a worker pane chains the repository's own hooks
+
+Checked 2026-10-09 with git 2.53.0 on Linux 6.18.40.1 (WSL2).
+
+`bin/fm-spawn.sh` exports `core.hooksPath` through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0` into every worker pane, naming that task's AI-trailer strip hooks.
+Those wrappers dispatch to the worktree's own hooks, which are the identity guard once the worktree is armed.
+`apply-worktree` therefore reads the repository's hooks path with the `GIT_CONFIG_*` environment dropped, and never chains a fleet hooks directory: its own guard (marker file) or a strip directory (its `commit-msg` runs `fm-git-strip-ai-trailers.sh`).
+Before that rule, arming under the pane override chained the strip hooks and the first commit looped until killed:
+
+```console
+$ bin/fm-git-strip-ai-trailers.sh install /tmp/l/strip /tmp/l/wt
+$ env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/l/strip \
+    bin/fm-git-identity.sh apply-worktree /tmp/l/wt --hooks-dir /tmp/l/hooks
+$ env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/l/strip \
+    timeout 10 git -C /tmp/l/wt commit -qm x; echo rc=$?
+rc=124      # before the rule
+rc=0        # after; the commit is authored Crewmate <crew@digio.nz>
+```
+
 ## End-to-end exercise
 
 Run 2026-08-21 against a scratch clone configured exactly like the machine that produced the incident: the captain's identity in the clone, one linked worktree, and a repo that already sets `core.hooksPath=.githooks`.

@@ -194,12 +194,35 @@ cmd_guard_commit() {  # <worktree>
   return 0
 }
 
+# A hooks directory firstmate generated: this script's guard (HOOKS_MARKER) or
+# bin/fm-git-strip-ai-trailers.sh's per-pane strip hooks, whose commit-msg runs
+# that script. Both dispatch back into the worktree's own hooks, which are the
+# guard once a worktree is armed, so chaining either makes two hooks directories
+# exec each other on every commit.
+is_fleet_hooks_dir() {  # <dir>
+  local dir=$1
+  [ -f "$dir/$HOOKS_MARKER" ] && return 0
+  [ -f "$dir/commit-msg" ] && grep -qF 'fm-git-strip-ai-trailers.sh' "$dir/commit-msg" 2>/dev/null
+}
+
+# The hooks path the repository's own config files name for <worktree>. The
+# GIT_CONFIG_* environment is dropped first: bin/fm-spawn.sh exports
+# core.hooksPath through it into every worker pane, and git -c carries it in
+# GIT_CONFIG_PARAMETERS, so a lookup that honored either would read back the
+# pane's strip hooks instead of the repository's own.
+repo_hooks_path() {  # <worktree>
+  (
+    unset GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+    git -C "$1" config --get core.hooksPath 2>/dev/null || true
+  )
+}
+
 cmd_hook_pre_commit() {  # <worktree> [<chained-hooks-dir>] [hook args...]
   local dir=${1:-.} chained=${2:-}
   cmd_guard_commit "$dir"
-  # A guard directory is never a chain target (see cmd_apply_worktree); a hook
-  # written before that rule must not loop either.
-  if [ -n "$chained" ] && [ -x "$chained/pre-commit" ] && [ ! -f "$chained/$HOOKS_MARKER" ]; then
+  # A fleet hooks directory is never a chain target (see cmd_apply_worktree); a
+  # hook written before that rule must not loop either.
+  if [ -n "$chained" ] && [ -x "$chained/pre-commit" ] && ! is_fleet_hooks_dir "$chained"; then
     exec "$chained/pre-commit" "${@:3}"
   fi
   return 0
@@ -331,7 +354,7 @@ cmd_apply_worktree() {  # <worktree> --hooks-dir <dir>
       || die "cannot set the per-worktree $scope.email"
   done
 
-  chained=$(git -C "$wt" config --get core.hooksPath 2>/dev/null || true)
+  chained=$(repo_hooks_path "$wt")
   if [ -n "$chained" ]; then
     case $chained in
       /*) : ;;
@@ -339,13 +362,13 @@ cmd_apply_worktree() {  # <worktree> --hooks-dir <dir>
     esac
     chained=$(resolve_dir "$chained" || true)
   fi
-  # Never chain to a firstmate guard directory, ours or another task's: re-arming
-  # an armed worktree, or arming under an inherited hooksPath that names another
-  # guard, would otherwise make two guards exec each other forever. Chain to the
-  # repo hooks the worktree recorded instead.
-  if [ -n "$chained" ] && [ -f "$chained/$HOOKS_MARKER" ]; then
+  # Never chain to a fleet hooks directory, ours or another task's: re-arming an
+  # armed worktree, or arming where the config names another guard or a strip
+  # directory, would otherwise make two hooks directories exec each other
+  # forever. Chain to the repo hooks the worktree recorded instead.
+  if [ -n "$chained" ] && is_fleet_hooks_dir "$chained"; then
     chained=$(git -C "$wt" config --worktree --get firstmate.chainedHooksPath 2>/dev/null || true)
-    [ -z "$chained" ] || [ ! -f "$chained/$HOOKS_MARKER" ] || chained=''
+    [ -z "$chained" ] || ! is_fleet_hooks_dir "$chained" || chained=''
   fi
   hooks=$(write_hooks_dir "$hooks_arg" "$wt" "$chained") || exit 1
   if [ -n "$chained" ]; then

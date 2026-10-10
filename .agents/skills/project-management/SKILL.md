@@ -2,7 +2,9 @@
 name: project-management
 description: >-
   Agent-only procedure for Firstmate project management.
-  Use before adding, creating, removing, or initializing a project; cloning or registering a project is add intake and uses the same trigger.
+  Use before adding, creating, removing, or initializing a project.
+  Cloning or registering a project is add intake and uses the same trigger.
+  Owns project add, create, clone, remove, initialization, registry, delivery-mode, autonomy, and outward-consent decisions.
 user-invocable: false
 metadata:
   internal: true
@@ -82,7 +84,7 @@ The captain's request to create that local project authorizes this local initial
 Run no-mistakes initialization only for `no-mistakes` and `no-mistakes-prod-only` projects:
 
 ```sh
-cd projects/<name> && no-mistakes init && no-mistakes doctor
+(cd projects/<name> && no-mistakes init && no-mistakes doctor)
 ```
 
 Initialization configures the local gate and does not vendor a no-mistakes skill into the project.

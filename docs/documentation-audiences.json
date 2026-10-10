@@ -229,18 +229,6 @@
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/onboard-cloud-crewmate/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/onboard-cloud-crewmate/references/prompt-template.md",
-      "audience": "agent-runtime"
-    },
-    {
-      "path": ".agents/skills/overboard/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
       "path": ".agents/skills/process-event-sources/SKILL.md",
       "audience": "agent-runtime"
     },

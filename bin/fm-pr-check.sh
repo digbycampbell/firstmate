@@ -9,11 +9,6 @@
 # A GitHub pull request URL, a GitLab merge request URL, and a Gerrit change URL
 # are all accepted, including a merge request or change on a self-hosted
 # instance.
-# When the task's meta carries issue= (set by fm-spawn.sh's --issue flag at
-# spawn time), also makes one best-effort, strictly fail-open
-# `bin/fm-board.sh move <issue> "PR ready"` call after the PR is durably
-# recorded and the merge poll armed - a board hiccup can never affect this
-# script's own result, and a task with no issue= makes no board call.
 # A GitHub pull request the forge reports as a draft is refused, naming the draft
 # state and recording and arming nothing: a draft cannot be merged, so a poll armed on it
 # would wait for an event that cannot occur while nobody is asked to act.
@@ -22,12 +17,8 @@
 # draft state does not refuse, matching how the head read below is optional.
 # bin/fm-pr-merge.sh records through this script with FM_PR_CHECK_MERGE=1 and
 # skips this refusal, because its own merge-time draft refusal is authoritative.
-# A task recorded process=fleet (bin/fm-spawn.sh, bin/fm-promote.sh) is exempt:
-# its PR opens as a draft by rule and becomes ready only when a Review by
-# someone other than its author lands on its exact head, which the server marks
-# (bin/fm-dod-lib.sh owns that contract). Its poll is armed on the draft and
-# waits for the merge exactly as for any PR; merging still waits for that Review
-# and green checks, because bin/fm-pr-merge.sh refuses a draft.
+# The recorded pr= also frees the task's place in a declared project capacity
+# (bin/fm-project-capacity-lib.sh).
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
@@ -111,9 +102,7 @@ fi
 
 # The draft state is read before anything is recorded or armed. Only a positive
 # draft reading refuses, because an unreadable one must not block arming.
-PROCESS=$(grep '^process=' "$META" | tail -1 | cut -d= -f2- || true)
-if [ "$PROVIDER" = github ] && [ "${FM_PR_CHECK_MERGE:-}" != 1 ] && [ "$PROCESS" != fleet ] \
-  && command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+if [ "$PROVIDER" = github ] && [ "${FM_PR_CHECK_MERGE:-}" != 1 ] && command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
   DRAFT_JSON=$(gh pr view "$URL" --json isDraft 2>/dev/null || true)
   if [ "$(fm_pr_json_draft_state "$DRAFT_JSON")" = true ]; then
     echo "error: $URL is a draft pull request; a draft cannot be merged, so merge monitoring would wait for an event that cannot occur - mark it ready for review and arm again, or declare a wait instead of done if the draft is deliberate" >&2
@@ -138,9 +127,6 @@ fi
 # bin/fm-pr-merge.sh reads a GitLab head live at merge time for the same reason,
 # and treats a recorded value that disagrees as stale rather than authoritative.
 WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
-# Persisted at spawn time by bin/fm-spawn.sh's --issue flag; absent for a task
-# spawned with no linked issue, in which case the board move below is skipped.
-ISSUE=$(grep '^issue=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD=
 if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/dev/null 2>&1; then
   if REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \
@@ -263,21 +249,4 @@ case "$READY_RC" in
   0|1) ;;
   *) printf 'actionable: PR %s is registered but its ready line did not reach the parent channel (rc=%s)\n' "$URL" "$READY_RC" >&2 ;;
 esac
-
-# Optional, strictly fail-open board courtesy: the PR is already durably
-# recorded and the merge poll already armed by this point, so a board hiccup
-# (missing gh-axi, no auth, an unrecognized project) can never affect this
-# script's own result. See bin/fm-board.sh's own header for its fail-open
-# contract.
-if [ -n "$ISSUE" ]; then
-  # Pass the PR's own repo so fm-board resolves the card directly through the
-  # issue's projectItems connection (a couple of GraphQL points) instead of
-  # page-scanning the whole board. The board is GitHub-only, and for GitHub the
-  # parsed PR path IS owner/repo, which is the issue's repo too.
-  board_repo=()
-  if [ "$PROVIDER" = github ] && [ -n "$PROJECT_PATH" ]; then
-    board_repo=(--repo "$PROJECT_PATH")
-  fi
-  "$FM_ROOT/bin/fm-board.sh" move "$ISSUE" "PR ready" "${board_repo[@]+"${board_repo[@]}"}" >/dev/null 2>&1 || true
-fi
 printf 'armed: state/%s.check.sh\n' "$ID"
