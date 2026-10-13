@@ -1994,8 +1994,19 @@ contribution_tasks_json() {
 if [ "$OUTPUT_MODE" = contribution-input ]; then
   # Reuse the canonical backlog parser, without observing workers or other homes.
   contribution_tasks=$(contribution_tasks_json) || { echo "fm-fleet-snapshot: contribution task read failed" >&2; exit 1; }
-  jq -n --argjson backlog "$BACKLOG_JSON" --argjson tasks "$contribution_tasks" '{backlog:$backlog,tasks:$tasks}'
-  exit 0
+  # Both values are unbounded; stage them in files so jq never receives them as argv.
+  contribution_input_dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-fleet-snapshot.XXXXXX") \
+    || { echo "fm-fleet-snapshot: temporary transport directory creation failed" >&2; exit 1; }
+  if ! { printf '%s\n' "$BACKLOG_JSON" > "$contribution_input_dir/backlog.json" \
+      && printf '%s\n' "$contribution_tasks" > "$contribution_input_dir/tasks.json"; }; then
+    echo "fm-fleet-snapshot: contribution input staging failed" >&2
+    exit 1
+  fi
+  jq -n --slurpfile backlog "$contribution_input_dir/backlog.json" --slurpfile tasks "$contribution_input_dir/tasks.json" \
+    '{backlog:$backlog[0],tasks:$tasks[0]}'
+  contribution_input_status=$?
+  rm -rf "$contribution_input_dir"
+  exit "$contribution_input_status"
 fi
 prefetch_task_current_states || { echo "fm-fleet-snapshot: task observation failed" >&2; exit 1; }
 TASKS_JSON=$(task_json_lines) || { echo "fm-fleet-snapshot: task snapshot failed" >&2; exit 1; }
