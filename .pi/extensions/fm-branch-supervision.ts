@@ -1672,6 +1672,9 @@ ${context.command}
   pi.on?.("before_agent_start", async (event, ctx) => {
     rememberMainModel(ctx);
     currentMainSession = ctx?.sessionManager ?? null;
+    // Pi 1.2 also fires this event for idle custom-message runs, which carry no
+    // prompt; Pi 1.1 events always do. Only a user prompt is captain dialog.
+    if (!("prompt" in event)) return;
     const promptGeneration = generation;
     if (!(await enqueueDelivery(() => actingAsOwner(promptGeneration)))) return;
     if (promptGeneration !== generation || !currentMainSession || !collectCurrentMainDialog()) return;
