@@ -1,0 +1,25 @@
+===== base vs real PR 1813 =====
+exit=1
+--- stderr (refusal lines) ---
+error: refusing to merge https://github.com/digio-nz/fcdispatch/pull/1813
+  - state is "MERGED", not open
+  - the GitHub pull request check rollup could not be read
+  - mergeable is "UNKNOWN", not MERGEABLE
+--- gh calls ---
+pr view https://github.com/digio-nz/fcdispatch/pull/1813 --json headRefOid -q .headRefOid
+pr view https://github.com/digio-nz/fcdispatch/pull/1813 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup
+api repos/digio-nz/fcdispatch/branches/main
+api --paginate repos/digio-nz/fcdispatch/rules/branches/main
+api --paginate repos/digio-nz/fcdispatch/commits/227ab5aee03971d14f64e3b5cae90c7bceee1177/check-runs
+===== head vs real PR 1813 =====
+exit=1
+--- stderr (refusal lines) ---
+error: refusing to merge https://github.com/digio-nz/fcdispatch/pull/1813
+  - state is "MERGED", not open
+  - mergeable is "UNKNOWN", not MERGEABLE
+--- gh calls ---
+pr view https://github.com/digio-nz/fcdispatch/pull/1813 --json headRefOid -q .headRefOid
+pr view https://github.com/digio-nz/fcdispatch/pull/1813 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup
+api repos/digio-nz/fcdispatch/branches/main
+api --paginate repos/digio-nz/fcdispatch/rules/branches/main
+api --paginate repos/digio-nz/fcdispatch/commits/227ab5aee03971d14f64e3b5cae90c7bceee1177/check-runs

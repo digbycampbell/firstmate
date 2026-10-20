@@ -1,0 +1,4 @@
+ok - a real spawn arms the crew identity in the task worktree and leaves the clone alone
+ok - a spawned worktree refuses a commit carrying the captain's address
+ok - spawn refuses to launch when the identity guard cannot be armed
+# all fm-spawn-git-identity tests passed

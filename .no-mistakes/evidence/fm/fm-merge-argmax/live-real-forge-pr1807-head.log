@@ -1,0 +1,12 @@
+exit=1
+--- stderr (refusal lines) ---
+error: refusing to merge https://github.com/digio-nz/fcdispatch/pull/1807
+  - check 'Check' is not green
+  - check 'Check Unit (3)' is not green
+error: these checks are not green: Check, Check Unit (3)
+--- gh calls ---
+pr view https://github.com/digio-nz/fcdispatch/pull/1807 --json headRefOid -q .headRefOid
+pr view https://github.com/digio-nz/fcdispatch/pull/1807 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup
+api repos/digio-nz/fcdispatch/branches/main
+api --paginate repos/digio-nz/fcdispatch/rules/branches/main
+api --paginate repos/digio-nz/fcdispatch/commits/76ef6d8625af234b779c826bdb51b73b90f9aa88/check-runs
