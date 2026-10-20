@@ -3507,6 +3507,27 @@ test_required_producer_identity() {
   pass "fm-pr-merge enforces required producer identity and named waivers"
 }
 
+test_required_producer_large_payload() {
+  local case_dir head
+  head=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+  case_dir=$(make_case "required-producer-large")
+  add_gh_mocks "$case_dir" "$head"
+  write_github_required "$case_dir" "classic:ci"
+  jq '.protection.required_status_checks.checks[0].app_id = 15368' \
+    "$case_dir/github-branch.json" > "$case_dir/updated.json"
+  mv "$case_dir/updated.json" "$case_dir/github-branch.json"
+  jq -n --arg head "$head" '
+    {check_runs: ([{name: "ci", app: {id: 15368}, head_sha: $head}]
+      + [range(0; 400) | {name: "run-\(.)", app: {id: 15368, slug: ("x" * 200)}, head_sha: $head,
+          output: {summary: ("y" * 400)}}])}' > "$case_dir/github-runs.json"
+  [ "$(wc -c < "$case_dir/github-runs.json")" -gt 262144 ] || fail "large producer payload is under the argument limit"
+  run_required_case "$case_dir" 110 --attended-override -- --admin
+  expect_code 0 "$RC" "large-producer: $(cat "$case_dir/stderr")"
+  assert_no_grep 'check rollup could not be read' "$case_dir/stderr" "large producer payload overflowed an argument"
+  assert_grep 'pr merge' "$case_dir/gh.log" "large producer payload did not merge"
+  pass "fm-pr-merge resolves required checks from a producer payload over the argument limit"
+}
+
 # A commit status carries no app id to compare, so an app-bound required context
 # that arrives as a green status matches by name, while the same context left
 # unreported still refuses.
@@ -3884,5 +3905,6 @@ test_allow_missing_waives_only_the_named_unreported_check
 test_allow_missing_follows_the_allow_red_rules
 
 test_required_producer_identity
+test_required_producer_large_payload
 test_app_bound_required_status_context_matches_by_name
 test_required_partial_reads_report_all_failures
