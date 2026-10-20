@@ -35,28 +35,6 @@ git config --global committer.email "$CAPTAIN_EMAIL"
 git config --global committer.name "$CAPTAIN_NAME"
 git config --global init.defaultBranch master
 
-make_fakebin() {  # <dir> -> fake tmux/treehouse that reports the worktree pane
-  local dir=$1 fakebin
-  fakebin=$(fm_fakebin "$dir")
-  cat > "$fakebin/tmux" <<'SH'
-#!/usr/bin/env bash
-set -u
-case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
-esac
-case "${1:-}" in
-  display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows) exit 0 ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
-  send-keys) exit 0 ;;
-esac
-exit 0
-SH
-  chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
-  printf '%s\n' "$fakebin"
-}
-
 # A home plus a project clone carrying the captain's own identity, with one
 # linked worktree standing in for a pooled task worktree.
 make_case() {  # <name> <id>
@@ -65,7 +43,7 @@ make_case() {  # <name> <id>
   HOME_DIR="$case_dir/home"
   PROJ_DIR="$case_dir/project"
   WT_DIR="$case_dir/wt"
-  FAKEBIN_DIR=$(make_fakebin "$case_dir/fake")
+  FAKEBIN_DIR=$(fm_test_make_spawn_fakebin "$case_dir/fake")
   mkdir -p "$HOME_DIR/data" "$HOME_DIR/projects" "$HOME_DIR/state" "$HOME_DIR/config"
   printf 'codex\n' > "$HOME_DIR/config/crew-harness"
   fm_git_worktree "$PROJ_DIR" "$WT_DIR" "wt-$name"
