@@ -696,7 +696,7 @@ github_read_required_contexts() {
 
 github_required_checks_missing() {
   local json=$1 required=$2 producers=$3
-  printf '%s' "$json" | jq -r --argjson required "$required" --argjson producers "$producers" '
+  printf '%s' "$json" | jq -r --argjson required "$required" --slurpfile producers <(printf '%s' "$producers") '
     if (.statusCheckRollup | type) != "array" then error("no check rollup") else . end
     | .statusCheckRollup as $reported
     | $required
@@ -706,7 +706,7 @@ github_required_checks_missing() {
             (if .__typename == "CheckRun" then .name else .context end) == $requirement.context
           elif .__typename == "CheckRun" then
             .name == $requirement.context
-            and any($producers[]; .name == $requirement.context and .app.id == $requirement.app_id)
+            and any($producers[0][]; .name == $requirement.context and .app.id == $requirement.app_id)
           else
             .context == $requirement.context
           end) | not)

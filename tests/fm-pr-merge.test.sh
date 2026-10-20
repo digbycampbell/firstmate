@@ -3518,7 +3518,7 @@ test_required_producer_large_payload() {
   mv "$case_dir/updated.json" "$case_dir/github-branch.json"
   jq -n --arg head "$head" '
     {check_runs: ([{name: "ci", app: {id: 15368}, head_sha: $head}]
-      + [range(0; 400) | {name: "run-\(.)", app: {id: 15368, slug: ("x" * 200)}, head_sha: $head,
+      + [range(0; 4000) | {name: "run-\(.)", app: {id: 15368, slug: ("x" * 200)}, head_sha: $head,
           output: {summary: ("y" * 400)}}])}' > "$case_dir/github-runs.json"
   [ "$(wc -c < "$case_dir/github-runs.json")" -gt 262144 ] || fail "large producer payload is under the argument limit"
   run_required_case "$case_dir" 110 --attended-override -- --admin
