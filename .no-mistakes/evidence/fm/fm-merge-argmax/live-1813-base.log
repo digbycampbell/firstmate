@@ -1,0 +1,19 @@
+[base] exit=1
+--- stderr
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+error: refusing to merge https://github.com/digio-nz/fcdispatch/pull/1813
+  - the GitHub pull request check rollup could not be read
+--- stdout
+armed: state/task-x1.check.sh
+--- gh calls
+  gh pr view https://github.com/digio-nz/fcdispatch/pull/1813 --json headRefOid -q .headRefOid
+  gh pr view https://github.com/digio-nz/fcdispatch/pull/1813 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup
+  gh api repos/digio-nz/fcdispatch/branches/main
+  gh api --paginate repos/digio-nz/fcdispatch/rules/branches/main
+  gh api --paginate repos/digio-nz/fcdispatch/commits/227ab5aee03971d14f64e3b5cae90c7bceee1177/check-runs
