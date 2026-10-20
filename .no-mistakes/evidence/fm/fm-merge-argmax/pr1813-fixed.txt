@@ -1,0 +1,17 @@
+# fm-pr-merge.sh (fixed) against live https://github.com/digio-nz/fcdispatch/pull/1813 — real gh reads; gh pr merge blocked by a guard wrapper
+armed: state/task-x1.check.sh
+verified: https://github.com/digio-nz/fcdispatch/pull/1813 is open and mergeable, with every unwaived required check reported and every unwaived check green at head 227ab5aee03971d14f64e3b5cae90c7bceee1177
+LIVE-TEST GUARD: blocked real 'gh pr merge' pr merge 1813 --repo digio-nz/fcdispatch --match-head-commit 227ab5aee03971d14f64e3b5cae90c7bceee1177 --squash
+error: GitHub merge outcome was not successful: state=OPEN, merged=false, isInMergeQueue=false
+error: base branch main requires the merge queue; retry with: bin/fm-pr-merge.sh task-x1 https://github.com/digio-nz/fcdispatch/pull/1813 --attended-override -- --auto --merge
+exit=97
+
+## gh calls
+gh pr view https://github.com/digio-nz/fcdispatch/pull/1813 --json headRefOid -q .headRefOid
+gh pr view https://github.com/digio-nz/fcdispatch/pull/1813 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup
+gh api repos/digio-nz/fcdispatch/branches/main
+gh api --paginate repos/digio-nz/fcdispatch/rules/branches/main
+gh api --paginate repos/digio-nz/fcdispatch/commits/227ab5aee03971d14f64e3b5cae90c7bceee1177/check-runs
+gh pr merge 1813 --repo digio-nz/fcdispatch --match-head-commit 227ab5aee03971d14f64e3b5cae90c7bceee1177 --squash
+gh api graphql -f query=query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){state merged isInMergeQueue baseRefName}}} -F owner=digio-nz -F repo=fcdispatch -F number=1813 --jq .data.repository.pullRequest | "state=" + (.state // ""), "merged=" + (.merged | tostring), "queued=" + (.isInMergeQueue | tostring), "base=" + (.baseRefName // "")
+gh api --paginate repos/digio-nz/fcdispatch/rules/branches/main --jq .[] | select(.type == "merge_queue") | "merge_method=" + (.parameters.merge_method // "")

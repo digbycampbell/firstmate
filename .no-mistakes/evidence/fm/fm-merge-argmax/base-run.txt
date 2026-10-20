@@ -1,0 +1,23 @@
+ok - fm-pr-merge reads a plan-gated 403 on branch rules as no merge queue, not unreadable
+ok - away merge proceeds on a plan-gated 403 because that repository cannot have a merge queue
+== S1 fcdispatch-shaped 100 runs ~350KB
+   payload bytes: 375212
+   exit: 1
+   merged (gh pr merge called): no
+   stderr:
+     error: refusing to merge https://github.com/example/repo/pull/1813
+       - the GitHub pull request check rollup could not be read
+== S2 6000 duplicate re-runs
+   payload bytes: 1312963
+   exit: 1
+   merged (gh pr merge called): no
+   stderr:
+     error: refusing to merge https://github.com/example/repo/pull/1814
+       - the GitHub pull request check rollup could not be read
+== S3 adversarial wrong producer app in large payload
+   payload bytes: 3323050
+   exit: 1
+   merged (gh pr merge called): no
+   stderr:
+     error: refusing to merge https://github.com/example/repo/pull/1815
+       - the GitHub pull request check rollup could not be read
