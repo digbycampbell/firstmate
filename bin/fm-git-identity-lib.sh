@@ -18,8 +18,8 @@
 # arming and the fail-closed launch assertion).
 
 # Crewmates and scouts working in a task worktree.
-FM_GIT_CREW_NAME='Crewmate'
-FM_GIT_CREW_EMAIL='crew@digio.nz'
+FM_GIT_CREW_NAME='Digby Campbell'
+FM_GIT_CREW_EMAIL='96467498+digbycampbell@users.noreply.github.com'
 
 # Firstmate itself, committing directly under one of its guarded exceptions.
 FM_GIT_FIRSTMATE_NAME='Firstmate'
